@@ -59,41 +59,23 @@ def test_viewer_does_not_leak_into_the_uimf_layer():
         assert "from ..viewer" not in text and "import mainspring.viewer" not in text, name
 
 
-def test_unbuilt_functions_raise_rather_than_guess():
-    """An unwritten body raises `NotImplementedError` and names the task that fills it.
-
-    The `uimf` layer is written (lab record, task 03), and so now are the render path,
-    the gestures and the side plots (task 05) -- `test_viewer_smoke.py` and
-    `test_viewer_interaction.py` exercise those instead. What is left to hold honest is
-    what task 06 still owes: the settings, the info panel, and the two window methods
-    and the held colour levels that depend on them.
-    """
-    from mainspring.viewer import heatmap, info_panel, main_window, settings
-
-    window = main_window.MainWindow.__new__(main_window.MainWindow)
-    view = heatmap.HeatmapView.__new__(heatmap.HeatmapView)
-
-    calls = (
-        lambda: info_panel.per_push(0.0, 1, 8),
-        lambda: info_panel.InfoPanel(),
-        lambda: settings.load_settings(),
-        lambda: settings.ViewerSettings().validate(),
-        lambda: view.set_levels(0.0, 1.0),
-        lambda: window.show_frame(1),
-        lambda: window.sum_frames(),
-    )
-    for call in calls:
-        with pytest.raises(NotImplementedError, match="task"):
-            call()
-
-
 def test_the_data_layer_no_longer_has_stubs_in_it():
     """Task 03 filled `uimf` end to end; a `NotImplementedError` left behind there would
     be a module the reader cannot actually use."""
-    import mainspring.uimf
+    _assert_no_stubs("mainspring.uimf", UIMF_MODULES)
 
-    directory = os.path.dirname(mainspring.uimf.__file__)
-    for name in UIMF_MODULES:
+
+def test_the_viewer_layer_no_longer_has_stubs_in_it():
+    """Task 06 filled the last of `viewer/` -- the settings, the info panel, frame
+    navigation and sum-all, and the held colour levels they depend on
+    (`notes/architecture.md`'s stub list). Same check as the data layer's, extended here
+    now that nothing under either package is left unbuilt."""
+    _assert_no_stubs("mainspring.viewer", VIEWER_MODULES)
+
+
+def _assert_no_stubs(package: str, modules: "tuple[str, ...]") -> None:
+    directory = os.path.dirname(importlib.import_module(package).__file__)
+    for name in modules:
         with open(os.path.join(directory, f"{name}.py"), encoding="utf-8") as handle:
             source = handle.read()
         assert "raise NotImplementedError" not in source, name

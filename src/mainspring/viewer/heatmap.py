@@ -27,8 +27,8 @@ View changes are debounced and sent to the render worker's mailbox, so a continu
 gesture repaints at the rate the rasteriser can sustain and always with the newest view
 (`workers.py`). **Auto-range is off and stays off**: the view range is state the window
 owns, set by a gesture or by opening a file, and an image arriving must never move it --
-which is also what makes "keep ranges" a matter of not calling `set_frame_extent`'s
-reset (task 06) rather than of fighting the widget.
+which is what makes "keep ranges" a matter of `MainWindow` not calling `set_frame_extent`'s
+reset (`main_window._on_frame_loaded`), rather than of fighting the widget.
 
 While a render is in flight the previous image stays where it is and the ViewBox
 stretches it, so a pan or a zoom is continuous rather than blanking between frames; the
@@ -48,6 +48,15 @@ from ..uimf import DisplayAxes
 from .workers import DEBOUNCE_MS
 
 __all__ = ["AXIS_HEIGHT", "AXIS_WIDTH", "HeatmapView", "UimfViewBox", "pixel_of"]
+
+
+def _scaled(image: np.ndarray, colour_scale: str) -> np.ndarray:
+    """The display transform behind the log/sqrt colour toggle. `"linear"` is a no-op."""
+    if colour_scale == "log":
+        return np.log1p(np.clip(image, 0.0, None))
+    if colour_scale == "sqrt":
+        return np.sqrt(np.clip(image, 0.0, None))
+    return image
 
 AXIS_WIDTH = 68
 """Pixels reserved for a left axis. Fixed rather than fitted so that the heatmap and the
@@ -86,7 +95,7 @@ class UimfViewBox(pg.ViewBox):
         """Declare the frame's full range: the reset target and the limits of every gesture.
 
         `reset=False` keeps whatever is on screen and only moves the limits, which is
-        what the keep-ranges setting needs (task 06). Even then the ranges are clamped
+        what the keep-ranges setting uses. Even then the ranges are clamped
         into the new frame's extent by `setLimits`, since a window kept from a file with
         a different calibration may not overlap this one at all.
 
@@ -236,6 +245,7 @@ class HeatmapView(pg.GraphicsLayoutWidget):
         self._view_box.sigRangeChanged.connect(lambda *_: self._debounce.start())
         self.scene().sigMouseMoved.connect(self._on_mouse_moved)
         self._cursor_inside = False
+        self._levels_held = False
 
     # --- accessors --------------------------------------------------------------------
 
@@ -293,29 +303,56 @@ class HeatmapView(pg.GraphicsLayoutWidget):
         """Back to the frame's full range: what Home and the double-click both call."""
         self._view_box.reset_range()
 
-    def set_image(self, result: object) -> None:
+    def set_image(self, result: object, colour_scale: str = "linear") -> None:
         """Show a `RasterResult`, placing it by its display ranges.
 
-        Levels go through the colour bar's own `setLevels`, computed from this image,
-        rather than through `ImageItem`'s `autoLevels` -- once a `ColorBarItem` is
-        attached it owns the applied levels and does not follow an image's own
-        auto-scaling (no `sigLevelsChanged` on plain `ImageItem` in this pyqtgraph
-        version), so `autoLevels=True` here would silently keep showing whatever the
-        colour bar's levels happened to be, which is 0-1 until told otherwise.
+        `colour_scale` is a display transform applied to the image before it reaches the
+        colour bar -- `log1p` or `sqrt` of the (non-negative) intensity -- so that one
+        bright peak does not wash out everything else in the same view. It never touches
+        `result.image` itself: the readouts (the cursor, the info panel) quote the raw
+        `RasterResult`, and quoting a transformed number as if it were a stored intensity
+        is exactly the mistake `notes/viewer-ux.md` warns the cursor label against.
+
+        Levels go through the colour bar's own `setLevels` rather than through
+        `ImageItem`'s `autoLevels` -- once a `ColorBarItem` is attached it owns the
+        applied levels and does not follow an image's own auto-scaling (no
+        `sigLevelsChanged` on plain `ImageItem` in this pyqtgraph version), so
+        `autoLevels=True` here would silently keep showing whatever the colour bar's
+        levels happened to be, which is 0-1 until told otherwise. **Unless the levels are
+        held** (`set_levels`, the keep-levels setting): then this image is shown under
+        whatever levels are already pinned, computed from a possibly different image, on
+        purpose -- that is the point of holding them.
         """
         axes = result.axes
         x0, x1 = result.x_range
         y0, y1 = result.y_range
-        self._image_item.setImage(result.image, autoLevels=False)
+        displayed = _scaled(result.image, colour_scale)
+        self._image_item.setImage(displayed, autoLevels=False)
         self._image_item.setRect(x0, y0, x1 - x0, y1 - y0)
         self._plot.setLabel("bottom", axes.x_label)
         self._plot.setLabel("left", axes.y_label)
-        low, high = float(result.image.min()), float(result.image.max())
-        self._colour_bar.setLevels((low, high if high > low else low + 1.0))
+        if not self._levels_held:
+            low, high = float(displayed.min()), float(displayed.max())
+            self._colour_bar.setLevels((low, high if high > low else low + 1.0))
+
+    def levels(self) -> "tuple[float, float]":
+        """The colour bar's current `(low, high)`, whatever last set them."""
+        low, high = self._colour_bar.levels()
+        return float(low), float(high)
 
     def set_levels(self, low: float, high: float) -> None:
-        """Pin the colour levels, for the keep-levels setting. Arrives with task 06."""
-        raise NotImplementedError("held colour levels arrive with the lab record's task 06")
+        """Pin the colour levels: every later `set_image` leaves them alone.
+
+        What the keep-levels setting calls when it is turned on, with whatever is on
+        screen right now (`levels()`) -- freezing the current scale rather than starting
+        from an arbitrary one, the same choice keep-ranges makes for the view range.
+        """
+        self._levels_held = True
+        self._colour_bar.setLevels((float(low), float(high)))
+
+    def release_levels(self) -> None:
+        """Un-pin the colour levels: the next `set_image` goes back to auto-scaling."""
+        self._levels_held = False
 
     def set_debug_text(self, text: str) -> None:
         """The render-time overlay, drawn only when `MAINSPRING_DEBUG_RENDER` is set.

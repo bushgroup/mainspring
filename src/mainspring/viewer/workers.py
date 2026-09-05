@@ -44,7 +44,7 @@ from dataclasses import dataclass
 import numpy as np
 from PySide6.QtCore import QThread, Signal
 
-from ..uimf import DisplayAxes, RasterResult, SparseFrame, UimfFile
+from ..uimf import DisplayAxes, RasterResult, SparseFrame, UimfFile, sum_frames
 from ..uimf.cache import DEFAULT_BUDGET_BYTES, FrameCache
 from ..uimf.decode import numba_available
 from ..uimf.raster import render_view
@@ -217,10 +217,21 @@ class LoadWorker(QThread):
     otherwise land in.
     """
 
-    opened = Signal(object, object)
-    """`GlobalParams, list[int]` -- a file's parameters and its frame numbers."""
+    opened = Signal(object, object, object)
+    """`GlobalParams, list[int], dict[int, int]` -- a file's parameters, its frame
+    numbers, and each frame's `FrameType` (the frame-type filter's own source, one query
+    for the whole file rather than one `frame_params` call per frame -- `reader.py`)."""
     frame_loaded = Signal(int, object, object)
     """`frame number, SparseFrame, FrameParams` -- a decoded frame and its parameters."""
+    summing_progress = Signal(int, int)
+    """`(frames done, frames total)` -- one tick per frame `sum_all` has read, for a
+    progress dialog. Emitted from this thread; the window marshals it onto the GUI
+    thread the way every other signal here does."""
+    summed = Signal(object, object)
+    """`SparseFrame, FrameParams | None` -- the sum of the requested frames, its `frame`
+    number 0 (`mainspring.uimf.frame.sum_frames`), paired with the first summed frame's
+    parameters so the window has a calibration to build axes from. `None` for both if
+    the sum was cancelled or the frame list was empty -- nothing to show."""
     failed = Signal(str)
     """An open or a decode raised; the message, never the exception object itself."""
 
@@ -229,6 +240,7 @@ class LoadWorker(QThread):
         self._cache = FrameCache(cache_budget_bytes or DEFAULT_BUDGET_BYTES)
         self._file: UimfFile | None = None
         self._queue: queue.Queue[tuple[str, object]] = queue.Queue()
+        self._cancel_sum = threading.Event()
         self.start()
         self._queue.put(("warm", None))
 
@@ -239,6 +251,20 @@ class LoadWorker(QThread):
     def request_frame(self, frame: int) -> None:
         """Ask for a frame; the `frame_loaded` signal carries it."""
         self._queue.put(("frame", int(frame)))
+
+    def sum_all(self, frames: "list[int]") -> None:
+        """Sum several frames into one; the `summed` signal carries the result.
+
+        Progress is one `summing_progress` tick per frame *read*, not per frame added --
+        reading (a query plus a decode) is the part of this that takes real time, the
+        sparse addition itself is fast, so a tick per read is what makes the bar move at
+        the rate the user is actually waiting on.
+        """
+        self._queue.put(("sum", list(frames)))
+
+    def cancel_sum(self) -> None:
+        """Ask an in-progress `sum_all` to stop at its next frame. Idempotent."""
+        self._cancel_sum.set()
 
     def stop(self) -> None:
         """Ask the loop to exit at its next turn. Follow with `wait()`."""
@@ -254,6 +280,8 @@ class LoadWorker(QThread):
                     self._open(str(payload))
                 elif kind == "frame":
                     self._request_frame(int(payload))
+                elif kind == "sum":
+                    self._sum_all(list(payload))
                 elif kind == "warm":
                     numba_available()  # compiles the kernels; return value unneeded here
             except Exception as exc:  # noqa: BLE001 -- reported to the window, not raised here
@@ -263,15 +291,48 @@ class LoadWorker(QThread):
         file = UimfFile(path)
         numbers = file.frame_numbers()
         globals_ = file.global_params()
+        # Skipped rather than queried on an empty result: there is nothing to filter by
+        # type, and a minimal or malformed file with no frames need not carry a
+        # `FrameType` column either (`frame_types()` assumes one on a legacy table).
+        types = file.frame_types() if numbers else {}
         self._file = file
         self._cache.clear()
-        self.opened.emit(globals_, numbers)
+        self.opened.emit(globals_, numbers, types)
 
-    def _request_frame(self, frame: int) -> None:
-        if self._file is None:
-            raise RuntimeError("request_frame before a file is open")
+    def _read_frame(self, frame: int) -> SparseFrame:
+        assert self._file is not None
         sparse = self._cache.get(self._file.path, frame)
         if sparse is None:
             sparse = self._file.read_frame(frame)
             self._cache.put(self._file.path, sparse)
+        return sparse
+
+    def _request_frame(self, frame: int) -> None:
+        if self._file is None:
+            raise RuntimeError("request_frame before a file is open")
+        sparse = self._read_frame(frame)
         self.frame_loaded.emit(frame, sparse, self._file.frame_params(frame))
+
+    def _sum_all(self, frames: "list[int]") -> None:
+        if self._file is None:
+            raise RuntimeError("sum_all before a file is open")
+        self._cancel_sum.clear()
+        total = len(frames)
+
+        def _read_each() -> "object":
+            # No cancel check of its own: `sum_frames` below is the sole authority on
+            # stopping early, and it must be -- it checks *before* folding a frame into
+            # the running total and returns None outright, discarding everything summed
+            # so far. A check here too would sometimes win the race and end the
+            # iterable instead, which looks to `sum_frames` like "no more frames" and
+            # returns the partial total as if it were the whole answer.
+            for done, frame in enumerate(frames, start=1):
+                yield self._read_frame(frame)
+                self.summing_progress.emit(done, total)
+
+        combined = sum_frames(_read_each(), should_cancel=self._cancel_sum.is_set)
+        if combined is None:
+            self.summed.emit(None, None)  # cancelled: sum_frames discarded the partial total
+            return
+        params = self._file.frame_params(frames[0]) if frames else None
+        self.summed.emit(combined, params)

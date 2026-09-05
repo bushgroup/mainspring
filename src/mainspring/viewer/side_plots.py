@@ -11,8 +11,8 @@ Axes are shared with the heatmap in the obvious way -- the mass spectrum's x is 
 heatmap's x, the arrival-time plot's y is the heatmap's y -- and they stay shared when
 the axes are swapped, which is why the plots take their orientation from `DisplayAxes`
 rather than from their own idea of which is which. Everything here is named for a role,
-`x_plot` and `y_plot`, and not for a quantity: the swap toggle (task 06) then changes
-what the roles mean and nothing else.
+`x_plot` and `y_plot`, and not for a quantity: the swap-axes toggle
+(`main_window._rebuild_axes`) then changes what the roles mean and nothing else.
 
 Their projections come from `mainspring.uimf.raster.profile`, on the render worker with
 the image, so a gesture produces one consistent set of three pictures rather than three

@@ -24,6 +24,29 @@ from synthetic import write_synthetic_uimf
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 
+@pytest.fixture(autouse=True)
+def _isolated_qsettings(tmp_path):
+    """Every test gets its own `QSettings` store, never the user's real one.
+
+    `ViewerSettings` persists through `QSettings(ORGANISATION, APPLICATION)`
+    (`viewer/settings.py`), which defaults to the Windows registry on this platform -- a
+    test that wrote there would pollute a real user's saved preferences and leak state
+    between test runs and between this suite and a session's actual viewer. Redirecting
+    the *default* format to a per-test ini file keeps the round trip real without ever
+    touching anything outside `tmp_path` (lab record, task 06). Autouse and unconditional:
+    every test gets this, including ones that never import `settings.py`, because it is
+    cheap and because a test added later that does touch it should not have to remember
+    to ask.
+    """
+    from PySide6.QtCore import QSettings
+
+    previous_format = QSettings.defaultFormat()
+    QSettings.setDefaultFormat(QSettings.Format.IniFormat)
+    QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(tmp_path))
+    yield
+    QSettings.setDefaultFormat(previous_format)
+
+
 def real_uimf_paths() -> list[str]:
     """Every `.uimf` this clone can see: PNNL's excerpts, plus `MAINSPRING_SMOKE_UIMF`.
 
