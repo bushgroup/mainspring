@@ -310,6 +310,35 @@ def main() -> int:
                        (result.x_range, result.y_range) == result.axes.full_range)
             check_true("the painted image conserves the frame's total ion current",
                        abs(result.tic_in_view - viewer_spec.tic(1)) <= 1e-6 * max(1.0, viewer_spec.tic(1)))
+            # The side plots must describe the image, not a window it has moved on from.
+            profiles = window.last_render
+            check_true(
+                "the side plots project the same points the image does",
+                all(
+                    abs(float(values.sum()) - result.tic_in_view)
+                    <= 1e-6 * max(1.0, result.tic_in_view)
+                    for _, values in (profiles.x_profile, profiles.y_profile)
+                ),
+            )
+
+            # And a gesture must reach the render worker and come back with a narrower
+            # window: the whole interactive path, in one check, through the same signal
+            # a wheel tick travels (lab record, task 05).
+            (x0, x1), (y0, y1) = result.axes.full_range
+            zoom = (x0 + 0.25 * (x1 - x0), x0 + 0.5 * (x1 - x0))
+            painted.clear()
+            window.heatmap.view_box.setRange(xRange=zoom, yRange=(y0, y1), padding=0.0)
+            deadline = time.time() + 5.0
+            while not painted and time.time() < deadline:
+                qt_app.processEvents()
+                time.sleep(0.01)
+            check_true("a view change repaints through the render worker", bool(painted))
+            if painted:
+                check_true(
+                    "the repainted image is the window that was asked for",
+                    abs(painted[0].x_range[0] - zoom[0]) <= 1e-9 * max(1.0, abs(zoom[0]))
+                    and painted[0].tic_in_view < result.tic_in_view,
+                )
         window.close()
 
     # --------------------------------------------------------------------------------

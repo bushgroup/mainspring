@@ -14,26 +14,49 @@ always the newest view rather than the oldest queued one. A queue here would ren
 gesture's whole history, arriving progressively later, which is exactly the lag PNNL's
 viewer has.
 
+**The image and the two profiles are computed together, in one request**, by
+`mainspring.uimf.raster.render_view`. They are three views of the same window; computing
+the side plots on the GUI thread after the image arrived would put a second cost on the
+interactive path and let the three pictures disagree for a frame while a gesture is in
+flight. It is also the cheaper way round -- the expensive part of all three is selecting
+the window's points, and `render_view` does that once (lab record, task 05). `RenderResult`
+carries all three plus the time they took, so the window has one thing to draw and one
+number to report.
+
 `LoadWorker` is the other side: it owns the `UimfFile` and the `FrameCache`, so the
 short-lived-connection rule and the never-cache-a-provisional-frame rule live on one
 thread and nothing else touches SQLite (lab record, tasks 03 and 08).
 
 Qt lives here, and only here on the data side of the viewer: `mainspring.uimf` knows
-nothing about threads, and everything these workers call is plain numpy.
+nothing about threads, and everything these workers call is plain numpy. What crosses
+the seam are frozen dataclasses over read-only numpy arrays -- a `SparseFrame` and a
+`DisplayAxes` are never mutated after they are built, so passing them to the render
+thread needs no copy and no lock.
 """
 
 from __future__ import annotations
 
 import queue
+import threading
+import time
 from dataclasses import dataclass
 
+import numpy as np
 from PySide6.QtCore import QThread, Signal
 
 from ..uimf import DisplayAxes, RasterResult, SparseFrame, UimfFile
 from ..uimf.cache import DEFAULT_BUDGET_BYTES, FrameCache
 from ..uimf.decode import numba_available
+from ..uimf.raster import render_view
 
-__all__ = ["DEBOUNCE_MS", "LoadWorker", "RenderMailbox", "RenderRequest", "RenderWorker"]
+__all__ = [
+    "DEBOUNCE_MS",
+    "LoadWorker",
+    "RenderMailbox",
+    "RenderRequest",
+    "RenderResult",
+    "RenderWorker",
+]
 
 DEBOUNCE_MS = 30
 """How long a view change waits for the next one before a render is requested. Long
@@ -54,39 +77,123 @@ class RenderRequest:
     serial: int = 0
 
 
+@dataclass(frozen=True)
+class RenderResult:
+    """What one `RenderRequest` produced: the image, the two profiles, and the cost.
+
+    `x_profile` and `y_profile` are `(edges, values)` pairs from
+    `mainspring.uimf.raster.profile`, at native resolution -- one value per source
+    element in view, on that element's own edges, `len(edges) == len(values) + 1`.
+
+    `serial` is the request's, so the window can drop a result that a newer frame or a
+    newer file has already overtaken. `elapsed_ms` is the whole request -- image and
+    both profiles -- which is the number the 100 ms render budget is about, not the
+    rasteriser's share of it alone.
+    """
+
+    result: RasterResult
+    x_profile: tuple[np.ndarray, np.ndarray]
+    y_profile: tuple[np.ndarray, np.ndarray]
+    serial: int
+    elapsed_ms: float
+
+
 class RenderMailbox:
     """A one-slot handoff: put overwrites, take blocks until something is there.
 
     Deliberately not a queue -- see the module docstring. Thread-safe; the only shared
     state between the GUI thread and the render worker.
+
+    Closing is part of the protocol rather than an afterthought: a worker blocked in
+    `take()` has to be woken to exit, and a `put` racing a close must be dropped rather
+    than left in a slot nobody will empty.
     """
+
+    def __init__(self) -> None:
+        self._ready = threading.Condition()
+        self._pending: RenderRequest | None = None
+        self._closed = False
+
+    @property
+    def closed(self) -> bool:
+        """Whether `close()` has been called; what tells a `take()` of None from a timeout."""
+        with self._ready:
+            return self._closed
 
     def put(self, request: RenderRequest) -> None:
-        """Replace whatever is waiting. Never blocks. Arrives with the lab record's task 05."""
-        raise NotImplementedError("the render mailbox arrives with the lab record's task 05")
+        """Replace whatever is waiting. Never blocks."""
+        with self._ready:
+            if self._closed:
+                return
+            self._pending = request
+            self._ready.notify()
 
     def take(self, timeout_s: float | None = None) -> RenderRequest | None:
-        """The latest request, or None on timeout or shutdown. Arrives with task 05."""
-        raise NotImplementedError("the render mailbox arrives with the lab record's task 05")
+        """The latest request, or None on timeout or shutdown.
+
+        Waits only while the slot is empty, so a request put while the worker was busy
+        is taken without a further wait -- which is the case that matters during a
+        gesture, when a put lands for every debounce interval the last render outlived.
+        """
+        with self._ready:
+            if self._pending is None and not self._closed:
+                self._ready.wait(timeout_s)
+            request, self._pending = self._pending, None
+            return None if self._closed else request
 
     def close(self) -> None:
-        """Wake a waiting `take` with None so the worker can exit. Arrives with task 05."""
-        raise NotImplementedError("the render mailbox arrives with the lab record's task 05")
+        """Wake a waiting `take` with None so the worker can exit. Idempotent."""
+        with self._ready:
+            self._closed = True
+            self._pending = None
+            self._ready.notify_all()
 
 
-class RenderWorker:
-    """The thread that turns `RenderRequest` into `RasterResult` and signals the window.
+class RenderWorker(QThread):
+    """The thread that turns `RenderRequest` into `RenderResult` and signals the window.
 
-    A `QThread` subclass once it exists; declared here so that the seam is visible
-    before it does. Arrives with the lab record's task 05.
+    All it does is loop on the mailbox and call `mainspring.uimf.raster`. It holds no
+    state of its own -- everything a render needs is in the request -- which is what
+    lets a frame change, an axis swap and a resize all be "the next request" rather than
+    three kinds of invalidation.
     """
 
-    def __init__(self, mailbox: RenderMailbox) -> None:
-        raise NotImplementedError("the render worker arrives with the lab record's task 05")
+    rendered = Signal(object)
+    """`RenderResult` -- a finished image and its two profiles."""
+    failed = Signal(str)
+    """A render raised; the message, never the exception object itself. A degenerate
+    window is the realistic case, and it must not take the thread down with it."""
 
-    def rendered(self) -> RasterResult:
-        """The Qt signal carrying a finished image. Arrives with the lab record's task 05."""
-        raise NotImplementedError("the render worker arrives with the lab record's task 05")
+    def __init__(self, mailbox: RenderMailbox, parent: "object | None" = None) -> None:
+        super().__init__(parent)
+        self._mailbox = mailbox
+
+    def run(self) -> None:
+        while True:
+            request = self._mailbox.take()
+            if request is None:
+                if self._mailbox.closed:
+                    return
+                continue
+            try:
+                self.rendered.emit(self._render(request))
+            except Exception as exc:  # noqa: BLE001 -- reported to the window, not raised here
+                self.failed.emit(str(exc))
+
+    @staticmethod
+    def _render(request: RenderRequest) -> RenderResult:
+        started = time.perf_counter()
+        result, x_profile, y_profile = render_view(
+            request.frame, request.axes, request.x_range, request.y_range,
+            request.width, request.height, aggregate=request.aggregate,
+        )
+        return RenderResult(
+            result=result,
+            x_profile=x_profile,
+            y_profile=y_profile,
+            serial=request.serial,
+            elapsed_ms=(time.perf_counter() - started) * 1000.0,
+        )
 
 
 class LoadWorker(QThread):

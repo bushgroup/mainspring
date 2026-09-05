@@ -37,7 +37,9 @@ import numpy as np
 from .calib import Calibration, scan_axis_ms
 from .frame import SparseFrame
 
-__all__ = ["AGGREGATES", "DisplayAxes", "RasterResult", "profile", "rasterise"]
+__all__ = [
+    "AGGREGATES", "DisplayAxes", "RasterResult", "profile", "rasterise", "render_view",
+]
 
 AGGREGATES = ("sum", "max")
 """How points falling in one pixel combine. Default `sum`; `max` on a toggle."""
@@ -160,10 +162,14 @@ def _axis_cells(
     if not high > low:
         raise ValueError(f"empty display range [{low}, {high})")
     centres = 0.5 * (edges[:-1] + edges[1:])
-    inside = np.flatnonzero((centres >= low) & (centres < high))
-    if inside.size == 0:
+    # A binary search and not a mask: an edge table is monotonic by construction (the
+    # calibration is clamped so that it never decreases -- lab record, task 03), so the
+    # elements in view are a contiguous run, and finding its ends by comparing all
+    # 148000 of them costs more than the render it is part of.
+    index_lo = int(np.searchsorted(centres, low, side="left"))
+    index_hi = int(np.searchsorted(centres, high, side="left"))
+    if index_hi <= index_lo:
         return 0, 0, np.empty(0, dtype=np.int32), max(1, int(max_cells))
-    index_lo, index_hi = int(inside[0]), int(inside[-1]) + 1
     cells = max(1, min(int(max_cells), index_hi - index_lo))
     cell = np.floor((centres[index_lo:index_hi] - low) * (cells / (high - low)))
     return index_lo, index_hi, np.clip(cell, 0, cells - 1).astype(np.int32), cells
@@ -210,6 +216,147 @@ def _max_into(flat: np.ndarray, values: np.ndarray, size: int) -> np.ndarray:
     return out
 
 
+@dataclass(frozen=True)
+class _View:
+    """The points in a display window, and where each of them lands on each axis.
+
+    Everything the image and the two profiles need, and the only expensive part of
+    producing any of them: two `_axis_cells` and one pass over the frame's points.
+    Building it once is what `render_view` is for.
+
+    `x_source` and `y_source` are the source element indices along each display axis --
+    bins along x and scans along y in the default orientation, the other way round when
+    the axes are swapped -- so nothing downstream has to ask which is which again.
+    """
+
+    x_lo: int
+    x_hi: int
+    x_cell: np.ndarray
+    cols: int
+    y_lo: int
+    y_hi: int
+    y_cell: np.ndarray
+    rows: int
+    x_source: np.ndarray
+    y_source: np.ndarray
+    intensity: np.ndarray
+
+    @property
+    def empty(self) -> bool:
+        """No points in the window -- a legitimate view, not an error."""
+        return self.intensity.size == 0
+
+
+def _view(
+    frame: SparseFrame,
+    axes: DisplayAxes,
+    x0: float,
+    x1: float,
+    y0: float,
+    y1: float,
+    width: int,
+    height: int,
+) -> "_View":
+    """Select the window's points once, in display-axis terms."""
+    x_lo, x_hi, x_cell, cols = _axis_cells(axes.x_edges, x0, x1, width)
+    y_lo, y_hi, y_cell, rows = _axis_cells(axes.y_edges, y0, y1, height)
+    if x_hi == x_lo or y_hi == y_lo:
+        none = np.empty(0, dtype=np.int64)
+        return _View(x_lo, x_hi, x_cell, cols, y_lo, y_hi, y_cell, rows,
+                     none, none, np.empty(0, dtype=frame.intensity.dtype))
+    scan_lo, scan_hi = (x_lo, x_hi) if axes.swapped else (y_lo, y_hi)
+    bin_lo, bin_hi = (y_lo, y_hi) if axes.swapped else (x_lo, x_hi)
+    scan_index, bin_index, intensity = _points_in_view(
+        frame, scan_lo, scan_hi, bin_lo, bin_hi
+    )
+    x_source, y_source = (scan_index, bin_index) if axes.swapped else (bin_index, scan_index)
+    return _View(x_lo, x_hi, x_cell, cols, y_lo, y_hi, y_cell, rows,
+                 x_source, y_source, intensity)
+
+
+def _image_of(view: "_View", aggregate: str) -> np.ndarray:
+    """The `rows x cols` image, float32 and in display orientation."""
+    if view.empty:
+        return np.zeros((view.rows, view.cols), dtype=np.float32)
+    column = view.x_cell[view.x_source - view.x_lo]
+    row = view.y_cell[view.y_source - view.y_lo]
+    flat = row.astype(np.int64) * view.cols + column
+    size = view.rows * view.cols
+    if aggregate == "sum":
+        image = np.bincount(flat, weights=view.intensity, minlength=size)
+    else:
+        image = _max_into(flat, view.intensity.astype(np.float64), size)
+    return image.reshape(view.rows, view.cols).astype(np.float32)
+
+
+def _result_of(
+    view: "_View",
+    axes: DisplayAxes,
+    x_range: tuple[float, float],
+    y_range: tuple[float, float],
+    aggregate: str,
+) -> RasterResult:
+    return RasterResult(
+        image=_image_of(view, aggregate),
+        x_range=x_range,
+        y_range=y_range,
+        axes=axes,
+        aggregate=aggregate,
+        points_in_view=int(view.intensity.size),
+        tic_in_view=float(np.sum(view.intensity, dtype=np.float64)),
+        max_intensity=0.0 if view.empty else float(view.intensity.max()),
+    )
+
+
+def _native_profile(
+    view: "_View", axes: DisplayAxes, along: str
+) -> tuple[np.ndarray, np.ndarray]:
+    """One value per source element in view, on that element's own edges."""
+    edges_table = axes.x_edges if along == "x" else axes.y_edges
+    lo, hi = (view.x_lo, view.x_hi) if along == "x" else (view.y_lo, view.y_hi)
+    source = view.x_source if along == "x" else view.y_source
+    edges = np.asarray(edges_table[lo:hi + 1], dtype=np.float64)
+    cells = max(0, hi - lo)
+    if cells == 0 or view.empty:
+        return edges, np.zeros(max(cells, 0), dtype=np.float64)
+    return edges, np.bincount(
+        (source - lo).astype(np.int64), weights=view.intensity, minlength=cells
+    )
+
+
+def render_view(
+    frame: SparseFrame,
+    axes: DisplayAxes,
+    x_range: tuple[float, float],
+    y_range: tuple[float, float],
+    width: int,
+    height: int,
+    aggregate: str = "sum",
+) -> tuple[RasterResult, tuple[np.ndarray, np.ndarray], tuple[np.ndarray, np.ndarray]]:
+    """The image and both native-resolution profiles of one window, from one selection.
+
+    Returns `(result, x_profile, y_profile)`, each profile the `(edges, values)` pair
+    `profile` returns. Identical to calling `rasterise` and `profile` twice, and several
+    times faster on a full-range view of a dense frame: the expensive part of all three
+    is selecting the points and deriving the axis cells, and that happens once here
+    rather than three times.
+
+    This is what an interactive viewer's render path should call. The three pictures are
+    one window's, they are wanted together, and computing them together is both cheaper
+    and the only way they cannot disagree.
+    """
+    if aggregate not in AGGREGATES:
+        raise ValueError(f"unknown aggregate {aggregate!r}; one of {AGGREGATES}")
+    x0, x1 = float(x_range[0]), float(x_range[1])
+    y0, y1 = float(y_range[0]), float(y_range[1])
+    view = _view(frame, axes, x0, x1, y0, y1, width, height)
+    return (
+        _result_of(view, axes, (x0, x1), (y0, y1), aggregate),
+        _native_profile(view, axes, "x"),
+        _native_profile(view, axes, "y"),
+    )
+
+
 def rasterise(
     frame: SparseFrame,
     axes: DisplayAxes,
@@ -232,45 +379,8 @@ def rasterise(
         raise ValueError(f"unknown aggregate {aggregate!r}; one of {AGGREGATES}")
     x0, x1 = float(x_range[0]), float(x_range[1])
     y0, y1 = float(y_range[0]), float(y_range[1])
-
-    x_lo, x_hi, x_cell, cols = _axis_cells(axes.x_edges, x0, x1, width)
-    y_lo, y_hi, y_cell, rows = _axis_cells(axes.y_edges, y0, y1, height)
-    empty = RasterResult(
-        image=np.zeros((rows, cols), dtype=np.float32),
-        x_range=(x0, x1), y_range=(y0, y1), axes=axes, aggregate=aggregate,
-        points_in_view=0, tic_in_view=0.0, max_intensity=0.0,
-    )
-    if x_hi == x_lo or y_hi == y_lo:
-        return empty
-
-    scan_lo, scan_hi = (x_lo, x_hi) if axes.swapped else (y_lo, y_hi)
-    bin_lo, bin_hi = (y_lo, y_hi) if axes.swapped else (x_lo, x_hi)
-    scan_index, bin_index, intensity = _points_in_view(
-        frame, scan_lo, scan_hi, bin_lo, bin_hi
-    )
-    if intensity.size == 0:
-        return empty
-
-    scan_cell, bin_cell = (x_cell, y_cell) if axes.swapped else (y_cell, x_cell)
-    column = scan_cell[scan_index - scan_lo] if axes.swapped else bin_cell[bin_index - bin_lo]
-    row = bin_cell[bin_index - bin_lo] if axes.swapped else scan_cell[scan_index - scan_lo]
-    flat = row.astype(np.int64) * cols + column
-
-    if aggregate == "sum":
-        image = np.bincount(flat, weights=intensity, minlength=rows * cols)
-    else:
-        image = _max_into(flat, intensity.astype(np.float64), rows * cols)
-
-    return RasterResult(
-        image=image.reshape(rows, cols).astype(np.float32),
-        x_range=(x0, x1),
-        y_range=(y0, y1),
-        axes=axes,
-        aggregate=aggregate,
-        points_in_view=int(intensity.size),
-        tic_in_view=float(np.sum(intensity, dtype=np.float64)),
-        max_intensity=float(intensity.max()),
-    )
+    view = _view(frame, axes, x0, x1, y0, y1, width, height)
+    return _result_of(view, axes, (x0, x1), (y0, y1), aggregate)
 
 
 def profile(
@@ -302,37 +412,22 @@ def profile(
     x0, x1 = float(x_range[0]), float(x_range[1])
     y0, y1 = float(y_range[0]), float(y_range[1])
 
-    x_lo, x_hi, _, _ = _axis_cells(axes.x_edges, x0, x1, 1)
-    y_lo, y_hi, _, _ = _axis_cells(axes.y_edges, y0, y1, 1)
+    view = _view(frame, axes, x0, x1, y0, y1, 1, 1)
+    if bins <= 0:
+        return _native_profile(view, axes, along)
+
     edges_table = axes.x_edges if along == "x" else axes.y_edges
-    lo, hi = (x_lo, x_hi) if along == "x" else (y_lo, y_hi)
+    lo, hi = (view.x_lo, view.x_hi) if along == "x" else (view.y_lo, view.y_hi)
     low, high = (x0, x1) if along == "x" else (y0, y1)
-
-    if bins > 0:
-        edges = np.linspace(low, high, int(bins) + 1)
-        cells = int(bins)
-    else:
-        edges = np.asarray(edges_table[lo:hi + 1], dtype=np.float64)
-        cells = max(0, hi - lo)
-    if cells == 0 or x_hi == x_lo or y_hi == y_lo:
-        return edges, np.zeros(max(cells, 0), dtype=np.float64)
-
-    scan_lo, scan_hi = (x_lo, x_hi) if axes.swapped else (y_lo, y_hi)
-    bin_lo, bin_hi = (y_lo, y_hi) if axes.swapped else (x_lo, x_hi)
-    scan_index, bin_index, intensity = _points_in_view(
-        frame, scan_lo, scan_hi, bin_lo, bin_hi
-    )
-    if intensity.size == 0:
+    source = view.x_source if along == "x" else view.y_source
+    edges = np.linspace(low, high, int(bins) + 1)
+    cells = int(bins)
+    if view.empty or hi == lo:
         return edges, np.zeros(cells, dtype=np.float64)
 
-    on_scan_axis = (along == "x") == axes.swapped
-    source = scan_index if on_scan_axis else bin_index
-    if bins > 0:
-        centres = 0.5 * (edges_table[lo:hi] + edges_table[lo + 1:hi + 1])
-        cell_of = np.clip(
-            np.floor((centres - low) * (cells / (high - low))), 0, cells - 1
-        ).astype(np.int64)
-        cell = cell_of[source - lo]
-    else:
-        cell = (source - lo).astype(np.int64)
-    return edges, np.bincount(cell, weights=intensity, minlength=cells)
+    centres = 0.5 * (edges_table[lo:hi] + edges_table[lo + 1:hi + 1])
+    cell_of = np.clip(
+        np.floor((centres - low) * (cells / (high - low))), 0, cells - 1
+    ).astype(np.int64)
+    cell = cell_of[source - lo]
+    return edges, np.bincount(cell, weights=view.intensity, minlength=cells)

@@ -62,17 +62,25 @@ def test_viewer_does_not_leak_into_the_uimf_layer():
 def test_unbuilt_functions_raise_rather_than_guess():
     """An unwritten body raises `NotImplementedError` and names the task that fills it.
 
-    The whole `uimf` layer is written now (lab record, task 03); `app.main` and the rest
-    of what task 04 built are no longer on this list -- `test_viewer_smoke.py` exercises
-    them instead. What is left to hold honest is what tasks 05 and 06 still owe.
+    The `uimf` layer is written (lab record, task 03), and so now are the render path,
+    the gestures and the side plots (task 05) -- `test_viewer_smoke.py` and
+    `test_viewer_interaction.py` exercise those instead. What is left to hold honest is
+    what task 06 still owes: the settings, the info panel, and the two window methods
+    and the held colour levels that depend on them.
     """
-    from mainspring.viewer import heatmap, info_panel, settings, workers
+    from mainspring.viewer import heatmap, info_panel, main_window, settings
+
+    window = main_window.MainWindow.__new__(main_window.MainWindow)
+    view = heatmap.HeatmapView.__new__(heatmap.HeatmapView)
 
     calls = (
-        lambda: heatmap.UimfViewBox(),
         lambda: info_panel.per_push(0.0, 1, 8),
+        lambda: info_panel.InfoPanel(),
         lambda: settings.load_settings(),
-        lambda: workers.RenderMailbox.put(object(), object()),
+        lambda: settings.ViewerSettings().validate(),
+        lambda: view.set_levels(0.0, 1.0),
+        lambda: window.show_frame(1),
+        lambda: window.sum_frames(),
     )
     for call in calls:
         with pytest.raises(NotImplementedError, match="task"):

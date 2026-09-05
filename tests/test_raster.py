@@ -7,7 +7,11 @@ things must hold, and between them they pin down the whole reduction:
   exactly one pixel and nothing is dropped or counted twice;
 * a full-range `max` image's maximum is the frame's largest stored intensity;
 * a zoomed window's counts equal a brute-force mask over the same window;
-* a side-plot profile totals the same thing the image over that window does.
+* a side-plot profile totals the same thing the image over that window does;
+* `render_view`, which the viewer's render worker calls because computing the three
+  together is cheaper, returns exactly what the three separate calls do -- an
+  optimisation that changed an answer would be a bug the invariants above cannot see,
+  since both halves would still conserve.
 
 The axis tables get their own tests, because the calibration is where a wrong constant
 would look plausible: `mz_axis` must never decrease, and the whole point of the
@@ -21,7 +25,7 @@ import numpy as np
 import pytest
 
 from mainspring.uimf.calib import Calibration, arrival_time_ms, scan_axis_ms
-from mainspring.uimf.raster import DisplayAxes, profile, rasterise
+from mainspring.uimf.raster import DisplayAxes, profile, rasterise, render_view
 from mainspring.uimf.reader import UimfFile
 
 SLOPE, INTERCEPT = 0.738123, 0.07690495
@@ -223,6 +227,39 @@ def test_a_binned_profile_keeps_the_bins_it_was_asked_for(frame_and_axes):
     )
 
 
+def test_render_view_returns_what_the_three_separate_calls_do(frame_and_axes):
+    frame, axes = frame_and_axes
+    (x0, x1), (y0, y1) = axes.full_range
+    windows = (
+        ((x0, x1), (y0, y1)),
+        ((x0 + 0.3 * (x1 - x0), x0 + 0.6 * (x1 - x0)), (y0, y0 + 0.5 * (y1 - y0))),
+    )
+    for x_range, y_range in windows:
+        for aggregate in ("sum", "max"):
+            result, x_profile, y_profile = render_view(
+                frame, axes, x_range, y_range, 300, 200, aggregate=aggregate
+            )
+            separate = rasterise(
+                frame, axes, x_range, y_range, 300, 200, aggregate=aggregate
+            )
+            assert np.array_equal(result.image, separate.image)
+            assert result.tic_in_view == separate.tic_in_view
+            assert result.max_intensity == separate.max_intensity
+            assert result.points_in_view == separate.points_in_view
+            for got, want in (
+                (x_profile, profile(frame, axes, x_range, y_range, along="x")),
+                (y_profile, profile(frame, axes, x_range, y_range, along="y")),
+            ):
+                assert np.array_equal(got[0], want[0])
+                assert np.array_equal(got[1], want[1])
+
+
+def test_render_view_refuses_an_unknown_aggregate(frame_and_axes):
+    frame, axes = frame_and_axes
+    with pytest.raises(ValueError, match="aggregate"):
+        render_view(frame, axes, *axes.full_range, 64, 64, aggregate="mean")
+
+
 def test_an_unknown_direction_is_refused(frame_and_axes):
     frame, axes = frame_and_axes
     with pytest.raises(ValueError, match="along"):
@@ -245,3 +282,33 @@ def test_a_real_frame_conserves_its_own_tic(real_uimf):
     assert result.image.sum(dtype=np.float64) == pytest.approx(float(tic.sum()), rel=1e-5)
     peak = rasterise(frame, axes, *axes.full_range, 1200, 800, aggregate="max")
     assert peak.image.max() == pytest.approx(float(bpi.max()))
+
+
+def test_render_view_agrees_with_the_separate_calls_on_a_real_file(real_uimf):
+    """The same equivalence on files whose axis tables are not the fixture's.
+
+    Worth its own run on real data: the shared selection is indexed off the axis tables,
+    and a file with a different bin count, a clamped low-m/z region or scans the writer
+    never stored is where an off-by-one in it would show.
+    """
+    uimf = UimfFile(real_uimf)
+    number = uimf.frame_numbers()[0]
+    params = uimf.frame_params(number)
+    frame = uimf.read_frame(number)
+    axes = DisplayAxes.build(frame, params.calibration(uimf.global_params().bin_width_ns),
+                             params.average_tof_length_ns)
+    (x0, x1), (y0, y1) = axes.full_range
+    x_range = (x0 + 0.2 * (x1 - x0), x0 + 0.7 * (x1 - x0))
+
+    result, x_profile, y_profile = render_view(frame, axes, x_range, (y0, y1), 800, 500)
+
+    assert np.array_equal(
+        result.image, rasterise(frame, axes, x_range, (y0, y1), 800, 500).image
+    )
+    assert np.array_equal(
+        x_profile[1], profile(frame, axes, x_range, (y0, y1), along="x")[1]
+    )
+    assert np.array_equal(
+        y_profile[1], profile(frame, axes, x_range, (y0, y1), along="y")[1]
+    )
+    assert float(np.sum(x_profile[1])) == pytest.approx(result.tic_in_view, rel=1e-12)
