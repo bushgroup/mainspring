@@ -24,9 +24,14 @@ nothing about threads, and everything these workers call is plain numpy.
 
 from __future__ import annotations
 
+import queue
 from dataclasses import dataclass
 
-from ..uimf import DisplayAxes, RasterResult, SparseFrame
+from PySide6.QtCore import QThread, Signal
+
+from ..uimf import DisplayAxes, RasterResult, SparseFrame, UimfFile
+from ..uimf.cache import DEFAULT_BUDGET_BYTES, FrameCache
+from ..uimf.decode import numba_available
 
 __all__ = ["DEBOUNCE_MS", "LoadWorker", "RenderMailbox", "RenderRequest", "RenderWorker"]
 
@@ -84,19 +89,82 @@ class RenderWorker:
         raise NotImplementedError("the render worker arrives with the lab record's task 05")
 
 
-class LoadWorker:
+class LoadWorker(QThread):
     """The thread that owns the file and the frame cache and decodes frames.
 
-    Arrives with the lab record's task 04.
+    A plain `queue.Queue` rather than the render mailbox above: every open and every
+    frame request must be honoured, not just the latest, so this is a work queue and not
+    a single slot. It costs nothing here because loads are rare (once per file, once per
+    frame navigation) rather than once per animation frame.
+
+    Started on construction and left running for the window's lifetime; `stop()` and
+    `wait()` on close is what lets it exit instead of blocking the process (lab record,
+    task 04).
+
+    **Warms numba on construction, before any file is asked for.** Importing numba and
+    compiling the decode kernels the first time costs the better part of a second on its
+    own (`mainspring.uimf.decode`), on top of whatever the first decode itself takes --
+    which is what "first paint under 1 s including numba warm-up" actually asks for: that
+    cost paid here, off the GUI thread, while the window is still empty and the user is
+    still choosing a file, rather than inside the interactive `open_file` it would
+    otherwise land in.
     """
 
+    opened = Signal(object, object)
+    """`GlobalParams, list[int]` -- a file's parameters and its frame numbers."""
+    frame_loaded = Signal(int, object, object)
+    """`frame number, SparseFrame, FrameParams` -- a decoded frame and its parameters."""
+    failed = Signal(str)
+    """An open or a decode raised; the message, never the exception object itself."""
+
     def __init__(self, cache_budget_bytes: int = 0) -> None:
-        raise NotImplementedError("the load worker arrives with the lab record's task 04")
+        super().__init__()
+        self._cache = FrameCache(cache_budget_bytes or DEFAULT_BUDGET_BYTES)
+        self._file: UimfFile | None = None
+        self._queue: queue.Queue[tuple[str, object]] = queue.Queue()
+        self.start()
+        self._queue.put(("warm", None))
 
     def open(self, path: str) -> None:
-        """Open a file and report its parameters. Arrives with the lab record's task 04."""
-        raise NotImplementedError("the load worker arrives with the lab record's task 04")
+        """Open a file and report its parameters; the `opened` signal carries them."""
+        self._queue.put(("open", path))
 
     def request_frame(self, frame: int) -> None:
-        """Ask for a frame; the loaded signal carries it. Arrives with task 04."""
-        raise NotImplementedError("the load worker arrives with the lab record's task 04")
+        """Ask for a frame; the `frame_loaded` signal carries it."""
+        self._queue.put(("frame", int(frame)))
+
+    def stop(self) -> None:
+        """Ask the loop to exit at its next turn. Follow with `wait()`."""
+        self._queue.put(("stop", None))
+
+    def run(self) -> None:
+        while True:
+            kind, payload = self._queue.get()
+            if kind == "stop":
+                return
+            try:
+                if kind == "open":
+                    self._open(str(payload))
+                elif kind == "frame":
+                    self._request_frame(int(payload))
+                elif kind == "warm":
+                    numba_available()  # compiles the kernels; return value unneeded here
+            except Exception as exc:  # noqa: BLE001 -- reported to the window, not raised here
+                self.failed.emit(str(exc))
+
+    def _open(self, path: str) -> None:
+        file = UimfFile(path)
+        numbers = file.frame_numbers()
+        globals_ = file.global_params()
+        self._file = file
+        self._cache.clear()
+        self.opened.emit(globals_, numbers)
+
+    def _request_frame(self, frame: int) -> None:
+        if self._file is None:
+            raise RuntimeError("request_frame before a file is open")
+        sparse = self._cache.get(self._file.path, frame)
+        if sparse is None:
+            sparse = self._file.read_frame(frame)
+            self._cache.put(self._file.path, sparse)
+        self.frame_loaded.emit(frame, sparse, self._file.frame_params(frame))

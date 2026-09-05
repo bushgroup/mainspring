@@ -11,9 +11,10 @@ What it covers: the package imports, the `uimf` layer stays free of Qt, the modu
 layout is complete, the reporting stamp, the lab-directory resolution, the intensity
 codec against the format's own rules and against itself in both directions, and a
 synthetic file -- written through the schema a 2026 acquisition carries -- read back
-through the whole reader, rasterised, and put through `uimf-info --verify`. Where a
-real file is present, `--verify` runs on that too, which is the acceptance test the
-milestone is written in terms of (lab record, task 03).
+through the whole reader, rasterised, and put through `uimf-info --verify`; and, since
+task 04, the same synthetic file opened and painted by the viewer's own window,
+offscreen. Where a real file is present, `--verify` runs on that too, which is the
+acceptance test the milestone is written in terms of (lab record, task 03).
 
 Run:  uv run tools/check_public.py
 """
@@ -24,6 +25,7 @@ import os
 import sqlite3
 import sys
 import tempfile
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
@@ -274,16 +276,41 @@ def main() -> int:
     # --------------------------------------------------------------------------------
     section("the viewer layer")
     # Last, because importing it loads Qt -- which is exactly what the seam check above
-    # must not see.
+    # must not see. QT_QPA_PLATFORM is set before that import, offscreen, so this runs
+    # with no display -- this workstation has one, but CI and a bare clone may not.
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     for name in VIEWER_MODULES:
         check_true(
             f"mainspring.viewer.{name} imports",
             importlib.import_module(f"mainspring.viewer.{name}") is not None,
         )
-    from mainspring.viewer.app import main as viewer_main
 
-    check_raises("the viewer entry point is declared and says task 04 wrote nothing yet",
-                 NotImplementedError, lambda: viewer_main([]))
+    from PySide6.QtWidgets import QApplication
+
+    from mainspring.viewer.main_window import MainWindow
+
+    qt_app = QApplication.instance() or QApplication([])
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "viewer.uimf")
+        viewer_spec = write_synthetic_uimf(path, frames=1, scans=16, bins=4096)
+        window = MainWindow()
+        painted: list = []
+        window.frame_shown.connect(painted.append)
+        window.open_file(path)
+
+        deadline = time.time() + 5.0
+        while not painted and time.time() < deadline:
+            qt_app.processEvents()
+            time.sleep(0.01)
+        check_true("the viewer window loads a synthetic file and paints a frame",
+                   bool(painted))
+        if painted:
+            result = painted[0]
+            check_true("the painted image's extent matches the calibrated full range",
+                       (result.x_range, result.y_range) == result.axes.full_range)
+            check_true("the painted image conserves the frame's total ion current",
+                       abs(result.tic_in_view - viewer_spec.tic(1)) <= 1e-6 * max(1.0, viewer_spec.tic(1)))
+        window.close()
 
     # --------------------------------------------------------------------------------
     section("real files, if this clone has any")

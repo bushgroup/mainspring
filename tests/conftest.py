@@ -16,6 +16,13 @@ import pytest
 
 from synthetic import write_synthetic_uimf
 
+# Set before pytest-qt's `qapp` fixture builds a `QApplication` (lazily, on first use),
+# so the viewer tests run with no display -- this workstation has one, but CI and a
+# contributor's headless clone may not (lab record, task 04). A caller that wants a
+# real, visible window sets `QT_QPA_PLATFORM` before running pytest, which this leaves
+# alone.
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
 
 def real_uimf_paths() -> list[str]:
     """Every `.uimf` this clone can see: PNNL's excerpts, plus `MAINSPRING_SMOKE_UIMF`.

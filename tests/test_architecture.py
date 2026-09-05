@@ -62,13 +62,14 @@ def test_viewer_does_not_leak_into_the_uimf_layer():
 def test_unbuilt_functions_raise_rather_than_guess():
     """An unwritten body raises `NotImplementedError` and names the task that fills it.
 
-    The whole `uimf` layer is written now (lab record, task 03), so what is left to hold
-    honest is the viewer, which the tasks after it fill one module at a time.
+    The whole `uimf` layer is written now (lab record, task 03); `app.main` and the rest
+    of what task 04 built are no longer on this list -- `test_viewer_smoke.py` exercises
+    them instead. What is left to hold honest is what tasks 05 and 06 still owe.
     """
-    from mainspring.viewer import app, info_panel, settings, workers
+    from mainspring.viewer import heatmap, info_panel, settings, workers
 
     calls = (
-        lambda: app.main([]),
+        lambda: heatmap.UimfViewBox(),
         lambda: info_panel.per_push(0.0, 1, 8),
         lambda: settings.load_settings(),
         lambda: workers.RenderMailbox.put(object(), object()),
