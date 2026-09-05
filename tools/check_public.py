@@ -366,6 +366,72 @@ def main() -> int:
         check_true(f"uimf-info --verify passes on {os.path.basename(smoke)}",
                    _quiet(uimf_info_main, [smoke, "--verify"]) == 0)
 
+    # --------------------------------------------------------------------------------
+    section("the wheel (uv build, clean-venv install)")
+    # Unlike the in-process import check above, this builds the wheel and installs it
+    # in a subprocess venv, so import order here cannot leak Qt into this process. What
+    # it catches instead is a packaging mistake the in-process check cannot see: a file
+    # `hatchling` left out of the wheel, or a dependency the wheel declares wrong.
+    # Building and installing needs `uv` and a venv it can create; only that second
+    # part is reported SKIPPED rather than FAILED, since a sandboxed or offline machine
+    # can otherwise run every check above (lab record, task 07).
+    import shutil
+    import subprocess
+
+    uv = shutil.which("uv")
+    if uv is None:
+        skip("wheel build and clean-venv install", "uv is not on PATH")
+    else:
+        with tempfile.TemporaryDirectory() as wheel_tmp:
+            wheel_dir = os.path.join(wheel_tmp, "dist")
+            build = subprocess.run(
+                [uv, "build", "--wheel", "--out-dir", wheel_dir, ROOT],
+                capture_output=True, text=True,
+            )
+            if build.returncode != 0:
+                check_true("uv build produces a wheel", False)
+                print(build.stdout[-2000:])
+                print(build.stderr[-2000:])
+            else:
+                wheels = sorted(f for f in os.listdir(wheel_dir) if f.endswith(".whl"))
+                check_true(f"uv build produces exactly one wheel ({wheels})", len(wheels) == 1)
+
+                venv_dir = os.path.join(wheel_tmp, "venv")
+                venv_result = subprocess.run(
+                    [uv, "venv", venv_dir, "--no-project"], capture_output=True, text=True,
+                )
+                if venv_result.returncode != 0:
+                    skip("wheel clean-venv install",
+                         f"uv could not create a venv ({venv_result.stderr.strip()[:200]})")
+                elif wheels:
+                    venv_python = os.path.join(
+                        venv_dir,
+                        "Scripts" if os.name == "nt" else "bin",
+                        "python.exe" if os.name == "nt" else "python",
+                    )
+                    wheel_path = os.path.join(wheel_dir, wheels[0])
+                    install = subprocess.run(
+                        [uv, "pip", "install", "--python", venv_python, wheel_path],
+                        capture_output=True, text=True,
+                    )
+                    check_true("the wheel installs into a clean venv", install.returncode == 0)
+                    if install.returncode != 0:
+                        print(install.stdout[-2000:])
+                        print(install.stderr[-2000:])
+                    else:
+                        probe = subprocess.run(
+                            [venv_python, "-c",
+                             "import sys, mainspring.uimf\n"
+                             "qt = [m for m in sys.modules if m.startswith(('PySide6', 'pyqtgraph', 'shiboken6'))]\n"
+                             "print('QT:' + ','.join(qt) if qt else 'NOQT')"],
+                            capture_output=True, text=True,
+                        )
+                        check_true(
+                            "the installed wheel imports mainspring.uimf with no Qt loaded "
+                            f"({probe.stdout.strip() or probe.stderr.strip()[-200:]})",
+                            probe.returncode == 0 and probe.stdout.strip() == "NOQT",
+                        )
+
     print()
     print(f"{len(FAIL)} failed, {len(SKIPPED)} skipped")
     for name in FAIL:

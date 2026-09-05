@@ -12,6 +12,9 @@ build/
 *.egg-info/
 # Numba's on-disk JIT cache when it lands beside the source.
 __nb_cache__/
+# tools/warm_numba_cache.py's build-time output, bundled into the .exe by
+# packaging/mainspring.spec; regenerated before every build, never tracked.
+packaging/numba_cache_seed/
 # No acquisition ever enters the code repo: sample files live in the lab repo
 # (../mainspring-lab/data/), and the pre-commit hook refuses the path as well.
 *.uimf
