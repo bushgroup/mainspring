@@ -5,6 +5,6 @@ Nothing here is an acquisition. Sample `.uimf` files live in the private lab rep
 gitignored `external/pnnl-testdata/` by `tools/fetch_testdata.py`, and the tests that need
 either report themselves skipped when it is absent.
 
-Synthetic files are written at test time by the encoder in `mainspring.uimf.decode`
-through the real SQLite schema, so a fresh clone still exercises the decode path
-end to end with no data at all.
+Synthetic files are written at test time by `tests/synthetic.py`, which puts known points
+through the real SQLite schema and the real encoder in `mainspring.uimf.decode`, so a
+fresh clone still exercises the decode path end to end with no data at all.
