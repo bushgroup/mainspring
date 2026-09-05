@@ -1,0 +1,18 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.claude/
+CLAUDE.local.md
+# Fetched reference material and test data (tools/fetch_testdata.py); never tracked.
+external/
+# Build output.
+dist/
+build/
+*.egg-info/
+# Numba's on-disk JIT cache when it lands beside the source.
+__nb_cache__/
+# No acquisition ever enters the code repo: sample files live in the lab repo
+# (../mainspring-lab/data/), and the pre-commit hook refuses the path as well.
+*.uimf
+*.uimf-journal

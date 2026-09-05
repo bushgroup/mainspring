@@ -1,0 +1,20 @@
+cff-version: 1.2.0
+title: mainspring
+abstract: >-
+  Interactive viewer and Python reader for UIMF ion mobility mass spectrometry
+  files, the SQLite-based format written by SLIM instruments and by the Bush
+  lab's clockwork acquisition software.
+type: software
+message: >-
+  If mainspring contributed to a result, cite the software by this record.
+authors:
+  - family-names: Bush
+    given-names: Matthew F.
+    affiliation: University of Washington
+license: BSD-3-Clause
+repository-code: https://github.com/bushgroup/mainspring
+keywords:
+  - ion mobility
+  - mass spectrometry
+  - UIMF
+  - data visualization
