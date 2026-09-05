@@ -1,10 +1,13 @@
-"""The encoder: the half of the blob path that exists before the decoder does.
+"""The blob path, both directions: the encoder against the format, then the round trip.
 
 Only tests write UIMF files, so `encode_intensities` exists to make the synthetic
 fixture possible (lab record, task 02) and is checked here against the format as
-`notes/uimf-format.md` states it. The round trip against our own decoder is not here
-because our own decoder is not written yet; it arrives with the lab record's task 03,
-and `tools/check_public.py` is where it will be checked.
+`notes/uimf-format.md` states it -- by an independent walk of the stream, not by asking
+the encoder whether it agrees with itself.
+
+The decoder is then checked three ways: it undoes the encoder; its two backends produce
+identical arrays, on synthetic blobs and on every blob of every real file this clone
+has; and it refuses a malformed stream instead of returning a short one.
 """
 
 from __future__ import annotations
@@ -119,11 +122,153 @@ def test_lzf_control_bytes_stay_inside_the_format():
     assert i == len(blob), "the stream must end on a control-byte boundary"
 
 
-def test_the_decoder_says_it_is_not_written_yet():
-    for call in (
-        lambda: decode.decode_intensities(b"\x00"),
-        lambda: decode.lzf_decompress(b"\x00"),
-        lambda: decode.rlz_decode(np.array([1])),
-    ):
-        with pytest.raises(NotImplementedError, match="task 03"):
-            call()
+
+# --- the decoder --------------------------------------------------------------------
+
+
+def test_lzf_round_trips_every_degenerate_length():
+    for n in range(0, 40):
+        payload = bytes(range(n))
+        assert decode.lzf_decompress(decode.lzf_compress(payload)) == payload
+
+
+def test_lzf_round_trips_a_stream_full_of_back_references():
+    """Long runs of one byte are what force overlapping copies, the case a naive
+    slice-based decompressor gets wrong."""
+    payload = b"AB" * 5000 + bytes(range(256)) * 20
+    assert decode.lzf_decompress(decode.lzf_compress(payload)) == payload
+
+
+def test_rlz_decode_undoes_the_format_by_hand():
+    bins, values = decode.rlz_decode(np.array([7, 8, -3, 0, 9], dtype="<i4"))
+    assert bins.tolist() == [0, 1, 6]
+    assert values.tolist() == [7, 8, 9]
+
+
+def test_rlz_decode_agrees_with_the_independent_walk():
+    rng = np.random.default_rng(20260905)
+    bins = np.sort(rng.choice(114688, size=500, replace=False))
+    values = rng.integers(1, 100000, size=bins.size)
+    stream = decode.rlz_encode(bins, values)
+    want_bins, want_values = walk_rlz(stream.tolist())
+    got_bins, got_values = decode.rlz_decode(stream)
+    assert got_bins.tolist() == want_bins
+    assert got_values.tolist() == want_values
+
+
+def test_rlz_decode_bounds_the_result_to_the_bin_axis():
+    stream = decode.rlz_encode(np.array([1, 4000]), np.array([5, 6]))
+    bins, values = decode.rlz_decode(stream, bins=100)
+    assert bins.tolist() == [1] and values.tolist() == [5]
+
+
+@pytest.mark.parametrize("intensity_type", ["ADC", "TDC", "FOLDED"])
+def test_decode_intensities_undoes_encode_intensities(intensity_type):
+    dtype = decode.dtype_for(intensity_type)
+    rng = np.random.default_rng(3)
+    bins = np.sort(rng.choice(4096, size=200, replace=False))
+    values = np.asarray(rng.integers(1, 900, size=bins.size), dtype=dtype)
+    got_bins, got_values = decode.decode_intensities(
+        decode.encode_intensities(bins, values, dtype), dtype
+    )
+    assert got_bins.tolist() == bins.tolist()
+    assert got_values.tolist() == values.tolist()
+    assert got_values.dtype == dtype
+
+
+def test_decode_intensities_drops_the_explicit_zeros_the_writers_leave():
+    """The zeros advance the bin counter and are not points, which is the whole reason
+    `NonZeroCount` is an upper bound rather than a count (lab record, task 01)."""
+    blob = decode.encode_intensities(np.array([2, 3, 4]), np.array([5, 0, 6]))
+    bins, values = decode.decode_intensities(blob)
+    assert bins.tolist() == [2, 4]
+    assert values.tolist() == [5, 6]
+
+
+def test_decode_intensities_of_nothing_is_nothing():
+    bins, values = decode.decode_intensities(b"")
+    assert bins.size == 0 and values.size == 0
+
+
+def test_a_truncated_stream_raises_rather_than_returning_a_short_spectrum():
+    blob = decode.encode_intensities(np.arange(0, 4096, 3), np.full(1366, 7))
+    with pytest.raises(ValueError, match="LZF"):
+        decode.lzf_decompress(blob[:-1])
+
+
+def test_a_ragged_decompressed_length_is_refused():
+    with pytest.raises(ValueError, match="multiple"):
+        decode.decode_intensities(decode.lzf_compress(b"\x01\x02\x03"), "<i4")
+
+
+def test_an_unknown_backend_is_refused():
+    with pytest.raises(ValueError, match="backend"):
+        decode.decode_frame_blobs([b""], backend="fortran")
+
+
+# --- the two backends -----------------------------------------------------------------
+
+
+def synthetic_blobs(dtype="<i4", count=40):
+    rng = np.random.default_rng(11)
+    blobs = []
+    for i in range(count):
+        size = int(rng.integers(0, 300))
+        bins = np.sort(rng.choice(114688, size=size, replace=False))
+        values = np.asarray(rng.integers(0, 30000, size=size), dtype=dtype)
+        blobs.append(decode.encode_intensities(bins, values, dtype) if size else b"")
+    return blobs
+
+
+@pytest.mark.parametrize("intensity_type", ["ADC", "TDC", "FOLDED"])
+def test_the_two_backends_agree_on_synthetic_blobs(intensity_type):
+    dtype = decode.dtype_for(intensity_type)
+    blobs = synthetic_blobs(dtype)
+    pure = decode.decode_frame_blobs(blobs, dtype, 114688, backend="pure")
+    auto = decode.decode_frame_blobs(blobs, dtype, 114688, backend="auto")
+    for ours, theirs in zip(pure, auto):
+        assert np.array_equal(ours, theirs)
+        assert ours.dtype == theirs.dtype
+
+
+def test_decode_frame_blobs_counts_map_onto_the_concatenation():
+    blobs = synthetic_blobs()
+    counts, bins, values = decode.decode_frame_blobs(blobs, "<i4", 114688)
+    assert int(counts.sum()) == bins.size == values.size
+    start = 0
+    for blob, count in zip(blobs, counts.tolist()):
+        want_bins, want_values = decode.decode_intensities(blob)
+        assert bins[start:start + count].tolist() == want_bins.tolist()
+        assert values[start:start + count].tolist() == want_values.tolist()
+        start += count
+
+
+def test_a_frame_of_empty_blobs_decodes_to_nothing():
+    counts, bins, values = decode.decode_frame_blobs([b"", None, b""], "<i4")
+    assert counts.tolist() == [0, 0, 0]
+    assert bins.size == 0 and values.size == 0
+
+
+@pytest.mark.skipif(not decode.numba_available(), reason="numba is not installed")
+def test_the_two_backends_agree_blob_by_blob_on_a_real_file(real_uimf):
+    """The check the compiled path exists to earn: same answer as the reference, on
+    every blob a real writer produced, not on blobs we made up."""
+    import sqlite3
+
+    from mainspring.uimf.reader import UimfFile
+
+    dtype = UimfFile(real_uimf).global_params().dtype
+    conn = sqlite3.connect("file:" + real_uimf.replace("\\", "/") + "?mode=ro", uri=True)
+    try:
+        blobs = [row[0] for row in conn.execute(
+            "SELECT Intensities FROM Frame_Scans ORDER BY FrameNum, ScanNum LIMIT 4000")]
+    finally:
+        conn.close()
+    pure = decode.decode_frame_blobs(blobs, dtype, backend="pure")
+    fast = decode.decode_frame_blobs(blobs, dtype, backend="numba")
+    for ours, theirs in zip(pure, fast):
+        assert np.array_equal(ours, theirs)
+
+
+def test_numba_available_is_a_bool_either_way():
+    assert decode.numba_available() in (True, False)

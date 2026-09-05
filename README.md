@@ -12,9 +12,42 @@ instrument writes UIMF.
 
 ## Status
 
-Under construction. The reader layer, the viewer, and the Windows installer are being built
-in that order; the development record lives in a private companion repository. There is no
-release yet.
+Under construction. The reader layer is written and verified; the viewer and the Windows
+installer follow, in that order, and the development record lives in a private companion
+repository. There is no release yet.
+
+The reader reproduces every scan's stored total ion current and base peak intensity exactly
+on the four files it has been tested against, which were written by four different versions
+of PNNL's acquisition software between 2011 and 2026. `uimf-info` reports that comparison on
+any file:
+
+```
+uv run uimf-info FILE            # parameters, frames, per-frame scan counts
+uv run uimf-info FILE --verify   # decode every scan, compare with the stored columns
+uv run uimf-info FILE --bench    # time the decode and the rasteriser
+```
+
+A file whose blobs do not reproduce its own columns is a file mainspring does not
+understand, so `--verify` exits nonzero and names the frames that disagree. Note that
+`BPI_MZ` is compared as a tolerance rather than an equality, because the writers compute it
+inconsistently.
+
+## Reading a file from Python
+
+```python
+from mainspring.uimf import UimfFile
+
+uimf = UimfFile("run.uimf")
+frame = uimf.read_frame(uimf.frame_numbers()[0])
+bins, intensity = frame.scan(2482)      # one time-of-flight spectrum
+arrival = frame.tic()                   # total ion current per scan
+```
+
+A frame is held as the points that exist rather than as a dense array of scans by
+time-of-flight bins, which on the Bush lab's instrument would be 2.3 GB for a single frame.
+`mainspring.uimf` imports without Qt, so a pipeline that installs mainspring for the reader
+does not pull a graphical stack onto a machine that has no use for one. Installing the
+optional `fast` extra adds numba, which compiles the decoder and is worth a factor of 25.
 
 ## Requirements
 

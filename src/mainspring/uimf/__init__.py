@@ -23,10 +23,10 @@ lab record says why (lab record, task 02).
 from __future__ import annotations
 
 from .cache import FrameCache
-from .calib import Calibration
-from .decode import decode_intensities, encode_intensities
-from .frame import SparseFrame
-from .raster import DisplayAxes, RasterResult, rasterise
+from .calib import Calibration, arrival_time_ms, scan_axis_ms
+from .decode import decode_frame_blobs, decode_intensities, encode_intensities, numba_available
+from .frame import SparseFrame, sum_frames
+from .raster import DisplayAxes, RasterResult, profile, rasterise
 from .reader import FrameParams, GlobalParams, UimfFile
 
 __all__ = [
@@ -38,7 +38,13 @@ __all__ = [
     "RasterResult",
     "SparseFrame",
     "UimfFile",
+    "arrival_time_ms",
+    "decode_frame_blobs",
     "decode_intensities",
     "encode_intensities",
+    "numba_available",
+    "profile",
     "rasterise",
+    "scan_axis_ms",
+    "sum_frames",
 ]

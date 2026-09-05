@@ -17,24 +17,31 @@ LZF is Marc Lehmann's liblzf as PNNL's `CLZF2.cs` carries it: a control byte `c`
 `((c & 31) << 8 | next) + 1` behind the output cursor. Back-references may overlap the
 bytes they are still producing, so a copy is byte-at-a-time.
 
-**The encoder is here, implemented, and the decoder is not.** Only tests write UIMF
-files, so the encoder is small pure Python and stays that way; the decoder is on the
-viewer's critical path and arrives with its numba kernel and pure fallback in the lab
-record's task 03. Writing the encoder first is what lets a synthetic file exist before
-anything can read one.
+**The encoder is pure Python and stays that way** -- only tests write UIMF files, so it
+exists to make the synthetic fixture possible and nothing more. **The decoder has two
+backends that must agree byte for byte**: a vectorised numpy path that is the reference,
+and a numba kernel over a whole frame's blobs at once, which is what the viewer runs.
+Reading a frame is the one place where the difference between them decides whether a
+gesture feels immediate, so `decode_frame_blobs` is written frame-at-a-time rather than
+scan-at-a-time and numba is imported only when something asks for it.
 """
 
 from __future__ import annotations
 
+from typing import Sequence
+
 import numpy as np
 
 __all__ = [
+    "BACKENDS",
     "INTENSITY_DTYPES",
+    "decode_frame_blobs",
     "decode_intensities",
     "dtype_for",
     "encode_intensities",
     "lzf_compress",
     "lzf_decompress",
+    "numba_available",
     "rlz_decode",
     "rlz_encode",
 ]
@@ -220,29 +227,77 @@ def encode_intensities(
     return lzf_compress(stream.tobytes())
 
 
-# --- decoding (lab record, task 03) -----------------------------------------------
+# --- decoding: the pure path, which is also the reference ---------------------------
 
 
 def lzf_decompress(data: bytes, expected_size: int = 0) -> bytes:
     """Expand an LZF stream. `expected_size` is a hint, not a promise about the length.
 
-    Arrives with the numba kernel and its pure-Python fallback (lab record, task 03).
+    The pure-Python path, and the reference the numba kernel is tested against: a
+    `bytearray` and a byte loop, because LZF is sequential by construction -- a
+    back-reference may overlap the bytes it is still producing, so a copy cannot be
+    vectorised.
+
+    A stream that runs off its own end, or points behind the start of its output, is a
+    `ValueError` rather than a short result. A truncated spectrum decodes into plausible
+    nonsense, and plausible nonsense is the one outcome worth crashing over.
     """
-    raise NotImplementedError("LZF decompression arrives with the lab record's task 03")
+    del expected_size  # a hint this backend has no use for; see the docstring
+    out = bytearray()
+    i, n = 0, len(data)
+    while i < n:
+        ctrl = data[i]
+        i += 1
+        if ctrl < 32:
+            run = ctrl + 1
+            if i + run > n:
+                raise ValueError("LZF literal run runs past the end of the stream")
+            out += data[i:i + run]
+            i += run
+        else:
+            length = ctrl >> 5
+            if length == 7:
+                if i >= n:
+                    raise ValueError("LZF length-extension byte runs past the end")
+                length += data[i]
+                i += 1
+            if i >= n:
+                raise ValueError("LZF back-reference offset byte runs past the end")
+            offset = ((ctrl & 0x1F) << 8 | data[i]) + 1
+            i += 1
+            length += 2
+            ref = len(out) - offset
+            if ref < 0:
+                raise ValueError("LZF back-reference points before the start of the output")
+            if offset >= length:
+                out += out[ref:ref + length]
+            else:  # overlapping: the copy must see the bytes it is writing
+                for k in range(length):
+                    out.append(out[ref + k])
+    return bytes(out)
 
 
-def rlz_decode(
-    values: np.ndarray,
-    bins: int = 0,
-) -> tuple[np.ndarray, np.ndarray]:
+def rlz_decode(values: np.ndarray, bins: int = 0) -> tuple[np.ndarray, np.ndarray]:
     """Undo the run-length-zero stream into `(bin_index, intensity)`.
 
     Explicit zeros in the stream advance the bin counter and emit nothing, matching
     UIMF-Library. `bins` bounds the result; 0 means trust the stream.
 
-    Arrives with the lab record's task 03.
+    Vectorised rather than looped: the bin of an entry is the sum of its predecessors'
+    strides, which is one `cumsum`, and the points are then a boolean mask. The stride
+    is widened to int64 before it is negated, so that an int16 stream carrying -32768 --
+    which our own encoder never writes, but a file might -- cannot wrap around into a
+    forward skip.
     """
-    raise NotImplementedError("RLZ decoding arrives with the lab record's task 03")
+    values = np.asarray(values)
+    if values.size == 0:
+        return np.empty(0, dtype=np.int32), values
+    stride = np.where(values < 0, -values.astype(np.int64), np.int64(1))
+    position = np.cumsum(stride) - stride
+    keep = values > 0
+    if bins > 0:
+        keep &= position < bins
+    return position[keep].astype(np.int32), values[keep]
 
 
 def decode_intensities(
@@ -252,9 +307,270 @@ def decode_intensities(
 ) -> tuple[np.ndarray, np.ndarray]:
     """One stored blob to `(bin_index, intensity)`, the inverse of `encode_intensities`.
 
-    `count_hint` is the row's `NonZeroCount` -- an upper bound on the number of points,
-    so a safe preallocation size (lab record, task 01).
+    `count_hint` is the row's `NonZeroCount`, an upper bound on the number of points
+    (lab record, task 01). It is accepted for symmetry with the frame-at-a-time path and
+    used by neither: both decoders size their output from the stream itself, and a hint
+    that happens to be wrong must not be able to truncate a spectrum.
 
-    Arrives with the lab record's task 03.
+    One blob at a time is the convenient call, not the fast one. A frame is thousands of
+    small blobs and the per-call overhead dominates; the viewer uses `decode_frame_blobs`.
     """
-    raise NotImplementedError("blob decoding arrives with the lab record's task 03")
+    del count_hint  # see the docstring
+    dtype = np.dtype(dtype)
+    if not blob:
+        return np.empty(0, dtype=np.int32), np.empty(0, dtype=dtype)
+    raw = lzf_decompress(blob)
+    if len(raw) % dtype.itemsize:
+        raise ValueError(
+            f"decompressed length {len(raw)} is not a multiple of the {dtype} element size"
+        )
+    return rlz_decode(np.frombuffer(raw, dtype=dtype))
+
+
+# --- decoding: a whole frame in one pass, over the numba kernels --------------------
+
+BACKENDS = ("auto", "numba", "pure")
+"""What `decode_frame_blobs` may be told to use. `auto` is numba when it imports."""
+
+_KERNELS: object | None = None
+_KERNELS_LOOKED = False
+
+
+def numba_available() -> bool:
+    """Whether the compiled decode path is usable in this interpreter.
+
+    False is not an error: the pure path gives the same answer an order of magnitude
+    slower, which is the difference between a viewer and a script rather than between
+    right and wrong. `uimf-info --bench` prints which one it ran.
+    """
+    return _kernels() is not None
+
+
+def _kernels():
+    """Compile the kernels on first use, or return None when numba is not installed.
+
+    Lazy on purpose, and looked up at most once. `import numba` costs the better part of
+    a second, and `import mainspring.uimf` is on the path of every pipeline that only
+    wants a parameter out of a file.
+    """
+    global _KERNELS, _KERNELS_LOOKED
+    if _KERNELS_LOOKED:
+        return _KERNELS
+    _KERNELS_LOOKED = True
+    try:
+        from numba import njit
+    except Exception:  # noqa: BLE001 -- absent, broken and incompatible all mean "pure"
+        _KERNELS = None
+        return None
+    from types import SimpleNamespace
+
+    compiled = njit(cache=True, nogil=True)
+    _KERNELS = SimpleNamespace(
+        lzf_sizes=compiled(_k_lzf_sizes),
+        lzf_expand=compiled(_k_lzf_expand),
+        rlz_count=compiled(_k_rlz_count),
+        rlz_fill=compiled(_k_rlz_fill),
+    )
+    return _KERNELS
+
+
+# The four kernels below are module-level plain Python, so that numba can cache their
+# compilation against this file and so that they read as the format's rules rather than
+# as numba. They are not the pure fallback -- these loops would be glacial in the
+# interpreter, and the vectorised functions above are what runs without numba.
+
+
+def _k_lzf_sizes(src, src_off, sizes):
+    """Decompressed length of each blob, or -1 for a stream that runs off its own end."""
+    for i in range(sizes.size):
+        p = src_off[i]
+        end = src_off[i + 1]
+        produced = 0
+        broken = False
+        while p < end:
+            ctrl = src[p]
+            p += 1
+            if ctrl < 32:
+                run = ctrl + 1
+                if p + run > end:
+                    broken = True
+                    break
+                p += run
+                produced += run
+            else:
+                length = ctrl >> 5
+                if length == 7:
+                    if p >= end:
+                        broken = True
+                        break
+                    length += src[p]
+                    p += 1
+                if p >= end:
+                    broken = True
+                    break
+                p += 1
+                produced += length + 2
+        sizes[i] = -1 if broken else produced
+
+
+def _k_lzf_expand(src, src_off, dst, dst_off, status):
+    """Expand every blob into its own slice of `dst`; `status[i]` is 0, or 1 for a
+    back-reference that points behind the blob's output. Copies are byte-at-a-time
+    because a reference may overlap the bytes it is producing."""
+    for i in range(status.size):
+        p = src_off[i]
+        end = src_off[i + 1]
+        base = dst_off[i]
+        o = base
+        status[i] = 0
+        while p < end:
+            ctrl = src[p]
+            p += 1
+            if ctrl < 32:
+                for _ in range(ctrl + 1):
+                    dst[o] = src[p]
+                    o += 1
+                    p += 1
+            else:
+                length = ctrl >> 5
+                if length == 7:
+                    length += src[p]
+                    p += 1
+                offset = ((ctrl & 31) << 8 | src[p]) + 1
+                p += 1
+                length += 2
+                ref = o - offset
+                if ref < base:
+                    status[i] = 1
+                    break
+                for _ in range(length):
+                    dst[o] = dst[ref]
+                    o += 1
+                    ref += 1
+
+
+def _k_rlz_count(values, elem_off, bins, counts):
+    """Points per blob: the entries above zero that land inside the bin axis."""
+    for i in range(counts.size):
+        position = 0
+        found = 0
+        for j in range(elem_off[i], elem_off[i + 1]):
+            value = values[j]
+            if value < 0:
+                position += int(-value)
+            else:
+                if value > 0 and (bins <= 0 or position < bins):
+                    found += 1
+                position += 1
+        counts[i] = found
+
+
+def _k_rlz_fill(values, elem_off, bins, out_start, out_bins, out_intensity):
+    """The same walk again, writing blob `i`'s points from `out_start[i]`."""
+    for i in range(out_start.size - 1):
+        position = 0
+        o = out_start[i]
+        for j in range(elem_off[i], elem_off[i + 1]):
+            value = values[j]
+            if value < 0:
+                position += int(-value)
+            else:
+                if value > 0 and (bins <= 0 or position < bins):
+                    out_bins[o] = position
+                    out_intensity[o] = value
+                    o += 1
+                position += 1
+
+
+def decode_frame_blobs(
+    blobs: Sequence[bytes | None],
+    dtype: np.dtype | str = "<i4",
+    bins: int = 0,
+    backend: str = "auto",
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """A whole frame's blobs at once: `(counts, bin_index, intensity)`.
+
+    `counts[i]` is how many points blob `i` produced, which is the CSR row pointer
+    without a second walk; `bin_index` and `intensity` are every blob's points
+    concatenated in blob order. `bins` drops points past the frame's bin axis, 0 to
+    trust the stream.
+
+    A frame is thousands of small blobs, so the whole frame is one call and, with numba,
+    four passes over contiguous memory: measure the sizes, expand, count the points,
+    write them. Both backends return identical arrays -- `tests/test_decode.py` asserts
+    that blob by blob on every file the clone has.
+    """
+    if backend not in BACKENDS:
+        raise ValueError(f"unknown backend {backend!r}; one of {BACKENDS}")
+    dtype = np.dtype(dtype)
+    kernels = _kernels() if backend in ("auto", "numba") else None
+    if backend == "numba" and kernels is None:
+        raise RuntimeError("the numba backend was asked for and numba is not importable")
+
+    payloads = [b"" if blob is None else bytes(blob) for blob in blobs]
+    counts = np.zeros(len(payloads), dtype=np.int64)
+    empty = (counts, np.empty(0, dtype=np.int32), np.empty(0, dtype=dtype))
+    if not any(payloads):
+        return empty
+
+    if kernels is None:
+        piece_bins: list[np.ndarray] = []
+        piece_intensity: list[np.ndarray] = []
+        for i, payload in enumerate(payloads):
+            if not payload:
+                continue
+            raw = lzf_decompress(payload)
+            if len(raw) % dtype.itemsize:
+                raise ValueError(
+                    f"blob {i}: decompressed length {len(raw)} is not a multiple of the"
+                    f" {dtype} element size"
+                )
+            bin_index, intensity = rlz_decode(np.frombuffer(raw, dtype=dtype), bins)
+            counts[i] = bin_index.size
+            piece_bins.append(bin_index)
+            piece_intensity.append(intensity)
+        if not piece_bins:
+            return empty
+        return (
+            counts,
+            np.concatenate(piece_bins).astype(np.int32, copy=False),
+            np.concatenate(piece_intensity).astype(dtype, copy=False),
+        )
+
+    src = np.frombuffer(b"".join(payloads), dtype=np.uint8)
+    src_off = np.zeros(len(payloads) + 1, dtype=np.int64)
+    np.cumsum([len(p) for p in payloads], out=src_off[1:])
+
+    sizes = np.empty(len(payloads), dtype=np.int64)
+    kernels.lzf_sizes(src, src_off, sizes)
+    broken = np.flatnonzero(sizes < 0)
+    if broken.size:
+        raise ValueError(f"blob {int(broken[0])}: LZF stream runs past its own end")
+    ragged = np.flatnonzero(sizes % dtype.itemsize)
+    if ragged.size:
+        i = int(ragged[0])
+        raise ValueError(
+            f"blob {i}: decompressed length {int(sizes[i])} is not a multiple of the"
+            f" {dtype} element size"
+        )
+
+    dst_off = np.zeros(len(payloads) + 1, dtype=np.int64)
+    np.cumsum(sizes, out=dst_off[1:])
+    dst = np.empty(int(dst_off[-1]), dtype=np.uint8)
+    status = np.empty(len(payloads), dtype=np.int64)
+    kernels.lzf_expand(src, src_off, dst, dst_off, status)
+    stray = np.flatnonzero(status != 0)
+    if stray.size:
+        raise ValueError(
+            f"blob {int(stray[0])}: LZF back-reference points before the start of the output"
+        )
+
+    values = dst.view(dtype)
+    elem_off = dst_off // dtype.itemsize
+    kernels.rlz_count(values, elem_off, int(bins), counts)
+    out_start = np.zeros(len(payloads) + 1, dtype=np.int64)
+    np.cumsum(counts, out=out_start[1:])
+    out_bins = np.empty(int(out_start[-1]), dtype=np.int32)
+    out_intensity = np.empty(int(out_start[-1]), dtype=dtype)
+    kernels.rlz_fill(values, elem_off, int(bins), out_start, out_bins, out_intensity)
+    return counts, out_bins, out_intensity

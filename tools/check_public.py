@@ -7,12 +7,13 @@ absent, never as FAIL. What is left is still a real test of the decode path, bec
 synthetic UIMF file can be written from nothing: `tests/synthetic.py` puts a few hundred
 known points through the real SQLite schema and the real intensity encoder.
 
-What it covers today: the package imports, the `uimf` layer stays free of Qt, the
-module layout is complete, the reporting stamp, the lab-directory resolution, the
-intensity encoder against the format's own rules, and a synthetic file that is the
-schema a 2026 acquisition carries. The decoder is not written yet, so the round trip
-through it is asserted to *fail honestly*; it becomes a real comparison with the lab
-record's task 03, and the real-file checks light up with it.
+What it covers: the package imports, the `uimf` layer stays free of Qt, the module
+layout is complete, the reporting stamp, the lab-directory resolution, the intensity
+codec against the format's own rules and against itself in both directions, and a
+synthetic file -- written through the schema a 2026 acquisition carries -- read back
+through the whole reader, rasterised, and put through `uimf-info --verify`. Where a
+real file is present, `--verify` runs on that too, which is the acceptance test the
+milestone is written in terms of (lab record, task 03).
 
 Run:  uv run tools/check_public.py
 """
@@ -102,9 +103,9 @@ def main() -> int:
     )
 
     # --------------------------------------------------------------------------------
-    section("the intensity encoder")
-    # The decoder arrives with the lab record's task 03; the encoder is here now because
-    # the synthetic fixture cannot exist without it.
+    section("the intensity codec")
+    # Only tests write UIMF files, so the encoder exists to make the synthetic fixture
+    # possible; the decoder is what the viewer runs, and the two must be inverses.
     check_true("ADC is int32", decode.dtype_for("ADC") == np.dtype("<i4"))
     check_true("TDC is int16", decode.dtype_for("TDC") == np.dtype("<i2"))
     check_true("FOLDED is float32", decode.dtype_for("FOLDED") == np.dtype("<f4"))
@@ -130,6 +131,24 @@ def main() -> int:
     check_true("every LZF control byte is in range and points behind the cursor",
                _lzf_stream_is_valid(decode.lzf_compress(
                    decode.rlz_encode(np.arange(0, 4096, 3), np.full(1366, 7)).tobytes())))
+
+    check_true("LZF round trips every degenerate length",
+               all(decode.lzf_decompress(decode.lzf_compress(bytes(range(n)))) == bytes(range(n))
+                   for n in range(40)))
+    overlapping = b"AB" * 5000 + bytes(range(256)) * 20
+    check_true("LZF round trips the overlapping back-references a sparse spectrum makes",
+               decode.lzf_decompress(decode.lzf_compress(overlapping)) == overlapping)
+    check_true("run-length-zero decoding undoes the format by hand",
+               [a.tolist() for a in decode.rlz_decode(np.array([7, 8, -3, 0, 9], dtype="<i4"))]
+               == [[0, 1, 6], [7, 8, 9]])
+    check_true("an explicit zero decodes to no point, which is why NonZeroCount is a bound",
+               [a.tolist() for a in decode.decode_intensities(
+                   decode.encode_intensities(np.array([2, 3, 4]), np.array([5, 0, 6])))]
+               == [[2, 4], [5, 6]])
+    check_raises("a truncated LZF stream raises rather than returning a short spectrum",
+                 ValueError, lambda: decode.lzf_decompress(blob[:-1]))
+    check_true(f"the compiled decode path is {'available' if decode.numba_available() else 'absent, so the pure path runs'}",
+               decode.numba_available() in (True, False))
 
     # --------------------------------------------------------------------------------
     section("a synthetic UIMF file")
@@ -178,12 +197,61 @@ def main() -> int:
                    > sum(r.bin_index.size for r in spec.scan_rows.values()))
         check_true("every scan with signal has a blob", all(blob for *_, blob in rows))
 
-        # The round trip is the check this file exists for, and it cannot run yet.
-        first = spec.scan(1, spec.stored_scans(1)[0])
-        check_raises("decoding a blob says it is not written yet (lab record, task 03)",
-                     NotImplementedError,
-                     lambda: decode.decode_intensities(first.blob, spec.dtype))
-        skip("synthetic round trip", "the decoder arrives with the lab record's task 03")
+        # --- the round trip this file exists for: encode, store, read, decode, compare
+        from mainspring.uimf.cli import main as uimf_info_main
+        from mainspring.uimf.frame import sum_frames
+        from mainspring.uimf.raster import DisplayAxes, profile, rasterise
+        from mainspring.uimf.reader import UimfFile
+
+        uimf = UimfFile(path)
+        check_true("the reader prefers the modern parameter table (FrameType 0, not 1)",
+                   uimf.frame_params(1).frame_type == 0 and not uimf.is_legacy_only)
+        check_true("the reader finds the frames the parameters declare",
+                   uimf.frame_numbers() == list(spec.frames))
+
+        decoded = uimf.read_frame(1)
+        check_true(f"a frame reads back as its points ({len(decoded)} of them)",
+                   len(decoded) == spec.points(1))
+        check_true("the axis extent is the parameters, not the data",
+                   decoded.extent == (spec.scans, spec.bins))
+        check_true("every scan decodes to exactly the points that were written",
+                   all(decoded.scan(s)[0].tolist() == spec.scan(1, s).bin_index.tolist()
+                       and decoded.scan(s)[1].tolist() == spec.scan(1, s).intensity.tolist()
+                       for s in spec.stored_scans(1)))
+        check_true("a scan the writer never stored is an empty slice, not a missing key",
+                   decoded.scan(min(spec.stored_scans(1)) - 1)[0].size == 0)
+        stored = spec.stored_scans(1)
+        check_true("every stored TIC is reproduced exactly",
+                   decoded.tic()[stored].tolist() == [spec.scan(1, s).tic for s in stored])
+        check_true("every stored BPI is reproduced exactly",
+                   decoded.bpi()[stored].tolist() == [spec.scan(1, s).bpi for s in stored])
+        check_true("no scan decodes to more points than NonZeroCount allows",
+                   all(int(np.diff(decoded.scan_start)[s]) <= spec.scan(1, s).non_zero_count
+                       for s in stored))
+
+        params = uimf.frame_params(1)
+        axes = DisplayAxes.build(decoded, params.calibration(spec.bin_width_ns),
+                                 params.average_tof_length_ns)
+        check_true("the default axes are m/z against arrival time",
+                   (axes.x_label, axes.y_label) == ("m/z", "Arrival time (ms)"))
+        check_true("the m/z axis never decreases",
+                   bool((np.diff(axes.x_edges) >= 0).all()))
+        raster = rasterise(decoded, axes, *axes.full_range, 320, 240)
+        check_true(f"a full-range image conserves the frame total ({raster.tic_in_view:.0f})",
+                   raster.tic_in_view == spec.tic(1)
+                   and abs(float(raster.image.sum(dtype=np.float64)) - spec.tic(1))
+                   <= 1e-5 * spec.tic(1))
+        peak = rasterise(decoded, axes, *axes.full_range, 320, 240, aggregate="max")
+        check_true("a full-range max image finds the largest stored intensity",
+                   float(peak.image.max()) == float(decoded.intensity.max()))
+        check_true("a side-plot profile totals what the image over the same window does",
+                   abs(float(profile(decoded, axes, *axes.full_range, along="x")[1].sum())
+                       - raster.tic_in_view) <= 1e-6 * raster.tic_in_view)
+        check_true("summing the frames totals their separate TICs",
+                   abs(float(sum_frames([uimf.read_frame(n) for n in spec.frames]).tic().sum())
+                       - sum(spec.tic(n) for n in spec.frames)) < 1e-6)
+        check_true("uimf-info --verify passes on a file whose every column we computed",
+                   _quiet(uimf_info_main, [path, "--verify"]) == 0)
 
     # --------------------------------------------------------------------------------
     section("reporting and the lab checkout")
@@ -212,38 +280,55 @@ def main() -> int:
             f"mainspring.viewer.{name} imports",
             importlib.import_module(f"mainspring.viewer.{name}") is not None,
         )
-    from mainspring.uimf.cli import main as uimf_info_main
     from mainspring.viewer.app import main as viewer_main
 
     check_raises("the viewer entry point is declared and says task 04 wrote nothing yet",
                  NotImplementedError, lambda: viewer_main([]))
-    check_raises("the uimf-info entry point is declared and says task 03 wrote nothing yet",
-                 NotImplementedError, lambda: uimf_info_main([]))
 
     # --------------------------------------------------------------------------------
     section("real files, if this clone has any")
+    # `uimf-info --verify` decodes every scan of every frame and compares it with the
+    # file's own TIC, BPI and NonZeroCount columns. That is the whole acceptance test,
+    # so a clone with a real file runs it rather than a smaller imitation of it.
+    from mainspring.uimf.cli import main as uimf_info_main
+
     testdata = os.path.join(mainspring.EXTERNAL_DIR, "pnnl-testdata")
-    present = sorted(f for f in os.listdir(testdata) if f.endswith(".uimf")) \
-        if os.path.isdir(testdata) else []
+    present = sorted(os.path.join(testdata, f) for f in os.listdir(testdata)
+                     if f.endswith(".uimf")) if os.path.isdir(testdata) else []
     if not present:
-        skip("PNNL excerpt decode", "run tools/fetch_testdata.py; the check itself arrives"
-             " with the lab record's task 03")
-    else:
-        skip("PNNL excerpt decode", f"{len(present)} excerpts present; the check arrives"
-             " with the lab record's task 03")
+        skip("PNNL excerpt decode", "not fetched; run tools/fetch_testdata.py")
+    for excerpt in present:
+        check_true(f"uimf-info --verify passes on {os.path.basename(excerpt)}",
+                   _quiet(uimf_info_main, [excerpt, "--verify"]) == 0)
+
     smoke = os.environ.get("MAINSPRING_SMOKE_UIMF")
     if not smoke:
         skip("smoke-file decode", "MAINSPRING_SMOKE_UIMF not set")
     elif not os.path.isfile(smoke):
         check_true(f"MAINSPRING_SMOKE_UIMF names a file ({smoke})", False)
     else:
-        skip("smoke-file decode", "the check arrives with the lab record's task 03")
+        check_true(f"uimf-info --verify passes on {os.path.basename(smoke)}",
+                   _quiet(uimf_info_main, [smoke, "--verify"]) == 0)
 
     print()
     print(f"{len(FAIL)} failed, {len(SKIPPED)} skipped")
     for name in FAIL:
         print("  FAIL", name)
     return 1 if FAIL else 0
+
+
+def _quiet(call, argv) -> int:
+    """Run a `main(argv)` with its output swallowed, returning its exit status.
+
+    `uimf-info --verify` prints a table per frame, and a self-check that buried its own
+    result under twenty-five of them would not be read.
+    """
+    import contextlib
+    import io
+
+    sink = io.StringIO()
+    with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
+        return call(argv)
 
 
 def _lzf_stream_is_valid(blob: bytes) -> bool:

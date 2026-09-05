@@ -51,15 +51,35 @@ class FrameCache:
         return key in self._entries
 
     def get(self, path: str, frame: int) -> SparseFrame | None:
-        """The cached frame, marking it most recently used, or None. Arrives with task 03."""
-        raise NotImplementedError("the frame cache arrives with the lab record's task 03")
+        """The cached frame, marking it most recently used, or None.
+
+        Recency is the insertion order of the backing dict: a hit is popped and put
+        back, so the least recently used entry is always the first one.
+        """
+        key = (path, int(frame))
+        hit = self._entries.pop(key, None)
+        if hit is not None:
+            self._entries[key] = hit
+        return hit
 
     def put(self, path: str, frame: SparseFrame) -> bool:
-        """Cache a frame, evicting to fit; False if it was refused or too large for the budget.
+        """Cache a frame, evicting to fit; False if it was refused or is too large.
 
-        Arrives with the lab record's task 03.
+        Refused means provisional: a frame read from a file the instrument may still be
+        writing is incomplete, and a cached copy of it would stay wrong for as long as
+        the cache held it (lab record, task 08). A frame larger than the whole budget is
+        not cached either, rather than evicting everything else to fail anyway.
         """
-        raise NotImplementedError("the frame cache arrives with the lab record's task 03")
+        if frame.provisional:
+            return False
+        if frame.nbytes > self.budget_bytes:
+            return False
+        key = (path, int(frame.frame))
+        self._entries.pop(key, None)
+        self._entries[key] = frame
+        while self.nbytes > self.budget_bytes and len(self._entries) > 1:
+            self._entries.pop(next(iter(self._entries)))
+        return True
 
     def clear(self) -> None:
         """Drop everything. Cheap, and the right response to a file changing under us."""

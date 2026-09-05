@@ -25,6 +25,7 @@ per-frame calibration cost nothing in the common case where every frame shares o
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 
 import numpy as np
 
@@ -45,32 +46,82 @@ class Calibration:
     bin_width_ns: float
     done: bool = True
 
+
+    @property
+    def usable(self) -> bool:
+        """Whether this calibration can produce an m/z axis at all.
+
+        A zero or negative slope -- an uncalibrated frame, or one whose writer left the
+        parameters empty -- would map every bin to the same m/z, which is not an axis.
+        Callers switch to raw bin units rather than drawing a plausible one; `done` is
+        the file's own opinion, this is whether the arithmetic works.
+        """
+        return self.slope > 0.0 and self.bin_width_ns > 0.0
+
     def mz(self, bin_index: np.ndarray | float) -> np.ndarray | float:
-        """m/z at a bin index, fractional bins included. Arrives with task 03."""
-        raise NotImplementedError("m/z calibration arrives with the lab record's task 03")
+        """m/z at a bin index, fractional bins included.
+
+        Bins below `T0` are before the calibration's own time origin -- the first 77 of
+        them on our sample -- where the parabola turns back up and m/z would decrease
+        with increasing bin. Time is clamped at `T0` there, so those bins come out at
+        m/z 0 rather than at a mirror image of the low mass range. Nothing is measured
+        that early; what matters is that the axis never decreases (lab record, task 01).
+        """
+        time_us = np.asarray(bin_index, dtype=np.float64) * self.bin_width_ns / 1000.0
+        return (self.slope * np.maximum(time_us - self.intercept, 0.0)) ** 2
 
     def bin_of(self, mz: np.ndarray | float) -> np.ndarray | float:
-        """The fractional bin index at an m/z: the inverse of `mz`. Arrives with task 03."""
-        raise NotImplementedError("m/z calibration arrives with the lab record's task 03")
+        """The fractional bin index at an m/z: the inverse of `mz`.
+
+        Exact only above the m/z the intercept sits at, since `mz` is flat below it.
+        """
+        if not self.usable:
+            raise ValueError(f"cannot invert an unusable calibration: {self!r}")
+        mz = np.asarray(mz, dtype=np.float64)
+        return (np.sqrt(np.maximum(mz, 0.0)) / self.slope + self.intercept) * 1000.0 / self.bin_width_ns
 
     def mz_axis(self, bins: int) -> np.ndarray:
         """`bin -> m/z` for bin edges `0 .. bins`, float64, length `bins + 1`.
 
         Edges rather than centres: the heatmap maps a pixel to a half-open bin range,
-        and an edge table makes that a search rather than an off-by-half. Arrives with
-        the lab record's task 03.
+        and an edge table makes that a search rather than an off-by-half.
+
+        The result is cached on `(K, T0, BinWidth, bins)` and handed out read-only. It
+        is a 900 KB array on a SLIMPHONY file and every render wants the same one, so a
+        caller that mutated it would corrupt every later frame.
         """
-        raise NotImplementedError("m/z calibration arrives with the lab record's task 03")
+        return _mz_axis(self.slope, self.intercept, self.bin_width_ns, int(bins))
+
+
+@lru_cache(maxsize=8)
+def _mz_axis(slope: float, intercept: float, bin_width_ns: float, bins: int) -> np.ndarray:
+    if bins < 0:
+        raise ValueError(f"bins must not be negative, got {bins}")
+    edges = Calibration(slope, intercept, bin_width_ns).mz(np.arange(bins + 1, dtype=np.float64))
+    edges.flags.writeable = False
+    return edges
 
 
 def arrival_time_ms(scan: np.ndarray | float, average_tof_length_ns: float) -> np.ndarray | float:
-    """Arrival time of a scan, in milliseconds. Arrives with the lab record's task 03."""
-    raise NotImplementedError("the arrival-time axis arrives with the lab record's task 03")
+    """Arrival time of a scan, in milliseconds.
+
+    `t_ms = scan * AverageTOFLength_ns * 1e-6`, straight from the frame parameters: one
+    scan is one TOF trigger interval, and the drift time of a scan is how many of them
+    have gone by (lab record, task 01).
+    """
+    return np.asarray(scan, dtype=np.float64) * average_tof_length_ns * 1e-6
 
 
+@lru_cache(maxsize=8)
 def scan_axis_ms(scans: int, average_tof_length_ns: float) -> np.ndarray:
     """`scan -> ms` for scan edges `0 .. scans`, the arrival-time twin of `mz_axis`.
 
-    Arrives with the lab record's task 03.
+    Cached and read-only for the same reason, though this one is small: the pair of
+    tables is what a `DisplayAxes` is made of, and they should behave alike.
     """
-    raise NotImplementedError("the arrival-time axis arrives with the lab record's task 03")
+    if scans < 0:
+        raise ValueError(f"scans must not be negative, got {scans}")
+    edges = np.asarray(arrival_time_ms(np.arange(scans + 1, dtype=np.float64),
+                                       average_tof_length_ns))
+    edges.flags.writeable = False
+    return edges

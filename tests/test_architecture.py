@@ -9,6 +9,7 @@ function that has not been written yet says so instead of returning something pl
 from __future__ import annotations
 
 import importlib
+import os
 import subprocess
 import sys
 
@@ -59,16 +60,31 @@ def test_viewer_does_not_leak_into_the_uimf_layer():
 
 
 def test_unbuilt_functions_raise_rather_than_guess():
-    """An unwritten body raises `NotImplementedError` and names the task that fills it."""
-    from mainspring.uimf import calib, decode, reader
+    """An unwritten body raises `NotImplementedError` and names the task that fills it.
+
+    The whole `uimf` layer is written now (lab record, task 03), so what is left to hold
+    honest is the viewer, which the tasks after it fill one module at a time.
+    """
+    from mainspring.viewer import app, info_panel, settings, workers
 
     calls = (
-        lambda: decode.decode_intensities(b""),
-        lambda: decode.lzf_decompress(b""),
-        lambda: calib.Calibration(1.0, 0.0, 1.0).mz(0),
-        lambda: calib.arrival_time_ms(0, 1.0),
-        lambda: reader.UimfFile.global_params(object()),
+        lambda: app.main([]),
+        lambda: info_panel.per_push(0.0, 1, 8),
+        lambda: settings.load_settings(),
+        lambda: workers.RenderMailbox.put(object(), object()),
     )
     for call in calls:
         with pytest.raises(NotImplementedError, match="task"):
             call()
+
+
+def test_the_data_layer_no_longer_has_stubs_in_it():
+    """Task 03 filled `uimf` end to end; a `NotImplementedError` left behind there would
+    be a module the reader cannot actually use."""
+    import mainspring.uimf
+
+    directory = os.path.dirname(mainspring.uimf.__file__)
+    for name in UIMF_MODULES:
+        with open(os.path.join(directory, f"{name}.py"), encoding="utf-8") as handle:
+            source = handle.read()
+        assert "raise NotImplementedError" not in source, name
