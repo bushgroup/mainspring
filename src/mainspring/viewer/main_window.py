@@ -59,7 +59,12 @@ from .settings import COLOUR_SCALES, ViewerSettings, load_settings, save_setting
 from .side_plots import SidePlots
 from .workers import LoadWorker, RenderMailbox, RenderRequest, RenderWorker
 
-__all__ = ["MainWindow"]
+__all__ = ["APP_TITLE", "MainWindow"]
+
+APP_TITLE = "mainspring"
+"""The window title with no file open. With one open it is `"<file name> -- mainspring"`,
+file first, the way Windows names a document window, so that two viewers on the taskbar
+can be told apart by what they show rather than by what they are."""
 
 # The sample's own frame-type convention (`notes/uimf-format.md`), extended past what
 # our one sample uses: 0 and 1 both mean MS1 across the modern and legacy tables
@@ -84,7 +89,7 @@ class MainWindow(QMainWindow):
     def __init__(self, settings: "ViewerSettings | None" = None) -> None:
         super().__init__()
         self.settings = settings or load_settings()
-        self.setWindowTitle("mainspring")
+        self.setWindowTitle(APP_TITLE)
         if self.settings.window_geometry:
             self.restoreGeometry(QByteArray(self.settings.window_geometry))
         else:
@@ -103,6 +108,7 @@ class MainWindow(QMainWindow):
         self._serial = 0
         self._open_started = 0.0
         self._opening = False
+        self._path: str | None = None
         self._frame_message = ""
         self._frame_numbers: list[int] = []
         self._frame_types: dict[int, int] = {}
@@ -260,6 +266,7 @@ class MainWindow(QMainWindow):
         signals arrive.
         """
         self._open_started = time.perf_counter()
+        self._path = path
         self.statusBar().showMessage(f"Opening {os.path.basename(path)}...")
         self._busy.show()
         self._opening = True
@@ -316,6 +323,9 @@ class MainWindow(QMainWindow):
         self._global = global_params
         self._frame_numbers = list(frame_numbers)
         self._frame_types = dict(frame_types)
+        # Named as soon as the file has opened, frames or no frames: an empty file is
+        # still the file on screen.
+        self.setWindowTitle(f"{os.path.basename(self._path or '')} — {APP_TITLE}")
         self._populate_type_filter()
         self._active_frame_numbers = list(self._frame_numbers)
         self._frame_spin.blockSignals(True)
@@ -381,6 +391,10 @@ class MainWindow(QMainWindow):
 
     def _on_failed(self, message: str) -> None:
         self._busy.hide()
+        if self._opening:
+            # The open itself failed: nothing is on screen for the title to name.
+            self._path = None
+            self.setWindowTitle(APP_TITLE)
         self._opening = False
         if self._sum_dialog is not None:
             self._sum_dialog.close()
