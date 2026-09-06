@@ -87,6 +87,15 @@ def test_arrival_time_is_scans_times_the_tof_length():
     assert (np.diff(edges) > 0).all()
 
 
+def test_scan_axis_ms_subtracts_the_t0_offset_and_may_go_negative():
+    """The viewer's own offset, not a file-native calibration term (module docstring)
+    -- so unlike `mz_axis` there is no floor clamping the result to zero."""
+    plain = scan_axis_ms(5000, 129003.607843137)
+    shifted = scan_axis_ms(5000, 129003.607843137, 100.0)
+    assert np.array_equal(shifted, plain - 100.0)
+    assert shifted[0] == pytest.approx(-100.0)
+
+
 # --- the axis tables as a seam ------------------------------------------------------
 
 
@@ -110,6 +119,25 @@ def test_raw_units_and_swapping_only_re_assign_the_tables(synthetic_uimf):
     assert np.array_equal(swapped.bin_edges, plain.bin_edges)
     assert raw.x_label == "TOF bin" and raw.y_label == "Scan"
     assert raw.x_edges.tolist() == list(range(frame.bins + 1))
+
+
+def test_t0_offset_ms_shifts_arrival_time_but_not_raw_scan(synthetic_uimf):
+    uimf = UimfFile(synthetic_uimf.path)
+    params = uimf.frame_params(1)
+    frame = uimf.read_frame(1)
+    calibration = params.calibration(synthetic_uimf.bin_width_ns)
+    plain = DisplayAxes.build(frame, calibration, params.average_tof_length_ns)
+    offset = DisplayAxes.build(
+        frame, calibration, params.average_tof_length_ns, t0_offset_ms=100.0
+    )
+    raw = DisplayAxes.build(
+        frame, calibration, params.average_tof_length_ns, raw_units=True, t0_offset_ms=100.0
+    )
+
+    assert np.array_equal(offset.y_edges, plain.y_edges - 100.0)
+    assert np.array_equal(offset.x_edges, plain.x_edges)  # the m/z axis is untouched
+    # Raw units show a scan index, not a time -- the offset does not apply to it.
+    assert raw.y_edges.tolist() == list(range(frame.scans + 1))
 
 
 def test_an_uncalibrated_frame_falls_back_to_bins(synthetic_uimf):

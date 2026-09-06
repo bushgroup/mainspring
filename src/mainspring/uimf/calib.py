@@ -113,8 +113,14 @@ def arrival_time_ms(scan: np.ndarray | float, average_tof_length_ns: float) -> n
 
 
 @lru_cache(maxsize=8)
-def scan_axis_ms(scans: int, average_tof_length_ns: float) -> np.ndarray:
+def scan_axis_ms(scans: int, average_tof_length_ns: float, t0_offset_ms: float = 0.0) -> np.ndarray:
     """`scan -> ms` for scan edges `0 .. scans`, the arrival-time twin of `mz_axis`.
+
+    `t0_offset_ms` is the viewer's own "Arrival offset" control, subtracted from every
+    edge -- not a file-native calibration term, and not the same `T0` as `Calibration`'s
+    (that one is the m/z axis's `CalibrationIntercept`, and this module does not even
+    apply it; see the module docstring). Unlike `mz_axis`, there is no physical floor to
+    clamp to, so a large offset is free to carry the axis negative.
 
     Cached and read-only for the same reason, though this one is small: the pair of
     tables is what a `DisplayAxes` is made of, and they should behave alike.
@@ -122,6 +128,6 @@ def scan_axis_ms(scans: int, average_tof_length_ns: float) -> np.ndarray:
     if scans < 0:
         raise ValueError(f"scans must not be negative, got {scans}")
     edges = np.asarray(arrival_time_ms(np.arange(scans + 1, dtype=np.float64),
-                                       average_tof_length_ns))
+                                       average_tof_length_ns)) - t0_offset_ms
     edges.flags.writeable = False
     return edges

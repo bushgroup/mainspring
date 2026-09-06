@@ -90,6 +90,7 @@ class DisplayAxes:
         average_tof_length_ns: float,
         raw_units: bool = False,
         swapped: bool = False,
+        t0_offset_ms: float = 0.0,
     ) -> "DisplayAxes":
         """The default m/z-vs-arrival-time axes, or their raw and swapped variants.
 
@@ -98,6 +99,10 @@ class DisplayAxes:
         missing -- because a plausible-looking m/z axis over uncalibrated data is worse
         than an honest bin axis, and `Calibration.done` is what the info panel reports.
         The same applies to arrival time when `AverageTOFLength` is absent.
+
+        `t0_offset_ms` shifts the arrival-time axis alone, and only where it is a time
+        at all: raw units show "Scan", not milliseconds, so it is ignored there rather
+        than shifting an index.
         """
         if raw_units or not calibration.usable:
             bin_edges = np.arange(frame.bins + 1, dtype=np.float64)
@@ -109,7 +114,7 @@ class DisplayAxes:
             scan_edges = np.arange(frame.scans + 1, dtype=np.float64)
             scan_label = "Scan"
         else:
-            scan_edges = scan_axis_ms(frame.scans, float(average_tof_length_ns))
+            scan_edges = scan_axis_ms(frame.scans, float(average_tof_length_ns), float(t0_offset_ms))
             scan_label = "Arrival time (ms)"
         if swapped:
             return cls(scan_edges, bin_edges, scan_label, bin_label, True)

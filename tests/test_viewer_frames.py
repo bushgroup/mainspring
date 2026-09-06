@@ -111,6 +111,23 @@ def test_colour_scale_compresses_the_levels_but_never_the_raw_result(qtbot):
     assert result.max_intensity == pytest.approx(15.0)
 
 
+def test_axis_labels_are_bold_and_keep_a_visible_colour(qtbot):
+    """Regression: `AxisItem.setLabel(**style)` replaces `labelStyle` wholesale rather
+    than merging into it, so passing `font-weight` alone silently dropped the colour
+    `AxisItem.__init__`'s own `setTextPen` had put there -- the label was still present
+    and bold, just rendered in Qt's rich-text default (black) against this viewer's
+    black background. Neither a bounding-rect check nor the tooltip walk would catch an
+    invisible-but-present label, so this asserts on the style dict directly."""
+    view = HeatmapView()
+    qtbot.addWidget(view)
+    view.set_image(_fake_result(np.array([[0.0, 1.0]])))
+
+    for name in ("bottom", "left"):
+        style = view._plot.getAxis(name).labelStyle
+        assert style.get("font-weight") == "bold"
+        assert style.get("color")
+
+
 def test_set_levels_holds_the_colour_bar_across_a_new_image(qtbot):
     view = HeatmapView()
     qtbot.addWidget(view)
@@ -308,6 +325,37 @@ def test_swap_axes_preserves_the_visible_region(opened_window, qtbot):
     assert new_y_range == pytest.approx(quarter_x, abs=1e-6)
 
 
+def test_arrival_offset_shifts_the_displayed_range_and_is_remembered(opened_window, qtbot):
+    window = opened_window
+    axes = window._current_axes
+    assert not axes.swapped  # y is the arrival-time axis in the default orientation
+    (x0, x1), (y0, y1) = window.heatmap.view_range()
+
+    with qtbot.waitSignal(window.frame_shown, timeout=5000):
+        window._arrival_offset_box.setValue(100.0)
+
+    assert window.settings.arrival_offset_ms == pytest.approx(100.0)
+    assert window._current_axes.y_label == "Arrival time (ms)"
+    new_x_range, new_y_range = window.heatmap.view_range()
+    # x (m/z) is untouched; y (arrival time) has moved down by exactly the offset.
+    assert new_x_range == pytest.approx((x0, x1), abs=1e-6)
+    assert new_y_range == pytest.approx((y0 - 100.0, y1 - 100.0), abs=1e-6)
+
+
+def test_a_stored_arrival_offset_starts_applied(qtbot, synthetic_uimf):
+    from mainspring.viewer.settings import ViewerSettings
+
+    window = MainWindow(ViewerSettings(arrival_offset_ms=50.0))
+    qtbot.addWidget(window)
+    window.show()
+    assert window._arrival_offset_box.value() == pytest.approx(50.0)
+
+    with qtbot.waitSignal(window.frame_shown, timeout=5000):
+        window.open_file(synthetic_uimf.path)
+
+    assert window._current_axes.y_edges[0] == pytest.approx(-50.0)
+
+
 def test_frame_type_filter_narrows_the_active_frames(qtbot):
     window = MainWindow()
     qtbot.addWidget(window)
@@ -388,3 +436,37 @@ def test_a_stored_hidden_info_panel_starts_hidden(qtbot):
 
     toolbar = window.findChild(QToolBar, "view_toolbar")
     assert window._info_action in toolbar.actions()
+
+
+# --- the View > Colour map menu ---------------------------------------------------------
+
+def _colour_map_menu(window):
+    view_menu = next(a.menu() for a in window.menuBar().actions() if a.text() == "&View")
+    return next(a.menu() for a in view_menu.actions() if a.text() == "Colour map")
+
+
+def test_colour_map_menu_offers_the_four_maps_with_the_stored_one_ticked(qtbot):
+    from mainspring.viewer.settings import COLOUR_MAPS, ViewerSettings
+
+    window = MainWindow(ViewerSettings(colour_map="inferno"))
+    qtbot.addWidget(window)
+    window.show()
+
+    actions = _colour_map_menu(window).actions()
+    assert [a.text() for a in actions] == [name.capitalize() for name in COLOUR_MAPS]
+    checked = [a.text() for a in actions if a.isChecked()]
+    assert checked == ["Inferno"]
+
+
+def test_picking_a_colour_map_ticks_it_alone_and_is_remembered(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+
+    plasma = next(a for a in _colour_map_menu(window).actions() if a.text() == "Plasma")
+    plasma.trigger()
+
+    assert plasma.isChecked()
+    assert [a.isChecked() for a in _colour_map_menu(window).actions()].count(True) == 1
+    assert window.settings.colour_map == "plasma"
+    assert window.heatmap._colour_bar.colorMap().name == "plasma"

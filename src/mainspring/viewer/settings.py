@@ -23,6 +23,7 @@ that need one.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, replace
 
 from PySide6.QtCore import QByteArray, QSettings
@@ -31,6 +32,7 @@ from ..uimf.raster import AGGREGATES
 
 __all__ = [
     "APPLICATION",
+    "COLOUR_MAPS",
     "COLOUR_SCALES",
     "ORGANISATION",
     "ViewerSettings",
@@ -47,6 +49,11 @@ COLOUR_SCALES = ("linear", "log", "sqrt")
 """How the image maps intensity to colour. Linear is the honest default; log and sqrt
 compress a spectrum's dynamic range for a view dominated by one bright peak. Purely a
 display transform -- the readouts always quote the untransformed `RasterResult`."""
+
+COLOUR_MAPS = ("viridis", "plasma", "inferno", "magma")
+"""The View > Colour map choices, all perceptually uniform so a gradient never implies
+a step in intensity that is not there -- unlike jet or a stock rainbow map, which the
+viewer deliberately does not offer."""
 
 
 @dataclass
@@ -66,6 +73,7 @@ class ViewerSettings:
     detector_bits: int = 8
     colour_map: str = "viridis"
     cache_budget_mb: int = 512
+    arrival_offset_ms: float = 0.0
     last_directory: str = ""
     window_geometry: bytes = b""
 
@@ -84,8 +92,9 @@ class ViewerSettings:
             aggregate=self.aggregate if self.aggregate in AGGREGATES else "sum",
             colour_scale=self.colour_scale if self.colour_scale in COLOUR_SCALES else "linear",
             detector_bits=detector_bits,
-            colour_map=self.colour_map or "viridis",
+            colour_map=self.colour_map if self.colour_map in COLOUR_MAPS else "viridis",
             cache_budget_mb=cache_budget_mb,
+            arrival_offset_ms=self.arrival_offset_ms if math.isfinite(self.arrival_offset_ms) else 0.0,
             last_directory=self.last_directory or "",
         )
 
@@ -128,6 +137,8 @@ def load_settings() -> ViewerSettings:
         colour_map=str(store.value("colour_map", defaults.colour_map)),
         cache_budget_mb=_as_int(store.value("cache_budget_mb", defaults.cache_budget_mb),
                                  defaults.cache_budget_mb),
+        arrival_offset_ms=_as_float(store.value("arrival_offset_ms", defaults.arrival_offset_ms),
+                                     defaults.arrival_offset_ms),
         last_directory=str(store.value("last_directory", defaults.last_directory)),
         window_geometry=_as_bytes(store.value("window_geometry", defaults.window_geometry)),
     )
@@ -152,6 +163,7 @@ def save_settings(settings: ViewerSettings) -> None:
     store.setValue("detector_bits", settings.detector_bits)
     store.setValue("colour_map", settings.colour_map)
     store.setValue("cache_budget_mb", settings.cache_budget_mb)
+    store.setValue("arrival_offset_ms", settings.arrival_offset_ms)
     store.setValue("last_directory", settings.last_directory)
     store.setValue("window_geometry", QByteArray(settings.window_geometry))
     store.sync()
@@ -172,6 +184,14 @@ def _as_int(value: object, default: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _as_float(value: object, default: float) -> float:
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return default
+    return result if math.isfinite(result) else default
 
 
 def _as_bytes(value: object) -> bytes:

@@ -55,7 +55,8 @@ intensity axis rescales with every gesture.
 **The colour bar** is the strip in the far right column of the plot area. It reads in the units
 the `Colour` control selects, so on the `Linear` setting its numbers are stored intensities and
 on `Log` or `Sqrt` they are the transformed values. Drag either handle to set the limits by
-hand.
+hand. Its gradient is one of four perceptually uniform colour maps -- `Viridis`, `Plasma`,
+`Inferno`, `Magma` -- chosen from `View > Colour map`.
 
 **The info panel** is docked on the right. `Ctrl+I` hides and shows it, and it can be dragged
 out of the window and floated.
@@ -85,8 +86,9 @@ because a wrong zoom costs one keystroke to undo.
 | `Home` | Reset the view to the frame's full range |
 | `Ctrl+I` | Show or hide the info panel |
 
-All three are on the menu bar as well: `Open` under `File`, `Reset view` and `Info` under
-`View`. There is no context menu on the heat map, because the right button is a zoom gesture.
+All three are on the menu bar as well: `Open` under `File`, `Reset view`, `Info` and
+`Colour map` under `View`. There is no context menu on the heat map, because the right button
+is a zoom gesture.
 
 Zooming and panning are both clamped to the frame, so a gesture cannot leave it, and zooming in
 stops when the visible range is two source elements across. On a SLIMPHONY frame that floor is

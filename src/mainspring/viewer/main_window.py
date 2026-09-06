@@ -39,8 +39,10 @@ import time
 
 import numpy as np
 from PySide6.QtCore import Qt, QByteArray, Signal
+from PySide6.QtGui import QActionGroup
 from PySide6.QtWidgets import (
     QComboBox,
+    QDoubleSpinBox,
     QFileDialog,
     QLabel,
     QMainWindow,
@@ -55,7 +57,7 @@ from ..uimf.raster import AGGREGATES
 from .controls import add_labelled, describe, make_action
 from .heatmap import HeatmapView, pixel_of
 from .info_panel import InfoPanel
-from .settings import COLOUR_SCALES, ViewerSettings, load_settings, save_settings
+from .settings import COLOUR_MAPS, COLOUR_SCALES, ViewerSettings, load_settings, save_settings
 from .side_plots import SidePlots
 from .workers import LoadWorker, RenderMailbox, RenderRequest, RenderWorker
 
@@ -192,6 +194,30 @@ class MainWindow(QMainWindow):
         view_menu = self.menuBar().addMenu("&View")
         view_menu.addAction(self.reset_action)
         view_menu.addAction(self._info_action)
+        self._build_colour_map_menu(view_menu)
+
+    def _build_colour_map_menu(self, view_menu: "object") -> None:
+        """A curated four-map choice, radio-style, in its own `View` submenu.
+
+        pyqtgraph's `ColorBarItem` ships a right-click menu of its own listing every
+        registered colormap; it is turned off at construction (`heatmap.py`) because a
+        choice made through it would neither tick an entry here nor reach
+        `ViewerSettings` -- this menu is the one place the colour map lives.
+        """
+        colour_map_menu = view_menu.addMenu("Colour map")
+        group = QActionGroup(self)
+        group.setExclusive(True)
+        for name in COLOUR_MAPS:
+            action = make_action(
+                self,
+                name.capitalize(),
+                tip=f"Colour the heatmap with the {name.capitalize()} colormap.",
+                checkable=True,
+                checked=(name == self.settings.colour_map),
+                toggled=lambda checked, n=name: self._on_colour_map_changed(n, checked),
+            )
+            group.addAction(action)
+            colour_map_menu.addAction(action)
 
     def _build_toolbar(self) -> None:
         """Every toggle `ViewerSettings` carries, plus frame navigation and sum-all.
@@ -251,6 +277,19 @@ class MainWindow(QMainWindow):
             toggled=self._on_raw_units_toggled,
         )
         toolbar.addAction(self._raw_action)
+
+        self._arrival_offset_box = QDoubleSpinBox()
+        self._arrival_offset_box.setRange(-100_000.0, 100_000.0)
+        self._arrival_offset_box.setDecimals(3)
+        self._arrival_offset_box.setSingleStep(1.0)
+        self._arrival_offset_box.setValue(self.settings.arrival_offset_ms)
+        self._arrival_offset_box.valueChanged.connect(self._on_arrival_offset_changed)
+        self._arrival_offset_label = add_labelled(
+            toolbar,
+            " Arrival offset (ms): ",
+            self._arrival_offset_box,
+            tip="Shift the displayed arrival-time axis by this many milliseconds.",
+        )
 
         self._keep_ranges_action = make_action(
             self,
@@ -437,6 +476,7 @@ class MainWindow(QMainWindow):
         axes = DisplayAxes.build(
             sparse_frame, calibration, frame_params.average_tof_length_ns,
             raw_units=self.settings.raw_units, swapped=self.settings.swap_axes,
+            t0_offset_ms=self.settings.arrival_offset_ms,
         )
         self._current_frame = sparse_frame
         self._current_axes = axes
@@ -556,6 +596,10 @@ class MainWindow(QMainWindow):
         self.settings.raw_units = checked
         self._rebuild_axes()
 
+    def _on_arrival_offset_changed(self, value: float) -> None:
+        self.settings.arrival_offset_ms = float(value)
+        self._rebuild_axes()
+
     def _on_keep_ranges_toggled(self, checked: bool) -> None:
         self.settings.keep_ranges = checked
 
@@ -565,6 +609,15 @@ class MainWindow(QMainWindow):
             self.heatmap.set_levels(*self.heatmap.levels())
         else:
             self.heatmap.release_levels()
+
+    def _on_colour_map_changed(self, name: str, checked: bool) -> None:
+        # The exclusive `QActionGroup` also toggles the previously-checked entry off,
+        # which fires this same handler with `checked=False` -- only the newly-checked
+        # one is the change to act on.
+        if not checked:
+            return
+        self.settings.colour_map = name
+        self.heatmap.set_colour_map(name)
 
     def _on_info_toggled(self, checked: bool) -> None:
         self.settings.show_info_panel = checked
@@ -632,6 +685,7 @@ class MainWindow(QMainWindow):
         new_axes = DisplayAxes.build(
             self._current_frame, calibration, self._frame_params.average_tof_length_ns,
             raw_units=self.settings.raw_units, swapped=self.settings.swap_axes,
+            t0_offset_ms=self.settings.arrival_offset_ms,
         )
         new_bin_lo = _value_at(new_axes.bin_edges, bin_index_lo)
         new_bin_hi = _value_at(new_axes.bin_edges, bin_index_hi)

@@ -23,6 +23,17 @@ def test_validate_clamps_an_unrecognised_aggregate_or_colour_scale():
     assert fixed.colour_scale == "linear"
 
 
+def test_validate_clamps_an_unrecognised_colour_map():
+    assert ViewerSettings(colour_map="bogus").validate().colour_map == "viridis"
+    assert ViewerSettings(colour_map="plasma").validate().colour_map == "plasma"
+
+
+def test_validate_clamps_a_non_finite_arrival_offset():
+    assert ViewerSettings(arrival_offset_ms=float("nan")).validate().arrival_offset_ms == 0.0
+    assert ViewerSettings(arrival_offset_ms=float("inf")).validate().arrival_offset_ms == 0.0
+    assert ViewerSettings(arrival_offset_ms=-150.0).validate().arrival_offset_ms == -150.0
+
+
 def test_validate_clamps_detector_bits_to_a_usable_range():
     assert ViewerSettings(detector_bits=0).validate().detector_bits == 8
     assert ViewerSettings(detector_bits=-3).validate().detector_bits == 8
@@ -54,6 +65,7 @@ def test_settings_round_trip_through_qsettings():
         detector_bits=14,
         colour_map="plasma",
         cache_budget_mb=256,
+        arrival_offset_ms=-42.5,
         last_directory="F:/data/acquisitions",
         window_geometry=b"\x00binary-ish\x01geometry\x02bytes\x03",
     )

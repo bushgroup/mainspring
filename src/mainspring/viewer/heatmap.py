@@ -62,6 +62,22 @@ __all__ = [
 ]
 
 
+_BOLD_LABEL_STYLE = {
+    "color": pg.mkPen(pg.getConfigOption("foreground")).color().name(),
+    "font-weight": "bold",
+}
+"""Axis *label* style only -- pyqtgraph keeps tick values a separate `TickFont`, so this
+never touches them.
+
+`color` has to be spelled out here: `AxisItem.setLabel(**style)` *replaces* `labelStyle`
+wholesale rather than merging into it (`AxisItem.setLabel` in pyqtgraph), and
+`AxisItem.__init__` already put the foreground colour there via `setTextPen`. Passing
+`font-weight` alone silently dropped that colour, so the label rendered in Qt's rich-text
+default (black) against this viewer's black background -- present, bold, and invisible.
+Recomputed from the same config option `setTextPen` reads, since neither axis ever calls
+`setTextPen` itself to get a colour to read back."""
+
+
 def _scaled(image: np.ndarray, colour_scale: str) -> np.ndarray:
     """The display transform behind the log/sqrt colour toggle. `"linear"` is a no-op."""
     if colour_scale == "log":
@@ -308,7 +324,10 @@ class HeatmapView(pg.GraphicsLayoutWidget):
         # inserted into the heatmap's layout (`insert_in`), so that the arrival-time
         # plot can sit between the two. Its blank bottom axis is fixed to the heatmap's
         # bottom-axis height so the strip spans exactly the image's height.
-        self._colour_bar = pg.ColorBarItem(colorMap=colour_map)
+        # `colorMapMenu=False`: pyqtgraph's own right-click menu offers every registered
+        # colormap, and picking one there would neither tick the View menu's choice nor
+        # reach `ViewerSettings` -- `set_colour_map` below is the one path that does both.
+        self._colour_bar = pg.ColorBarItem(colorMap=colour_map, colorMapMenu=False)
         self._colour_bar.setImageItem(self._image_item)
         self._colour_bar.getAxis("bottom").setHeight(AXIS_HEIGHT)
         self._colour_bar.getAxis("top").setHeight(TOP_AXIS_HEIGHT)
@@ -430,8 +449,8 @@ class HeatmapView(pg.GraphicsLayoutWidget):
         displayed = _scaled(result.image, colour_scale)
         self._image_item.setImage(displayed, autoLevels=False)
         self._image_item.setRect(x0, y0, x1 - x0, y1 - y0)
-        self._plot.setLabel("bottom", axes.x_label)
-        self._plot.setLabel("left", axes.y_label)
+        self._plot.setLabel("bottom", axes.x_label, **_BOLD_LABEL_STYLE)
+        self._plot.setLabel("left", axes.y_label, **_BOLD_LABEL_STYLE)
         if not self._levels_held:
             low, high = float(displayed.min()), float(displayed.max())
             self._colour_bar.setLevels((low, high if high > low else low + 1.0))
@@ -454,6 +473,10 @@ class HeatmapView(pg.GraphicsLayoutWidget):
     def release_levels(self) -> None:
         """Un-pin the colour levels: the next `set_image` goes back to auto-scaling."""
         self._levels_held = False
+
+    def set_colour_map(self, name: str) -> None:
+        """Switch the colour bar (and the image it drives) to one of `COLOUR_MAPS`."""
+        self._colour_bar.setColorMap(name)
 
     def set_debug_text(self, text: str) -> None:
         """The render-time overlay, drawn only when `MAINSPRING_DEBUG_RENDER` is set.
