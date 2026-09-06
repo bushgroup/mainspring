@@ -1,4 +1,8 @@
 # Documentation
 
-User documentation for the viewer will be written here as the viewer takes shape. Until then,
-the top-level [`README.md`](../README.md) is the only user-facing document.
+- [**User guide**](user-guide.md). The viewer: opening a file, what the window shows, every
+  gesture and shortcut, every toolbar control, the info panel field by field, and what the
+  viewer remembers between sessions.
+
+The top-level [`README.md`](../README.md) covers installing from source, the Python reader, and
+the `uimf-info` command line.

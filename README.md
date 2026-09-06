@@ -32,6 +32,17 @@ understand, so `--verify` exits nonzero and names the frames that disagree. Note
 `BPI_MZ` is compared as a tolerance rather than an equality, because the writers compute it
 inconsistently.
 
+## Using the viewer
+
+The [user guide](docs/user-guide.md) covers the window, every gesture and shortcut, every
+toolbar control, and how to read the per-push intensity the info panel reports. From a source
+checkout the viewer starts with `uv run mainspring`, and takes an optional file to open:
+
+```
+uv run mainspring
+uv run mainspring FILE.uimf
+```
+
 ## Reading a file from Python
 
 ```python
@@ -92,7 +103,7 @@ tools/                   check_public.py (the self-check), fetch_testdata.py (PN
                          build_exe.ps1 (the Windows executable)
 tests/                   pytest suite; tests/fixtures/README.md says what is synthetic
 packaging/               PyInstaller specification and installer files
-docs/                    user documentation
+docs/                    user documentation; docs/user-guide.md is the viewer's
 external/                fetched test data, read in place and never committed (not in this repository)
 ```
 
