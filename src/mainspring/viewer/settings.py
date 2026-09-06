@@ -62,6 +62,7 @@ class ViewerSettings:
     colour_scale: str = "linear"
     keep_ranges: bool = False
     keep_levels: bool = False
+    show_info_panel: bool = True
     detector_bits: int = 8
     colour_map: str = "viridis"
     cache_budget_mb: int = 512
@@ -121,6 +122,7 @@ def load_settings() -> ViewerSettings:
         colour_scale=str(store.value("colour_scale", defaults.colour_scale)),
         keep_ranges=_as_bool(store.value("keep_ranges", defaults.keep_ranges)),
         keep_levels=_as_bool(store.value("keep_levels", defaults.keep_levels)),
+        show_info_panel=_as_bool(store.value("show_info_panel", defaults.show_info_panel)),
         detector_bits=_as_int(store.value("detector_bits", defaults.detector_bits),
                                defaults.detector_bits),
         colour_map=str(store.value("colour_map", defaults.colour_map)),
@@ -146,6 +148,7 @@ def save_settings(settings: ViewerSettings) -> None:
     store.setValue("colour_scale", settings.colour_scale)
     store.setValue("keep_ranges", settings.keep_ranges)
     store.setValue("keep_levels", settings.keep_levels)
+    store.setValue("show_info_panel", settings.show_info_panel)
     store.setValue("detector_bits", settings.detector_bits)
     store.setValue("colour_map", settings.colour_map)
     store.setValue("cache_budget_mb", settings.cache_budget_mb)

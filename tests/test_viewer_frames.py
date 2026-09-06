@@ -323,3 +323,68 @@ def test_frame_type_filter_narrows_the_active_frames(qtbot):
 
     window._type_filter.setCurrentText("All frames")
     assert window._active_frame_numbers == [1, 2, 3]
+
+
+# --- the info panel's size, and its toggle --------------------------------------------
+
+def test_the_info_panel_keeps_its_width_whatever_it_is_told(qtbot):
+    """A live readout must never resize the dock: the width is fixed, and the one long
+    line wraps inside it. (The cursor readout, which changed on every mouse move, is
+    the status bar's alone for the same reason.)"""
+    from mainspring.viewer.info_panel import INFO_PANEL_WIDTH
+
+    panel = InfoPanel()
+    qtbot.addWidget(panel)
+    panel.show()
+    before = panel.widget().width()
+    assert before == INFO_PANEL_WIDTH
+
+    long_result = _fake_result(np.full((4, 4), 1234567890.0))
+    panel.set_view(long_result, accumulations=1000000, detector_bits=32)
+    panel.set_view(long_result, accumulations=1, detector_bits=1)
+
+    assert panel.widget().width() == before
+    assert panel.widget().minimumSizeHint().width() <= INFO_PANEL_WIDTH
+    assert not hasattr(panel, "set_cursor")
+
+
+def test_the_info_toggle_hides_the_dock_and_is_remembered(opened_window):
+    window = opened_window
+    assert window.settings.show_info_panel is True
+    assert not window.info_panel.isHidden()
+
+    # `trigger()` is what a click on the toolbar button or the menu entry does; Qt moves
+    # the dock on the action's `triggered`, so a bare `setChecked` would not.
+    window._info_action.trigger()
+    assert window.info_panel.isHidden()
+    assert window._info_action.isChecked() is False
+    assert window.settings.show_info_panel is False
+
+    window._info_action.trigger()
+    assert not window.info_panel.isHidden()
+    assert window.settings.show_info_panel is True
+
+
+def test_closing_the_dock_itself_unticks_the_toggle(opened_window):
+    window = opened_window
+    window.info_panel.close()
+    assert window.info_panel.isHidden()
+    assert window._info_action.isChecked() is False
+    assert window.settings.show_info_panel is False
+
+
+def test_a_stored_hidden_info_panel_starts_hidden(qtbot):
+    from mainspring.viewer.settings import ViewerSettings
+
+    window = MainWindow(ViewerSettings(show_info_panel=False))
+    qtbot.addWidget(window)
+    window.show()
+    assert window.info_panel.isHidden()
+    assert window._info_action.isChecked() is False
+    # The same action is reachable from the View menu and from the toolbar.
+    view_menu = next(a.menu() for a in window.menuBar().actions() if a.text() == "&View")
+    assert window._info_action in view_menu.actions()
+    from PySide6.QtWidgets import QToolBar
+
+    toolbar = window.findChild(QToolBar, "view_toolbar")
+    assert window._info_action in toolbar.actions()

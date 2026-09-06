@@ -50,6 +50,7 @@ def test_settings_round_trip_through_qsettings():
         colour_scale="log",
         keep_ranges=True,
         keep_levels=True,
+        show_info_panel=False,
         detector_bits=14,
         colour_map="plasma",
         cache_budget_mb=256,

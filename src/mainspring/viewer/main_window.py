@@ -120,6 +120,14 @@ class MainWindow(QMainWindow):
 
         self.info_panel = InfoPanel(self)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.info_panel)
+        self.info_panel.setVisible(self.settings.show_info_panel)
+        # The dock's own action rather than a hand-rolled one: Qt keeps it in step with
+        # the dock's visibility in both directions, so the X button on the dock, the
+        # toolbar button and the menu entry are one switch with three handles.
+        self._info_action = self.info_panel.toggleViewAction()
+        self._info_action.setText("Info")
+        self._info_action.setShortcut("Ctrl+I")
+        self._info_action.toggled.connect(self._on_info_toggled)
 
         self._busy = QProgressBar()
         self._busy.setRange(0, 0)  # indeterminate: a decode's length is not known upfront
@@ -159,6 +167,7 @@ class MainWindow(QMainWindow):
         reset_action.triggered.connect(self.heatmap.reset_range)
         view_menu = self.menuBar().addMenu("&View")
         view_menu.addAction(reset_action)
+        view_menu.addAction(self._info_action)
 
     def _build_toolbar(self) -> None:
         """Every toggle `ViewerSettings` carries, plus frame navigation and sum-all.
@@ -209,6 +218,8 @@ class MainWindow(QMainWindow):
         self._keep_levels_action.setChecked(self.settings.keep_levels)
         self._keep_levels_action.toggled.connect(self._on_keep_levels_toggled)
         toolbar.addAction(self._keep_levels_action)
+
+        toolbar.addAction(self._info_action)  # built with the dock, above
 
         toolbar.addWidget(QLabel(" Bits: "))
         self._bits_box = QSpinBox()
@@ -476,6 +487,9 @@ class MainWindow(QMainWindow):
         else:
             self.heatmap.release_levels()
 
+    def _on_info_toggled(self, checked: bool) -> None:
+        self.settings.show_info_panel = checked
+
     def _on_detector_bits_changed(self, value: int) -> None:
         self.settings.detector_bits = int(value)
         if self._last_render is not None and self._frame_params is not None:
@@ -563,8 +577,7 @@ class MainWindow(QMainWindow):
     # --- cursor readout ---------------------------------------------------------------
 
     def _on_cursor_moved(self, x: float, y: float) -> None:
-        """The status-bar and info-panel readout: where the pointer is, in every unit
-        the frame has.
+        """The status-bar readout: where the pointer is, in every unit the frame has.
 
         Both the display units and the raw bin and scan are shown, because they answer
         different questions -- an m/z identifies a species, a bin identifies the sample
@@ -589,16 +602,16 @@ class MainWindow(QMainWindow):
         if cell is not None:
             row, column = cell
             parts.append(f"{result.aggregate} {float(result.image[row, column]):,.0f}")
-        text = "   |   ".join(parts)
-        self._readout.setText(text)
-        self.info_panel.set_cursor(text)
+        self._readout.setText("   |   ".join(parts))
 
     def _clear_readout(self) -> None:
         self._readout.setText("")
-        self.info_panel.set_cursor("")
 
     def closeEvent(self, event) -> None:
         self.settings.window_geometry = bytes(self.saveGeometry())
+        # Read off the dock itself, in case a visibility change reached it by a route
+        # the action's `toggled` did not report.
+        self.settings.show_info_panel = not self.info_panel.isHidden()
         save_settings(self.settings)
         self._mailbox.close()
         self._render_worker.wait(2000)
