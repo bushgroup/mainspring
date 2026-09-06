@@ -39,7 +39,6 @@ import time
 
 import numpy as np
 from PySide6.QtCore import Qt, QByteArray, Signal
-from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
@@ -53,6 +52,7 @@ from PySide6.QtWidgets import (
 
 from ..uimf import DisplayAxes, FrameParams, GlobalParams, SparseFrame
 from ..uimf.raster import AGGREGATES
+from .controls import add_labelled, describe, make_action
 from .heatmap import HeatmapView, pixel_of
 from .info_panel import InfoPanel
 from .settings import COLOUR_SCALES, ViewerSettings, load_settings, save_settings
@@ -133,13 +133,23 @@ class MainWindow(QMainWindow):
         self._info_action = self.info_panel.toggleViewAction()
         self._info_action.setText("Info")
         self._info_action.setShortcut("Ctrl+I")
+        describe(
+            self._info_action,
+            "Show the panel of frame parameters and in-view totals.",
+            shortcut="Ctrl+I",
+        )
         self._info_action.toggled.connect(self._on_info_toggled)
 
         self._busy = QProgressBar()
         self._busy.setRange(0, 0)  # indeterminate: a decode's length is not known upfront
         self._busy.setMaximumWidth(120)
         self._busy.hide()
+        describe(self._busy, "A frame is being decoded.")
         self._readout = QLabel("")
+        describe(
+            self._readout,
+            "The axis values under the pointer, and the intensity of the pixel it is over.",
+        )
         self.statusBar().addPermanentWidget(self._readout)
         self.statusBar().addPermanentWidget(self._busy)
         self._build_menu()
@@ -159,20 +169,28 @@ class MainWindow(QMainWindow):
         self._render_worker.start()
 
     def _build_menu(self) -> None:
-        open_action = QAction("&Open...", self)
-        open_action.setShortcut("Ctrl+O")
-        open_action.triggered.connect(self._prompt_open)
+        self.open_action = make_action(
+            self,
+            "&Open...",
+            tip="Open a UIMF file.",
+            shortcut="Ctrl+O",
+            triggered=self._prompt_open,
+        )
         file_menu = self.menuBar().addMenu("&File")
-        file_menu.addAction(open_action)
+        file_menu.addAction(self.open_action)
 
         # A window-level action rather than a key handler on the view box: the reset must
         # work wherever the focus happens to be, which is the complaint about having to
         # find it in a context menu (lab record, task 01).
-        reset_action = QAction("&Reset view", self)
-        reset_action.setShortcut("Home")
-        reset_action.triggered.connect(self.heatmap.reset_range)
+        self.reset_action = make_action(
+            self,
+            "&Reset view",
+            tip="Return the heatmap to the frame's full range.",
+            shortcut="Home",
+            triggered=self.heatmap.reset_range,
+        )
         view_menu = self.menuBar().addMenu("&View")
-        view_menu.addAction(reset_action)
+        view_menu.addAction(self.reset_action)
         view_menu.addAction(self._info_action)
 
     def _build_toolbar(self) -> None:
@@ -181,74 +199,119 @@ class MainWindow(QMainWindow):
         Each control is fully configured -- range, items, initial value from the
         restored settings -- **before** its signal is connected, so that restoring a
         non-default setting cannot fire a handler while the rest of the window is still
-        being built.
+        being built. `make_action` holds that order for the actions; the widgets below
+        keep it by hand, because their value has to be set before `add_labelled` can
+        hand them over.
         """
         toolbar = QToolBar("View", self)
         toolbar.setObjectName("view_toolbar")  # QMainWindow.saveState() keys it by this
         self.addToolBar(toolbar)
+        # Qt makes this one itself and offers it in the window's right-click menu, which
+        # is the only place it appears -- so it is the control most easily left mute.
+        describe(toolbar.toggleViewAction(), "Show the toolbar.")
 
-        toolbar.addWidget(QLabel(" Aggregate: "))
         self._aggregate_box = QComboBox()
         self._aggregate_box.addItems([a.capitalize() for a in AGGREGATES])
         self._aggregate_box.setCurrentText(self.settings.aggregate.capitalize())
         self._aggregate_box.currentTextChanged.connect(self._on_aggregate_changed)
-        toolbar.addWidget(self._aggregate_box)
+        self._aggregate_label = add_labelled(
+            toolbar,
+            " Aggregate: ",
+            self._aggregate_box,
+            tip="Choose how the intensities inside one screen pixel are combined.",
+        )
 
-        toolbar.addWidget(QLabel(" Colour: "))
         self._colour_box = QComboBox()
         self._colour_box.addItems([c.capitalize() for c in COLOUR_SCALES])
         self._colour_box.setCurrentText(self.settings.colour_scale.capitalize())
         self._colour_box.currentTextChanged.connect(self._on_colour_scale_changed)
-        toolbar.addWidget(self._colour_box)
+        self._colour_label = add_labelled(
+            toolbar,
+            " Colour: ",
+            self._colour_box,
+            tip="Choose how intensity maps onto colour: linear, log or square root.",
+        )
 
-        self._swap_action = QAction("Swap X/Y", self)
-        self._swap_action.setCheckable(True)
-        self._swap_action.setChecked(self.settings.swap_axes)
-        self._swap_action.toggled.connect(self._on_swap_toggled)
+        self._swap_action = make_action(
+            self,
+            "Swap X/Y",
+            tip="Put arrival time on the horizontal axis and m/z on the vertical.",
+            checkable=True,
+            checked=self.settings.swap_axes,
+            toggled=self._on_swap_toggled,
+        )
         toolbar.addAction(self._swap_action)
 
-        self._raw_action = QAction("Raw units", self)
-        self._raw_action.setCheckable(True)
-        self._raw_action.setChecked(self.settings.raw_units)
-        self._raw_action.toggled.connect(self._on_raw_units_toggled)
+        self._raw_action = make_action(
+            self,
+            "Raw units",
+            tip="Show TOF bin and scan number instead of calibrated m/z and arrival time.",
+            checkable=True,
+            checked=self.settings.raw_units,
+            toggled=self._on_raw_units_toggled,
+        )
         toolbar.addAction(self._raw_action)
 
-        self._keep_ranges_action = QAction("Keep ranges", self)
-        self._keep_ranges_action.setCheckable(True)
-        self._keep_ranges_action.setChecked(self.settings.keep_ranges)
-        self._keep_ranges_action.toggled.connect(self._on_keep_ranges_toggled)
+        self._keep_ranges_action = make_action(
+            self,
+            "Keep ranges",
+            tip="Keep the current zoom when the next file is opened.",
+            checkable=True,
+            checked=self.settings.keep_ranges,
+            toggled=self._on_keep_ranges_toggled,
+        )
         toolbar.addAction(self._keep_ranges_action)
 
-        self._keep_levels_action = QAction("Keep levels", self)
-        self._keep_levels_action.setCheckable(True)
-        self._keep_levels_action.setChecked(self.settings.keep_levels)
-        self._keep_levels_action.toggled.connect(self._on_keep_levels_toggled)
+        self._keep_levels_action = make_action(
+            self,
+            "Keep levels",
+            tip="Keep the current colour limits instead of rescaling to each frame.",
+            checkable=True,
+            checked=self.settings.keep_levels,
+            toggled=self._on_keep_levels_toggled,
+        )
         toolbar.addAction(self._keep_levels_action)
 
         toolbar.addAction(self._info_action)  # built with the dock, above
 
-        toolbar.addWidget(QLabel(" Bits: "))
         self._bits_box = QSpinBox()
         self._bits_box.setRange(1, 32)
         self._bits_box.setValue(self.settings.detector_bits)
         self._bits_box.valueChanged.connect(self._on_detector_bits_changed)
-        toolbar.addWidget(self._bits_box)
+        self._bits_label = add_labelled(
+            toolbar,
+            " Bits: ",
+            self._bits_box,
+            tip="Detector bit depth, 1 to 32, that the per-push readout assumes.",
+        )
 
-        toolbar.addWidget(QLabel(" Type: "))
         self._type_filter = QComboBox()
         self._type_filter.addItem("All frames")
         self._type_filter.currentTextChanged.connect(self._on_type_filter_changed)
-        toolbar.addWidget(self._type_filter)
+        self._type_label = add_labelled(
+            toolbar,
+            " Type: ",
+            self._type_filter,
+            tip="Show only frames of one type, or all of them.",
+        )
 
-        toolbar.addWidget(QLabel(" Frame: "))
         self._frame_spin = QSpinBox()
         self._frame_spin.setRange(0, 0)
         self._frame_spin.valueChanged.connect(self._on_frame_spin_changed)
-        toolbar.addWidget(self._frame_spin)
+        self._frame_label = add_labelled(
+            toolbar,
+            " Frame: ",
+            self._frame_spin,
+            tip="Go to a frame by number, within the frames the type filter allows.",
+        )
 
-        sum_action = QAction("Sum all", self)
-        sum_action.triggered.connect(lambda: self.sum_frames())
-        toolbar.addAction(sum_action)
+        self.sum_action = make_action(
+            self,
+            "Sum all",
+            tip="Add every frame passing the type filter into one heatmap.",
+            triggered=lambda: self.sum_frames(),
+        )
+        toolbar.addAction(self.sum_action)
 
     def _prompt_open(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -308,6 +371,8 @@ class MainWindow(QMainWindow):
         dialog = QProgressDialog(
             f"Summing {len(numbers)} frames...", "Cancel", 0, len(numbers), self
         )
+        describe(dialog, "Summing the frames the type filter allows. Cancel keeps the "
+                 "frame already on screen.")
         dialog.setWindowModality(Qt.WindowModality.WindowModal)
         dialog.setMinimumDuration(0)
         dialog.canceled.connect(self._worker.cancel_sum)
