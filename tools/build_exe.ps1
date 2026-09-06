@@ -4,19 +4,15 @@
 .DESCRIPTION
     Drives PyInstaller against packaging/mainspring.spec (dist/ and build/ land at the repo
     root regardless of caller cwd), then launches the built .exe twice -- timing from process
-    start to the main window appearing -- so cold and warm startup are both on record. That
-    number is what decides onefile vs onedir+Inno Setup (lab record, task 07).
-.PARAMETER Mode
-    onedir (default): a mainspring/ folder holding mainspring.exe beside its dependencies, no
-    extraction, packaged by Inno Setup (packaging/mainspring.iss) -- task 07 measured onefile's
-    cold start at 90-190+ s here against onedir's 3-4 s and picked onedir. onefile: a single
-    mainspring.exe that extracts to a temp directory on every launch, kept for comparison.
+    start to the main window appearing -- so cold and warm startup are both on record. The
+    build is onedir only: a mainspring/ folder holding mainspring.exe beside its dependencies,
+    no extraction, packaged by Inno Setup (packaging/mainspring.iss) -- task 07 measured the
+    alternative, a single .exe that extracts to a temp directory on every launch, at 90-190+ s
+    cold start against onedir's 3-4 s (lab record, task 07).
 .PARAMETER SkipBuild
     Measure startup against whatever is already in dist/ without rebuilding.
 #>
 param(
-    [ValidateSet("onefile", "onedir")]
-    [string]$Mode = "onedir",
     [switch]$SkipBuild,
     [int]$TimeoutSeconds = 90
 )
@@ -27,11 +23,7 @@ Set-Location $root
 
 $distDir = Join-Path $root "dist"
 $buildDir = Join-Path $root "build"
-$exePath = if ($Mode -eq "onedir") {
-    Join-Path $distDir "mainspring\mainspring.exe"
-} else {
-    Join-Path $distDir "mainspring.exe"
-}
+$exePath = Join-Path $distDir "mainspring\mainspring.exe"
 
 if (-not $SkipBuild) {
     Write-Host "Warming the numba kernel cache for packaging/numba_cache_seed..." -ForegroundColor Cyan
@@ -40,7 +32,7 @@ if (-not $SkipBuild) {
         throw "Warming the numba cache failed (exit $LASTEXITCODE)."
     }
 
-    Write-Host "Building mainspring.exe ($Mode) with PyInstaller..." -ForegroundColor Cyan
+    Write-Host "Building mainspring.exe with PyInstaller..." -ForegroundColor Cyan
     # Build with only the Windows directories and uv's on PATH. PyInstaller resolves DLL
     # dependencies through PATH as a last resort, so a PATH carrying another Python
     # distribution makes the build depend on the shell it ran from: anaconda3/Library/bin's
@@ -50,7 +42,6 @@ if (-not $SkipBuild) {
     $savedPath = $env:PATH
     $uvDir = Split-Path -Parent (Get-Command uv).Source
     $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot;$env:SystemRoot\System32\Wbem;$uvDir"
-    $env:MAINSPRING_PACKAGE_MODE = $Mode
     try {
         uv run pyinstaller packaging/mainspring.spec --distpath $distDir --workpath $buildDir --noconfirm --clean
         if ($LASTEXITCODE -ne 0) {
@@ -58,7 +49,6 @@ if (-not $SkipBuild) {
         }
     } finally {
         $env:PATH = $savedPath
-        Remove-Item Env:\MAINSPRING_PACKAGE_MODE -ErrorAction SilentlyContinue
     }
 }
 
@@ -66,13 +56,8 @@ if (-not (Test-Path $exePath)) {
     throw "Expected build output at $exePath, but it does not exist. Run without -SkipBuild first."
 }
 
-if ($Mode -eq "onedir") {
-    $size = (Get-ChildItem (Split-Path $exePath) -Recurse | Measure-Object -Property Length -Sum).Sum
-    Write-Host ("mainspring/ folder size: {0:N1} MB" -f ($size / 1MB))
-} else {
-    $size = (Get-Item $exePath).Length
-    Write-Host ("Executable size: {0:N1} MB" -f ($size / 1MB))
-}
+$size = (Get-ChildItem (Split-Path $exePath) -Recurse | Measure-Object -Property Length -Sum).Sum
+Write-Host ("mainspring/ folder size: {0:N1} MB" -f ($size / 1MB))
 
 function Measure-Startup([string]$label) {
     $proc = Start-Process -FilePath $exePath -PassThru
@@ -102,14 +87,14 @@ function Measure-Startup([string]$label) {
     return $elapsed.TotalSeconds
 }
 
-# Onefile re-extracts to a fresh %TEMP%\_MEIxxxxx on every launch (no cross-run cache), so
-# "cold" and "warm" differ there only in OS disk-cache state, not in whether extraction runs
-# -- that extract-every-start cost is exactly what the onefile-vs-onedir decision is about.
-# Onedir has nothing to extract; both numbers below should be close for it.
+# Onedir has nothing to extract -- the folder's DLLs load in place -- so "cold" and "warm"
+# differ only in OS disk-cache state, and both numbers below should be close (lab record,
+# task 07; onefile's every-launch %TEMP% extraction, measured there, is why onedir is the
+# only mode this script builds).
 $cold = Measure-Startup "Cold"
 Start-Sleep -Seconds 1
 $warm = Measure-Startup "Warm"
 
 Write-Host ""
-Write-Host ("[$Mode] Cold {0:N2} s / Warm {1:N2} s" -f $cold, $warm) -ForegroundColor Green
-Write-Host "Record these in mainspring-lab/tasks/07-packaging.md's progress log."
+Write-Host ("Cold {0:N2} s / Warm {1:N2} s" -f $cold, $warm) -ForegroundColor Green
+Write-Host "Record these in mainspring-lab/notes/packaging.md if the numbers move."

@@ -1,8 +1,7 @@
 # PyInstaller build spec for the mainspring viewer.
 #
 # Run through `tools/build_exe.ps1`, not `pyinstaller` directly, so the working and dist
-# paths land under `dist/`/`build/` (both gitignored) regardless of the caller's cwd, and so
-# `-Mode onedir` reaches this file the same way it reaches the packaging decision.
+# paths land under `dist/`/`build/` (both gitignored) regardless of the caller's cwd.
 #
 # The excludes below are PySide6 submodules the viewer never imports -- WebEngine, Qml/Quick,
 # Multimedia, the 3D and remaining device-facing modules -- cut because PySide6 ships every
@@ -11,9 +10,9 @@
 # and PySide6/pyqtgraph themselves are covered by `pyinstaller-hooks-contrib`'s `hook-numba.py`
 # and PyInstaller's own Qt hook utility; neither needs a hand-written hook here.
 #
-# MAINSPRING_PACKAGE_MODE selects onefile (default, single .exe, extracts on every start) or
-# onedir (a folder, no extraction, for an Inno Setup installer) -- `tools/build_exe.ps1 -Mode`
-# sets it. Task 07 measured onefile's extract-every-start cost too slow to ship (progress log).
+# Builds onedir only: a folder, no extraction, for the Inno Setup installer. The alternative --
+# a single .exe that extracts on every start -- measured too slow to ship (lab record, task 07);
+# task 10 dropped the switch between the two modes.
 
 import os
 
@@ -21,9 +20,6 @@ from PyInstaller.building.datastruct import Tree
 from PyInstaller.utils.hooks import collect_data_files
 
 block_cipher = None
-MODE = os.environ.get("MAINSPRING_PACKAGE_MODE", "onedir")
-if MODE not in ("onefile", "onedir"):
-    raise ValueError(f"MAINSPRING_PACKAGE_MODE must be 'onefile' or 'onedir', got {MODE!r}")
 # SPECPATH is injected by PyInstaller into this file's exec namespace; resolving the
 # entry script against it means the build works from any cwd, not just this directory.
 ENTRYPOINT = os.path.join(SPECPATH, "entrypoint.py")
@@ -189,8 +185,5 @@ _exe_common = dict(
     icon=ICON,
 )
 
-if MODE == "onedir":
-    exe = EXE(pyz, a.scripts, [], exclude_binaries=True, **_exe_common)
-    coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, upx_exclude=[], name="mainspring")
-else:
-    exe = EXE(pyz, a.scripts, a.binaries, a.datas, [], runtime_tmpdir=None, **_exe_common)
+exe = EXE(pyz, a.scripts, [], exclude_binaries=True, **_exe_common)
+coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, upx_exclude=[], name="mainspring")

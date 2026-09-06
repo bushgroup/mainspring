@@ -1,6 +1,6 @@
 ; Inno Setup script for the mainspring installer.
 ;
-; Packages the onedir build (dist/mainspring/, from `tools/build_exe.ps1 -Mode onedir`) --
+; Packages the onedir build (dist/mainspring/, from `tools/build_exe.ps1`) -- onedir was
 ; chosen over onefile because onefile's every-launch extraction ran 90-190+ s on this
 ; workstation against onedir's 3-4 s to the window (lab record, task 07). Compile with
 ; Inno Setup 6's ISCC.exe:
