@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import os
 
-__version__ = "0.1.0"
+__version__ = "1.0.0"
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(_HERE, "..", ".."))

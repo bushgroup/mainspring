@@ -1,13 +1,13 @@
 [project]
 name = "mainspring"
-version = "0.1.0"
+version = "1.0.0"
 description = "Interactive viewer and Python reader for UIMF ion mobility mass spectrometry files."
 readme = "README.md"
 requires-python = "==3.12.*"
 license = "BSD-3-Clause"
 license-files = ["LICENSE"]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: BSD License",
     "Operating System :: Microsoft :: Windows",

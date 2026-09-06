@@ -12,9 +12,9 @@ instrument writes UIMF.
 
 ## Status
 
-Under construction. The reader layer is written and verified; the viewer and the Windows
-installer follow, in that order, and the development record lives in a private companion
-repository. There is no release yet.
+Version 1.0.0. The reader layer, the viewer, and the Windows installer are written and
+verified, and the development record lives in a private companion repository. Following a file
+while the instrument is still writing it is the next phase and is not in this release.
 
 The reader reproduces every scan's stored total ion current and base peak intensity exactly
 on the four files it has been tested against, which were written by four different versions
@@ -31,6 +31,20 @@ A file whose blobs do not reproduce its own columns is a file mainspring does no
 understand, so `--verify` exits nonzero and names the frames that disagree. Note that
 `BPI_MZ` is compared as a tolerance rather than an equality, because the writers compute it
 inconsistently.
+
+## Installing on Windows
+
+The installer is attached to the [latest
+release](https://github.com/bushgroup/mainspring/releases/latest) as
+`mainspring-1.0.0-setup.exe`, 93 MB, and needs no Python installation. It installs into the
+current user's profile and asks for no administrator rights, offers a Start menu entry and an
+optional desktop icon, and offers to open `.uimf` files with mainspring. The same release
+carries `mainspring-1.0.0-py3-none-any.whl`, which is the reader and the viewer as a Python
+package for a machine that already has Python 3.12.
+
+The installer is not code signed, so Microsoft Defender SmartScreen shows "Windows protected
+your PC" the first time it is run from a download. Choose More info, then Run anyway. Signing
+would need a certificate the lab does not hold.
 
 ## Using the viewer
 
@@ -62,8 +76,8 @@ optional `fast` extra adds numba, which compiles the decoder and is worth a fact
 
 ## Requirements
 
-- Windows 10 or 11. The viewer will also be distributed as an installer that needs no Python
-  installation.
+- Windows 11, on which the viewer and its installer are tested. Windows 10 is expected to work
+  and has not been tested.
 - [uv](https://docs.astral.sh/uv/) for working from source. The interpreter (CPython 3.12)
   and every library version are pinned by `pyproject.toml`, `.python-version`, and the
   committed `uv.lock`.
@@ -135,12 +149,14 @@ root of the checkout:
 & "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe" packaging\mainspring.iss
 ```
 
-Compilation takes about two minutes and writes `dist\installer\mainspring-0.1.0-setup.exe`,
+Compilation takes about two minutes and writes `dist\installer\mainspring-1.0.0-setup.exe`,
 93 MB. That installer is per-user and asks for no administrator rights, because the viewer keeps
 its settings in the current user's registry hive and an instrument PC's operator account may
 have no administrator rights to give. It offers a Start menu entry, an optional desktop icon,
 and an uninstaller. The version in the file name comes from `MyAppVersion` in
-`packaging/mainspring.iss`, which is kept in step with the version in `pyproject.toml` by hand.
+`packaging/mainspring.iss`. Three files declare the version and none derives it from another, so
+`tools/check_public.py` fails unless `MyAppVersion`, the version in `pyproject.toml`, and
+`mainspring.__version__` all agree.
 
 The wizard also offers, checked by default, to open `.uimf` files with mainspring. On a machine
 where nothing else has claimed the extension, which is the ordinary case for an instrument PC,

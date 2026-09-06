@@ -7,8 +7,8 @@ absent, never as FAIL. What is left is still a real test of the decode path, bec
 synthetic UIMF file can be written from nothing: `tests/synthetic.py` puts a few hundred
 known points through the real SQLite schema and the real intensity encoder.
 
-What it covers: the package imports, the `uimf` layer stays free of Qt, the module
-layout is complete, the reporting stamp, the lab-directory resolution, the intensity
+What it covers: the package imports, the `uimf` layer stays free of Qt, the three
+hand-carried version declarations agree, the module layout is complete, the reporting stamp, the lab-directory resolution, the intensity
 codec against the format's own rules and against itself in both directions, and a
 synthetic file -- written through the schema a 2026 acquisition carries -- read back
 through the whole reader, rasterised, and put through `uimf-info --verify`; and, since
@@ -22,10 +22,12 @@ Run:  uv run tools/check_public.py
 from __future__ import annotations
 
 import os
+import re
 import sqlite3
 import sys
 import tempfile
 import time
+import tomllib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
@@ -65,6 +67,23 @@ def section(title: str) -> None:
     print("--- " + title + " " + "-" * max(3, 72 - len(title)))
 
 
+def declared_versions() -> dict[str, str]:
+    """The version as each of the three files that hand-carry it states it.
+
+    Nothing derives one of these from another: the package literal is what an
+    import reports, `pyproject.toml` is what a wheel is built as, and the Inno
+    Setup define is what the installer calls itself and names its own file. They
+    only agree because someone keeps them agreeing, which is why this is checked
+    rather than trusted.
+    """
+    with open(os.path.join(ROOT, "pyproject.toml"), "rb") as handle:
+        pyproject = tomllib.load(handle)["project"]["version"]
+    iss = open(os.path.join(ROOT, "packaging", "mainspring.iss"), encoding="utf-8").read()
+    found = re.search(r'^#define\s+MyAppVersion\s+"([^"]+)"', iss, re.MULTILINE)
+    return {"pyproject.toml": pyproject,
+            "packaging/mainspring.iss": found.group(1) if found else "(not found)"}
+
+
 UIMF_MODULES = ("cache", "calib", "cli", "decode", "frame", "raster", "reader")
 VIEWER_MODULES = (
     "app", "controls", "export", "heatmap", "info_panel", "main_window", "settings",
@@ -93,6 +112,12 @@ def main() -> int:
     from mainspring.uimf import decode
 
     check_true("mainspring imports and carries a version", bool(mainspring.__version__))
+    declared = declared_versions() | {"mainspring.__version__": mainspring.__version__}
+    check_true(
+        "the package, the wheel and the installer declare one version ("
+        + ", ".join(f"{where} {what}" for where, what in declared.items()) + ")",
+        len(set(declared.values())) == 1,
+    )
     for name in UIMF_MODULES:
         check_true(
             f"mainspring.uimf.{name} imports",

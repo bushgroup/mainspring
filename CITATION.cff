@@ -5,6 +5,8 @@ abstract: >-
   files, the SQLite-based format written by SLIM instruments and by the Bush
   lab's clockwork acquisition software.
 type: software
+version: 1.0.0
+date-released: "2026-09-06"
 message: >-
   If mainspring contributed to a result, cite the software by this record.
 authors:
