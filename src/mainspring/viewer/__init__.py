@@ -12,6 +12,8 @@ Where things live:
     settings.py      ViewerSettings and its QSettings persistence
     controls.py      the control factory that requires a tooltip, and the walk that
                      checks every control has one
+    theme.py         the dark and light plot palettes, the one path that applies them,
+                     and the walk that checks nothing bypassed it
 
 Importing this package imports Qt, so nothing here is imported at `mainspring` package
 level. `notes/architecture.md` in the lab record says why the seam sits where it does

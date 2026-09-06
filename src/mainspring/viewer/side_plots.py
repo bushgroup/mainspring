@@ -39,12 +39,16 @@ from __future__ import annotations
 import numpy as np
 import pyqtgraph as pg
 
+from . import theme
 from .controls import describe
 from .heatmap import AXIS_HEIGHT, AXIS_WIDTH, RIGHT_AXIS_WIDTH, TOP_AXIS_HEIGHT
 
 __all__ = ["SidePlots"]
 
-_PEN = pg.mkPen(color=(190, 210, 255), width=1)
+CURVE_WIDTH = 1
+"""How thick a projection is drawn. One pixel, so that a spectrum reduced by the
+peak-preserving downsampler still shows a single-bin spike as a spike rather than as a
+blob; the colour is the palette's (`theme.py`)."""
 
 # A `PlotItem`'s own grid: the axes and the view box sit in fixed cells (title row 0;
 # top axis (1, 1); left axis (2, 0); view box (2, 1); right axis (2, 2); bottom axis
@@ -108,7 +112,7 @@ class SidePlots:
             "Total intensity along the vertical axis, over the horizontal range in view.",
         )
 
-        self._x_curve = self.x_plot.plot(pen=_PEN)
+        self._x_curve = self.x_plot.plot()
         # Peak-preserving downsampling, and clipping to the visible window, both work
         # along a curve's x axis. That is the display axis for the mass spectrum, where a
         # full-range view is 114688 points and a one-bin spike must survive being drawn --
@@ -116,7 +120,31 @@ class SidePlots:
         # mean anything and where there are only ever a few thousand points anyway.
         self._x_curve.setDownsampling(auto=True, method="peak")
         self._x_curve.setClipToView(True)
-        self._y_curve = self.y_plot.plot(pen=_PEN)
+        self._y_curve = self.y_plot.plot()
+        self.set_palette(theme.active())
+
+    def set_palette(self, palette: "theme.Palette") -> None:
+        """Repaint both curves in `palette`, live.
+
+        Called at construction and again on every `View > Light mode` toggle
+        (`theme.apply`, the one path). `PlotDataItem.setPen` pushes the pen straight
+        through to the curve item that draws it, so a projection already on screen
+        changes colour without being asked for its data again.
+
+        The eight hidden axes are set as well. Nothing draws them today, but each was
+        born holding the palette that was active when its plot was built, and a colour
+        that is only wrong while it cannot be seen is the kind `theme.themed` exists to
+        refuse to let through.
+        """
+        pen = pg.mkPen(palette.foreground)
+        for plot in (self.x_plot, self.y_plot):
+            for name in ("left", "right", "top", "bottom"):
+                axis = plot.getAxis(name)
+                axis.setPen(pen)
+                axis.setTickPen(pen)
+                axis.setTextPen(pen)
+        for curve in self.curves:
+            curve.setPen(pg.mkPen(palette.curve, width=CURVE_WIDTH))
 
     @property
     def curves(self) -> "tuple[pg.PlotDataItem, pg.PlotDataItem]":

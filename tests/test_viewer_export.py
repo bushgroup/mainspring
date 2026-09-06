@@ -24,9 +24,10 @@ import numpy as np
 import pyqtgraph as pg
 import pytest
 from PySide6.QtCore import QRectF
-from PySide6.QtGui import QImage
+from PySide6.QtGui import QColor, QImage
 from PySide6.QtWidgets import QDialogButtonBox, QGraphicsTextItem
 
+from mainspring.viewer import theme
 from mainspring.viewer.export import (
     BASE_DPI,
     ExportDialog,
@@ -167,6 +168,43 @@ def test_a_png_is_written_at_the_promised_size_and_carries_its_resolution(viewer
     # Stamped after the render, so the file says how big the figure is in inches without
     # having changed how large its text came out.
     assert written.dotsPerMeterX() == round(dpi / 0.0254)
+
+
+@pytest.mark.parametrize("name", ["dark", "light"])
+def test_the_png_background_follows_the_theme(viewer, tmp_path, name):
+    """`export.py` fills from `view.backgroundBrush()` and so needs no theme code of its
+    own. That makes "the export follows the theme" a property of one line rather than of
+    an intention, which is what this asserts: a light figure on a dark canvas would be
+    the most visible way for `View > Light mode` to be half-implemented.
+
+    The corners rather than the middle: the plot area holds the image, and the margins
+    around the axes are where the canvas itself shows.
+    """
+    theme.apply(viewer, name)
+    path = tmp_path / f"figure-{name}.png"
+
+    _export(viewer, path, "png", 96)
+
+    written = QImage(str(path))
+    expected = QColor(theme.PALETTES[name].background).rgb()
+    assert written.pixel(0, 0) == expected
+    assert written.pixel(written.width() - 1, written.height() - 1) == expected
+
+
+def test_the_pdf_background_follows_the_theme(viewer, tmp_path):
+    """The PDF fills its page from the same brush, and a vector page cannot be sampled
+    for a pixel -- so what is asserted is that the two themes write different bytes and
+    that the light one names white."""
+    theme.apply(viewer, "dark")
+    dark = tmp_path / "dark.pdf"
+    _export(viewer, dark, "pdf", 96)
+
+    theme.apply(viewer, "light")
+    light = tmp_path / "light.pdf"
+    _export(viewer, light, "pdf", 96)
+
+    assert dark.read_bytes() != light.read_bytes()
+    assert viewer.heatmap.backgroundBrush().color().name() == theme.LIGHT.background
 
 
 def test_a_pdf_is_written(viewer, tmp_path):

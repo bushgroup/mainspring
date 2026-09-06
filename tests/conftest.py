@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import glob
 import os
+import sys
 
 import pytest
 
@@ -45,6 +46,31 @@ def _isolated_qsettings(tmp_path):
     QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(tmp_path))
     yield
     QSettings.setDefaultFormat(previous_format)
+
+
+@pytest.fixture(autouse=True)
+def _restore_the_default_palette():
+    """No test leaves a plot palette on the process.
+
+    `theme.apply` writes pyqtgraph's `background` and `foreground` config options, which
+    are read when an item is constructed and are process-wide -- so a test that ends
+    under the light palette hands the next one a window whose items are born light.
+    Everything the viewer paints is set explicitly afterwards, so today that is invisible
+    rather than wrong; it is still state leaking between tests, and the walk that would
+    catch the consequences is itself one of the tests that would be leaking it.
+
+    Only if the plot layer has already been imported: a data-layer test should not pull
+    Qt in through a fixture that runs for every test in the suite (lab record, task 14).
+    """
+    yield
+    if "mainspring.viewer.theme" not in sys.modules:
+        return
+    import pyqtgraph as pg
+
+    from mainspring.viewer import theme
+
+    pg.setConfigOptions(background=theme.DARK.background, foreground=theme.DARK.foreground)
+    theme._ACTIVE = theme.DARK
 
 
 def real_uimf_paths() -> list[str]:

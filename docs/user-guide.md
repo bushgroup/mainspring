@@ -65,6 +65,23 @@ The screenshot above is PNNL's `9pep_mix` test file, which
 [`tools/fetch_testdata.py`](../tools/fetch_testdata.py) downloads, with the colour scale set to
 `Log`. The diagonal bands are the multiplexed encoding that file was acquired with.
 
+## Light mode
+
+`View > Light mode` draws the plot area on white instead of black. It takes effect as you
+tick it, and it costs nothing: the open file, the frame you are on, the ranges you have zoomed
+to and any levels you have pinned are all where you left them. The viewer remembers the choice,
+so the next session starts in the mode you last used. Black is the default.
+
+The colour map is not part of the mode. `Viridis` and its three companions read as themselves
+whichever background they sit on, and a map that changed under you would make two figures of the
+same frame hard to compare, so `View > Colour map` stays yours to set. A frame with little in it
+therefore draws as a dark rectangle on a white canvas, because dark purple is what the low end of
+`Viridis` is.
+
+The menu bar, the toolbar, the info panel and the dialogs follow Windows rather than this
+setting. They are already light on a stock Windows install, which is what makes a light plot
+area match the rest of the window.
+
 ## Moving around the frame
 
 Every gesture is one step. There is no mode to switch into first and no zoom history to unwind,
@@ -86,8 +103,8 @@ because a wrong zoom costs one keystroke to undo.
 | `Home` | Reset the view to the frame's full range |
 | `Ctrl+I` | Show or hide the info panel |
 
-All three are on the menu bar as well: `Open` under `File`, `Reset view`, `Info` and
-`Colour map` under `View`. There is no context menu on the heat map, because the right button
+All three are on the menu bar as well: `Open` under `File`, `Reset view`, `Info`,
+`Light mode` and `Colour map` under `View`. There is no context menu on the heat map, because the right button
 is a zoom gesture.
 
 Zooming and panning are both clamped to the frame, so a gesture cannot leave it, and zooming in
@@ -253,7 +270,9 @@ pixels.
 
 `File > Export PNG` and `File > Export PDF` write what is on screen to a file. The heat map,
 the mass spectrum and the arrival-time distribution all go in, at the zoom and under the
-colour settings they are drawn with. The colour bar is left out.
+colour settings they are drawn with. The colour bar is left out. The figure takes the
+background of the mode it was exported in, so tick `Light mode` first for a figure going into
+a paper or onto a white slide.
 
 Both entries ask where to write the file, then at what resolution. The four choices are 96,
 150, 300 and 600 dpi. At 96 dpi the figure is the window's own pixels, one for one, and at 300
@@ -280,9 +299,9 @@ for. Its page is the same size in inches whichever resolution that is.
 
 ## What the viewer remembers
 
-Every toolbar toggle, the aggregate and colour choices, the detector bit depth, whether the
-info panel is showing, the export resolution, the window's size and position, and the
-directory you last opened from are all saved when the viewer closes and restored when it
+Every toolbar toggle, the aggregate and colour choices, light mode, the detector bit depth,
+whether the info panel is showing, the export resolution, the window's size and position, and
+the directory you last opened from are all saved when the viewer closes and restored when it
 starts. On Windows they live under
 `HKEY_CURRENT_USER\Software\University of Washington\mainspring`. Deleting that key returns
 every setting to its default.

@@ -36,6 +36,7 @@ __all__ = [
     "COLOUR_SCALES",
     "EXPORT_DPIS",
     "ORGANISATION",
+    "THEMES",
     "ViewerSettings",
     "load_settings",
     "save_settings",
@@ -55,6 +56,14 @@ COLOUR_MAPS = ("viridis", "plasma", "inferno", "magma")
 """The View > Colour map choices, all perceptually uniform so a gradient never implies
 a step in intensity that is not there -- unlike jet or a stock rainbow map, which the
 viewer deliberately does not offer."""
+
+
+THEMES = ("dark", "light")
+"""The two plot-canvas palettes, `View > Light mode` switching between them. `"dark"` is
+the black canvas the viewer has had since M2 and stays the default, so an existing user
+sees no change. The colours themselves are `viewer/theme.py`'s; only the names are here,
+for the same reason `COLOUR_MAPS` is -- `validate` has to clamp a hand-edited value and
+this module does not import the plot layer."""
 
 
 EXPORT_DPIS = (96, 150, 300, 600)
@@ -80,6 +89,7 @@ class ViewerSettings:
     show_info_panel: bool = True
     detector_bits: int = 8
     colour_map: str = "viridis"
+    theme: str = "dark"
     export_dpi: int = 300
     cache_budget_mb: int = 512
     arrival_offset_ms: float = 0.0
@@ -102,6 +112,7 @@ class ViewerSettings:
             colour_scale=self.colour_scale if self.colour_scale in COLOUR_SCALES else "linear",
             detector_bits=detector_bits,
             colour_map=self.colour_map if self.colour_map in COLOUR_MAPS else "viridis",
+            theme=self.theme if self.theme in THEMES else "dark",
             export_dpi=self.export_dpi if self.export_dpi in EXPORT_DPIS else 300,
             cache_budget_mb=cache_budget_mb,
             arrival_offset_ms=self.arrival_offset_ms if math.isfinite(self.arrival_offset_ms) else 0.0,
@@ -145,6 +156,7 @@ def load_settings() -> ViewerSettings:
         detector_bits=_as_int(store.value("detector_bits", defaults.detector_bits),
                                defaults.detector_bits),
         colour_map=str(store.value("colour_map", defaults.colour_map)),
+        theme=str(store.value("theme", defaults.theme)),
         export_dpi=_as_int(store.value("export_dpi", defaults.export_dpi), defaults.export_dpi),
         cache_budget_mb=_as_int(store.value("cache_budget_mb", defaults.cache_budget_mb),
                                  defaults.cache_budget_mb),
@@ -173,6 +185,7 @@ def save_settings(settings: ViewerSettings) -> None:
     store.setValue("show_info_panel", settings.show_info_panel)
     store.setValue("detector_bits", settings.detector_bits)
     store.setValue("colour_map", settings.colour_map)
+    store.setValue("theme", settings.theme)
     store.setValue("export_dpi", settings.export_dpi)
     store.setValue("cache_budget_mb", settings.cache_budget_mb)
     store.setValue("arrival_offset_ms", settings.arrival_offset_ms)

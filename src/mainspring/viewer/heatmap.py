@@ -43,9 +43,9 @@ from contextlib import contextmanager
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor
 
 from ..uimf import DisplayAxes
+from . import theme
 from .controls import describe
 from .workers import DEBOUNCE_MS
 
@@ -56,28 +56,13 @@ __all__ = [
     "RIGHT_AXIS_WIDTH",
     "SIDE_PLOT_SIZE",
     "TICK_LENGTH",
+    "TICK_PEN_WIDTH",
     "TOP_AXIS_HEIGHT",
     "HeatmapView",
     "UimfViewBox",
     "pixel_of",
     "scaled",
 ]
-
-
-_BOLD_LABEL_STYLE = {
-    "color": pg.mkPen(pg.getConfigOption("foreground")).color().name(),
-    "font-weight": "bold",
-}
-"""Axis *label* style only -- pyqtgraph keeps tick values a separate `TickFont`, so this
-never touches them.
-
-`color` has to be spelled out here: `AxisItem.setLabel(**style)` *replaces* `labelStyle`
-wholesale rather than merging into it (`AxisItem.setLabel` in pyqtgraph), and
-`AxisItem.__init__` already put the foreground colour there via `setTextPen`. Passing
-`font-weight` alone silently dropped that colour, so the label rendered in Qt's rich-text
-default (black) against this viewer's black background -- present, bold, and invisible.
-Recomputed from the same config option `setTextPen` reads, since neither axis ever calls
-`setTextPen` itself to get a colour to read back."""
 
 
 def scaled(image: np.ndarray, colour_scale: str) -> np.ndarray:
@@ -124,6 +109,12 @@ TICK_LENGTH = -8
 long enough to read against the image, because a tick is how a zoomed view is read
 against the axis values -- and on the top and right edges, which carry no values, the
 ticks are the whole axis."""
+
+TICK_PEN_WIDTH = 1.5
+"""How thick a tick is drawn, in the same "prominent enough to read against the image"
+judgement as `TICK_LENGTH` (lab record, task 11). The width is here and the colour is
+`theme.py`'s: how much a tick asserts itself is this module's decision, and what colour
+it asserts itself in is the palette's."""
 
 
 class UimfViewBox(pg.ViewBox):
@@ -284,6 +275,12 @@ class HeatmapView(pg.GraphicsLayoutWidget):
         self._plot = self.addPlot(row=1, col=0, viewBox=self._view_box)
         self._plot.showGrid(x=False, y=False)
         self._plot.setMenuEnabled(False)
+        # pyqtgraph's own "A" button, shown on hover in the corner, calls
+        # `enableAutoRange` -- which this module's auto-range-is-off-and-stays-off
+        # invariant forbids, and which Home and a double-click already do properly. It
+        # is also a white pixmap that no palette can reach, so a light canvas would show
+        # an invisible control that breaks the view if found.
+        self._plot.hideButtons()
         self._plot.getAxis("left").setWidth(AXIS_WIDTH)
         self._plot.getAxis("bottom").setHeight(AXIS_HEIGHT)
         # Every axis is created and linked to the box when the PlotItem is; the top and
@@ -301,7 +298,10 @@ class HeatmapView(pg.GraphicsLayoutWidget):
             axis = self._plot.getAxis(name)
             # `tickAlpha` pinned: pyqtgraph otherwise fades each minor level by half.
             axis.setStyle(tickLength=TICK_LENGTH, tickAlpha=255)
-            axis.setTickPen(pg.mkPen(axis.textPen().color(), width=1.5))
+        # Their pens are not set here: every colour on this widget belongs to
+        # `set_palette`, called at the end of this constructor and again on every
+        # `View > Light mode` toggle.
+
         self._image_item = pg.ImageItem()
         self._plot.addItem(self._image_item)
 
@@ -356,7 +356,7 @@ class HeatmapView(pg.GraphicsLayoutWidget):
         self.ci.layout.setColumnStretchFactor(0, 1)
         self.ci.layout.setRowStretchFactor(1, 1)
 
-        self._debug = pg.TextItem(color=QColor(220, 220, 220), anchor=(0, 0))
+        self._debug = pg.TextItem(anchor=(0, 0))
         self._debug.setParentItem(self._view_box)  # parented to the box: position is in pixels
         self._debug.setPos(8, 6)
         self._debug.setVisible(bool(os.environ.get("MAINSPRING_DEBUG_RENDER")))
@@ -369,6 +369,8 @@ class HeatmapView(pg.GraphicsLayoutWidget):
         self.scene().sigMouseMoved.connect(self._on_mouse_moved)
         self._cursor_inside = False
         self._levels_held = False
+        self._label_style: "dict[str, str]" = {}
+        self.set_palette(theme.active())
 
     # --- accessors --------------------------------------------------------------------
 
@@ -455,8 +457,8 @@ class HeatmapView(pg.GraphicsLayoutWidget):
         displayed = scaled(result.image, colour_scale)
         self._image_item.setImage(displayed, autoLevels=False)
         self._image_item.setRect(x0, y0, x1 - x0, y1 - y0)
-        self._plot.setLabel("bottom", axes.x_label, **_BOLD_LABEL_STYLE)
-        self._plot.setLabel("left", axes.y_label, **_BOLD_LABEL_STYLE)
+        self._plot.setLabel("bottom", axes.x_label, **self._label_style)
+        self._plot.setLabel("left", axes.y_label, **self._label_style)
         if not self._levels_held:
             low, high = float(displayed.min()), float(displayed.max())
             self._colour_bar.setLevels((low, high if high > low else low + 1.0))
@@ -523,8 +525,46 @@ class HeatmapView(pg.GraphicsLayoutWidget):
         self._levels_held = False
 
     def set_colour_map(self, name: str) -> None:
-        """Switch the colour bar (and the image it drives) to one of `COLOUR_MAPS`."""
+        """Switch the colour bar (and the image it drives) to one of `COLOUR_MAPS`.
+
+        Independent of the palette in both directions: the map is a statement about the
+        data, and `View > Light mode` never moves it (`theme.py`).
+        """
         self._colour_bar.setColorMap(name)
+
+    def set_palette(self, palette: "theme.Palette") -> None:
+        """Repaint every colour this widget owns, without rebuilding anything.
+
+        Called once at construction and again on every `View > Light mode` toggle
+        (`theme.apply`, the one path). Nothing here touches the image, the colour map or
+        the levels, so a toggle costs the user nothing they had set up.
+
+        The order inside the loop is load-bearing. `setTextPen` writes its colour into
+        `labelStyle` in place and re-renders the label, so calling it **last** recolours
+        a label that `set_image` has already set without disturbing its text or its bold
+        weight -- and `_label_style` is refreshed first so that the next `set_image`
+        writes the same colour rather than putting the old one back.
+        """
+        self.setBackground(palette.background)
+        self._label_style = theme.label_style(palette)
+        for axis in self._axes():
+            axis.setPen(pg.mkPen(palette.foreground))
+            axis.setTickPen(pg.mkPen(palette.foreground, width=TICK_PEN_WIDTH))
+            axis.setTextPen(pg.mkPen(palette.foreground))
+        self._debug.setColor(palette.debug)
+
+    def _axes(self) -> "list[pg.AxisItem]":
+        """The heatmap's four axes and the colour bar's four.
+
+        The colour bar's are included because they are furniture on the same canvas: its
+        value axis is the one a user reads a level off, and only its gradient belongs to
+        the colour map.
+        """
+        return [
+            plot.getAxis(name)
+            for plot in (self._plot, self._colour_bar)
+            for name in ("left", "bottom", "top", "right")
+        ]
 
     def set_debug_text(self, text: str) -> None:
         """The render-time overlay, drawn only when `MAINSPRING_DEBUG_RENDER` is set.

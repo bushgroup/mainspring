@@ -56,6 +56,7 @@ from PySide6.QtWidgets import (
 
 from ..uimf import DisplayAxes, FrameParams, GlobalParams, SparseFrame
 from ..uimf.raster import AGGREGATES
+from . import theme
 from .controls import add_labelled, describe, make_action
 from .export import ExportDialog, content_rect, export_display
 from .heatmap import HeatmapView, pixel_of
@@ -124,6 +125,10 @@ class MainWindow(QMainWindow):
         self.heatmap = HeatmapView(colour_map=self.settings.colour_map)
         self.setCentralWidget(self.heatmap)
         self.side_plots = SidePlots(self.heatmap)
+        # Before any of the window's own signals are wired: both plot widgets exist, so
+        # this is the first moment the restored palette can be put on them, and doing it
+        # here means every later change goes through the same one call (`theme.apply`).
+        theme.apply(self, self.settings.theme)
         self.heatmap.view_resized.connect(self._on_view_resized)
         self.heatmap.view_changed.connect(self._on_view_changed)
         self.heatmap.cursor_moved.connect(self._on_cursor_moved)
@@ -217,9 +222,20 @@ class MainWindow(QMainWindow):
             shortcut="Home",
             triggered=self.heatmap.reset_range,
         )
+        # A two-state entry rather than a Theme submenu of two: there are two palettes,
+        # the dark one is the default, and a tick beside one word says which is on.
+        self._light_action = make_action(
+            self,
+            "&Light mode",
+            tip="Draw the plot area on white instead of black. The colour map does not change.",
+            checkable=True,
+            checked=(self.settings.theme == "light"),
+            toggled=self._on_light_mode_toggled,
+        )
         view_menu = self.menuBar().addMenu("&View")
         view_menu.addAction(self.reset_action)
         view_menu.addAction(self._info_action)
+        view_menu.addAction(self._light_action)
         self._build_colour_map_menu(view_menu)
 
     def _build_colour_map_menu(self, view_menu: "object") -> None:
@@ -698,6 +714,16 @@ class MainWindow(QMainWindow):
             return
         self.settings.colour_map = name
         self.heatmap.set_colour_map(name)
+
+    def _on_light_mode_toggled(self, checked: bool) -> None:
+        """Repaint the canvas and nothing else.
+
+        No re-render and no reload: `theme.apply` sets colours on the items already on
+        screen, so the open file, the frame, the view ranges and the colour levels are
+        all still exactly where the user left them (`theme.py`).
+        """
+        self.settings.theme = "light" if checked else "dark"
+        theme.apply(self, self.settings.theme)
 
     def _on_info_toggled(self, checked: bool) -> None:
         self.settings.show_info_panel = checked

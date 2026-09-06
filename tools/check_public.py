@@ -68,7 +68,7 @@ def section(title: str) -> None:
 UIMF_MODULES = ("cache", "calib", "cli", "decode", "frame", "raster", "reader")
 VIEWER_MODULES = (
     "app", "controls", "export", "heatmap", "info_panel", "main_window", "settings",
-    "side_plots", "workers",
+    "side_plots", "theme", "workers",
 )
 
 
@@ -288,8 +288,10 @@ def main() -> int:
 
     from PySide6.QtWidgets import QApplication
 
+    from mainspring.viewer import theme
     from mainspring.viewer.controls import unexplained
     from mainspring.viewer.main_window import MainWindow
+    from mainspring.viewer.settings import THEMES
 
     qt_app = QApplication.instance() or QApplication([])
 
@@ -339,6 +341,23 @@ def main() -> int:
             + (f" (mute: {', '.join(mute)})" if mute else ""),
             not mute,
         )
+
+        # And nothing on the plot canvas is painted a colour its palette does not hold.
+        # Under **light** above all: under the dark palette this passes for anything
+        # hardcoded to the values the viewer has always drawn, which is most of what the
+        # walk exists to catch (`viewer/theme.py`). Data-free, so it FAILs in a bare
+        # clone rather than skipping, and the theme is put back afterwards because
+        # `theme.apply` sets pyqtgraph's process-wide config options and the export
+        # checks below read the canvas background back.
+        for name in THEMES:
+            theme.apply(window, name)
+            stray = theme.themed(window)
+            check_true(
+                f"nothing on the {name} canvas is painted outside its palette"
+                + (f" (stray: {', '.join(stray)})" if stray else ""),
+                not stray,
+            )
+        theme.apply(window, window.settings.theme)
         if painted:
             result = painted[0]
             check_true("the painted image's extent matches the calibrated full range",

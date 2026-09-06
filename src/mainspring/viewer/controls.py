@@ -24,6 +24,10 @@ The trap the walk exists to survive: a `QAction` with no tooltip of its own retu
 House style for the sentence: one sentence, saying what the control does, in the prose
 voice the public documentation uses -- purpose first, numbers rather than adjectives, no
 em dashes. The shortcut is appended by `make_action`, never typed.
+
+`name_of` and `numbered` are how a walk over this window reports what it found, and are
+public because this is not the only such walk: `theme.themed` names stray colours with
+the same two, so a reader of either report reads one convention rather than two.
 """
 
 from __future__ import annotations
@@ -51,6 +55,8 @@ __all__ = [
     "describe",
     "is_waived",
     "make_action",
+    "name_of",
+    "numbered",
     "unexplained",
     "waive",
 ]
@@ -232,10 +238,15 @@ def _check_widget(widget: object, missing: "list[str]", seen: "set[int]") -> Non
     if isinstance(widget, QAbstractButton) and widget.defaultAction() is not None:
         return
     if not widget.toolTip().strip():
-        missing.append(_name(widget))
+        missing.append(name_of(widget))
 
 
-def _name(obj: object) -> str:
+def name_of(obj: object) -> str:
+    """What to call `obj` in a checker's output: its class, and whatever names it.
+
+    Nothing here is unique -- four axes share a class and two projections share a type --
+    so a report that lists several is passed through `numbered` afterwards.
+    """
     if isinstance(obj, pg.AxisItem):
         return f"AxisItem {obj.orientation!r}"  # four of them share a class name
     for attr in ("objectName", "text", "name"):
@@ -248,6 +259,21 @@ def _name(obj: object) -> str:
             if isinstance(value, str) and value.strip():
                 return f"{type(obj).__name__} {value.strip()!r}"
     return type(obj).__name__
+
+
+def numbered(names: "list[str]") -> "list[str]":
+    """Sorted, with repeats distinguished.
+
+    Two mute controls of the same class, or two items of one type carrying the same
+    stray colour, must both be reported: a report that named one of them would look
+    like a single problem, and fixing it would look like fixing both.
+    """
+    counts: dict[str, int] = {}
+    named: list[str] = []
+    for name in names:
+        counts[name] = counts.get(name, 0) + 1
+        named.append(name if counts[name] == 1 else f"{name} #{counts[name]}")
+    return sorted(named)
 
 
 def unexplained(window: object) -> "list[str]":
@@ -271,7 +297,7 @@ def unexplained(window: object) -> "list[str]":
             _check_widget(action.defaultWidget(), missing, seen)
             continue
         if not _action_tip(action):
-            missing.append(_name(action))
+            missing.append(name_of(action))
 
     # `findChildren` takes one type at a time, and a widget can match several of them.
     for tipped_type in _TIPPED_TYPES:
@@ -292,13 +318,6 @@ def unexplained(window: object) -> "list[str]":
             if isinstance(item, pg.AxisItem) and not item.isVisible():
                 continue  # the side plots hide theirs; there is nothing to point at
             if not item.toolTip().strip():
-                missing.append(_name(item))
+                missing.append(name_of(item))
 
-    # Two untipped items of the same class must both be reported, or fixing one looks
-    # like fixing both.
-    seen: dict[str, int] = {}
-    named: list[str] = []
-    for name in missing:
-        seen[name] = seen.get(name, 0) + 1
-        named.append(name if seen[name] == 1 else f"{name} #{seen[name]}")
-    return sorted(named)
+    return numbered(missing)
