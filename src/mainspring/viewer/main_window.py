@@ -48,6 +48,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QLabel,
     QMainWindow,
+    QMessageBox,
     QProgressBar,
     QProgressDialog,
     QSpinBox,
@@ -114,6 +115,7 @@ class MainWindow(QMainWindow):
         self._serial = 0
         self._open_started = 0.0
         self._opening = False
+        self._opened_from_command_line = False
         self._path: str | None = None
         self._frame_message = ""
         self._frame_numbers: list[int] = []
@@ -454,15 +456,23 @@ class MainWindow(QMainWindow):
         name = f"{stem}-frame{frame}.{suffix}" if frame else f"{stem}.{suffix}"
         return os.path.join(self.settings.last_directory, name)
 
-    def open_file(self, path: str) -> None:
+    def open_file(self, path: str, *, from_command_line: bool = False) -> None:
         """Open a UIMF file and show its first frame.
 
         Decoding happens on the load worker's thread, so the window and this call both
         return immediately; `_on_opened` and `_on_frame_loaded` do the rest once the
         signals arrive.
+
+        `from_command_line` marks an open that reached the window because a file
+        association or a drag onto the `.exe` launched the process for this file, rather
+        than a deliberate `File > Open`. `_on_failed` uses it to decide whether a status
+        bar line is enough (the window is already in front of a user who chose the file)
+        or whether a bad double-click needs a modal that names what happened (lab
+        record, task 15).
         """
         self._open_started = time.perf_counter()
         self._path = path
+        self._opened_from_command_line = from_command_line
         self.statusBar().showMessage(f"Opening {os.path.basename(path)}...")
         self._busy.show()
         self._opening = True
@@ -592,8 +602,23 @@ class MainWindow(QMainWindow):
         self._busy.hide()
         if self._opening:
             # The open itself failed: nothing is on screen for the title to name.
+            failed_path = self._path
+            command_line_open = self._opened_from_command_line
             self._path = None
+            self._opened_from_command_line = False
             self.setWindowTitle(APP_TITLE)
+            if command_line_open:
+                # Explorer launched this process *because of* the file -- a double-click
+                # on a corrupt file, a vanished network share, or something merely named
+                # .uimf -- so a status-bar line alone reads as "the program is broken"
+                # rather than as a bad file. A deliberate File > Open leaves the window
+                # already in front of the user; that case still gets the status bar only.
+                box = QMessageBox(self)
+                box.setIcon(QMessageBox.Icon.Warning)
+                box.setWindowTitle(APP_TITLE)
+                box.setText(f"Could not open {os.path.basename(failed_path or '')}")
+                box.setInformativeText(message)
+                box.exec()
         self._opening = False
         if self._sum_dialog is not None:
             self._sum_dialog.close()

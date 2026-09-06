@@ -105,3 +105,43 @@ def test_a_failed_open_leaves_the_title_bare(qtbot, tmp_path):
     )
 
     assert window.windowTitle() == "mainspring"
+
+
+def test_a_failed_dialog_open_shows_no_modal(qtbot, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    shown = []
+    monkeypatch.setattr(QMessageBox, "exec", lambda self: shown.append(self) or 0)
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    window.open_file(str(tmp_path / "does-not-exist.uimf"))
+    qtbot.waitUntil(
+        lambda: (window.statusBar().currentMessage() or "").startswith("Error"), timeout=5000
+    )
+
+    assert shown == []
+
+
+def test_a_failed_command_line_open_shows_a_modal_naming_the_file(qtbot, tmp_path, monkeypatch):
+    # A file association or a drag onto the .exe launches mainspring *because of* this
+    # file, with no window already in front of the user -- a bad double-click needs more
+    # than the status bar's small grey text (lab record, task 15).
+    from PySide6.QtWidgets import QMessageBox
+
+    shown = []
+    monkeypatch.setattr(QMessageBox, "exec", lambda self: shown.append(self) or 0)
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    bad_path = str(tmp_path / "does-not-exist.uimf")
+    window.open_file(bad_path, from_command_line=True)
+    qtbot.waitUntil(
+        lambda: (window.statusBar().currentMessage() or "").startswith("Error"), timeout=5000
+    )
+
+    assert len(shown) == 1
+    assert "does-not-exist.uimf" in shown[0].text()
+    assert window.windowTitle() == "mainspring"

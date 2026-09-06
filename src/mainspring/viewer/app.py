@@ -128,5 +128,9 @@ def main(argv: "list[str] | None" = None) -> int:
     window = MainWindow()
     window.show()
     if args:
-        window.open_file(args[0])
+        # A file association or a drag onto the .exe both arrive here the same way: a
+        # path Windows chose on the user's behalf, not a dialog they were sitting in
+        # front of. `open_file` uses the distinction to decide how loudly a bad open
+        # complains (lab record, task 15).
+        window.open_file(args[0], from_command_line=True)
     return app.exec()

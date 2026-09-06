@@ -142,6 +142,14 @@ have no administrator rights to give. It offers a Start menu entry, an optional 
 and an uninstaller. The version in the file name comes from `MyAppVersion` in
 `packaging/mainspring.iss`, which is kept in step with the version in `pyproject.toml` by hand.
 
+The wizard also offers, checked by default, to open `.uimf` files with mainspring. On a machine
+where nothing else has claimed the extension, which is the ordinary case for an instrument PC,
+accepting it means a double-click opens the file directly, with no prompt and no reboot.
+Windows keeps a choice you have already made for an extension, though, so if something else was
+previously set as the `.uimf` handler, mainspring registers itself as a choice rather than
+taking the slot back; Settings > Default apps is where to point `.uimf` at it. Uninstalling
+removes the registration.
+
 ## Layout
 
 ```

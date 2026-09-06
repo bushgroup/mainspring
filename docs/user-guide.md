@@ -19,18 +19,27 @@ uv run mainspring FILE.uimf
 
 The same `README.md` covers building the Windows executable and compiling the installer over
 it. That installer is per-user and needs no administrator rights, because the viewer writes
-nothing outside your own profile. Windows 10 and 11 are the supported platforms.
+nothing outside your own profile. Windows 10 and 11 are the supported platforms. The installer
+also offers to open `.uimf` files with mainspring; accept it and a double-click in Explorer
+opens the viewer directly, unless something else was already set to open `.uimf` on that
+machine, in which case mainspring is offered as a choice rather than replacing it (Settings >
+Default apps).
 
 ## Opening a file
 
-Use `Ctrl+O`, or `File > Open`, or pass a path on the command line, or drop a `.uimf` file onto
-the executable. The viewer remembers the directory you last opened from and starts the dialog
-there.
+Use `Ctrl+O`, or `File > Open`, or pass a path on the command line, or double-click a `.uimf`
+file in Explorer, or drop one onto the executable. The viewer remembers the directory you last
+opened from and starts the dialog there.
 
 Decoding runs on a background thread, so the window stays responsive while it works, and an
 indeterminate progress bar sits in the status bar until the first image appears. The status bar
 then reports the frame number, how many stored points it holds, and how long the open took. The
 window title becomes the file's name.
+
+A file opened from Explorer or a drag onto the executable that fails to decode gets a dialog
+naming the file and the reason, since the window has nothing on screen yet to explain itself;
+a file chosen from `File > Open` that fails reports the same reason in the status bar, since
+you are already looking at the window.
 
 mainspring opens a finished acquisition. Following a file while the instrument is still
 writing it is the next piece of work on the viewer, and it is not here yet.
