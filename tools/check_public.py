@@ -67,7 +67,8 @@ def section(title: str) -> None:
 
 UIMF_MODULES = ("cache", "calib", "cli", "decode", "frame", "raster", "reader")
 VIEWER_MODULES = (
-    "app", "heatmap", "info_panel", "main_window", "settings", "side_plots", "workers",
+    "app", "controls", "heatmap", "info_panel", "main_window", "settings", "side_plots",
+    "workers",
 )
 
 
@@ -287,6 +288,7 @@ def main() -> int:
 
     from PySide6.QtWidgets import QApplication
 
+    from mainspring.viewer.controls import unexplained
     from mainspring.viewer.main_window import MainWindow
 
     qt_app = QApplication.instance() or QApplication([])
@@ -325,6 +327,17 @@ def main() -> int:
             time.sleep(0.01)
         check_true("the viewer window loads a synthetic file and paints a frame",
                    bool(painted))
+
+        # Every control the user can touch explains itself. Data-free, so this FAILs in
+        # a bare clone rather than skipping: a rule the pytest suite alone enforced is
+        # not the rule CLAUDE.md claims. Run with a file open, because opening one
+        # repopulates the frame-type filter and the parameter tree.
+        mute = unexplained(window)
+        check_true(
+            "every control the user can touch explains itself"
+            + (f" (mute: {', '.join(mute)})" if mute else ""),
+            not mute,
+        )
         if painted:
             result = painted[0]
             check_true("the painted image's extent matches the calibrated full range",

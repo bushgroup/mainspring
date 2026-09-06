@@ -17,7 +17,8 @@ import pytest
 
 UIMF_MODULES = ("cache", "calib", "cli", "decode", "frame", "raster", "reader")
 VIEWER_MODULES = (
-    "app", "heatmap", "info_panel", "main_window", "settings", "side_plots", "workers",
+    "app", "controls", "heatmap", "info_panel", "main_window", "settings", "side_plots",
+    "workers",
 )
 
 

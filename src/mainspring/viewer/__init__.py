@@ -10,6 +10,8 @@ Where things live:
     info_panel.py    parameters, and the intensity-per-push readout
     workers.py       the load thread, the render thread, and the single-slot mailbox
     settings.py      ViewerSettings and its QSettings persistence
+    controls.py      the control factory that requires a tooltip, and the walk that
+                     checks every control has one
 
 Importing this package imports Qt, so nothing here is imported at `mainspring` package
 level. `notes/architecture.md` in the lab record says why the seam sits where it does
