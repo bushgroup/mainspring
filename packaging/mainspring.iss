@@ -23,6 +23,11 @@ AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
+; The same .ico the .exe carries (tools/make_icon.py), used for the wizard's own window
+; and title bar. UninstallDisplayIcon points into the install rather than at a copy, so
+; Apps & features shows the icon the installed program actually has.
+SetupIconFile=..\src\mainspring\viewer\resources\mainspring.ico
+UninstallDisplayIcon={app}\{#MyAppExeName}
 DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes

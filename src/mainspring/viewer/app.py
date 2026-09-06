@@ -4,7 +4,8 @@ Thin on purpose. Everything this module does -- parse a command line that is at 
 file path, point numba's compiled-kernel cache somewhere that survives a frozen `.exe`
 rebuild (seeding it from a build-time pre-warmed copy on first launch), set
 pyqtgraph's config, set the application and organisation names that `QSettings` keys
-off, construct the window, and hand control to the Qt event loop -- is startup, and
+off, set the window icon and the Windows taskbar identity that groups under it,
+construct the window, and hand control to the Qt event loop -- is startup, and
 none of it is behaviour worth testing through. What is worth testing goes in
 `main_window.py` and below, where a test can reach it with `pytest-qt` and no event
 loop.
@@ -60,6 +61,39 @@ def _seed_numba_cache(cache_dir: str) -> None:
         shutil.copytree(seed, cache_dir, dirs_exist_ok=True)
 
 
+def _icon_path() -> str:
+    """The multi-resolution `.ico`, which travels with the package.
+
+    `os.path.dirname(__file__)` resolves in a frozen build as well as a source tree:
+    PyInstaller sets `__file__` to the bundled module's path, and
+    `packaging/mainspring.spec` collects the package's data files beside it.
+    `tools/make_icon.py` generates the file from the drawings in `packaging/icon/`.
+    """
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "resources", "mainspring.ico")
+
+
+def _set_windows_app_id() -> None:
+    """Tell the Windows shell this process is mainspring rather than its host executable.
+
+    Without an explicit AppUserModelID the shell groups a window under whatever launched
+    it and shows that program's icon in the taskbar -- for a source run, the interpreter's.
+    Setting one costs nothing when the icon is right anyway (the frozen `.exe` carries it
+    in its resources) and fixes the case where it is not. Everything here is Windows-only
+    and best-effort: nothing about the viewer depends on it working.
+    """
+    if sys.platform != "win32":
+        return
+    import ctypes
+
+    from .settings import APPLICATION, ORGANISATION
+
+    app_id = f"{ORGANISATION}.{APPLICATION}".replace(" ", "")
+    try:
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(app_id)
+    except (AttributeError, OSError):  # older shell32, or a Windows without it
+        pass
+
+
 def main(argv: "list[str] | None" = None) -> int:
     """Run the viewer; returns a process exit status.
 
@@ -71,7 +105,10 @@ def main(argv: "list[str] | None" = None) -> int:
     os.makedirs(os.environ["NUMBA_CACHE_DIR"], exist_ok=True)
     _seed_numba_cache(os.environ["NUMBA_CACHE_DIR"])
 
+    _set_windows_app_id()
+
     import pyqtgraph as pg
+    from PySide6.QtGui import QIcon
     from PySide6.QtWidgets import QApplication
 
     from .main_window import MainWindow
@@ -86,6 +123,7 @@ def main(argv: "list[str] | None" = None) -> int:
     app = QApplication.instance() or QApplication([sys.argv[0], *args])
     app.setOrganizationName(ORGANISATION)
     app.setApplicationName(APPLICATION)
+    app.setWindowIcon(QIcon(_icon_path()))  # inherited by every window the viewer opens
 
     window = MainWindow()
     window.show()

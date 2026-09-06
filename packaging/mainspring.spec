@@ -28,6 +28,17 @@ if MODE not in ("onefile", "onedir"):
 # entry script against it means the build works from any cwd, not just this directory.
 ENTRYPOINT = os.path.join(SPECPATH, "entrypoint.py")
 
+# The icon is package data, not a packaging asset: the viewer sets it on its own windows
+# through `mainspring.viewer.app`, so it has to travel with the package for a source run
+# and a wheel install as well as for this build, and `collect_data_files("mainspring")`
+# below already brings it into the bundle. This is the same file, handed to the Windows
+# resource section of the .exe. `tools/make_icon.py` regenerates it from packaging/icon/.
+ICON = os.path.join(
+    os.path.dirname(SPECPATH), "src", "mainspring", "viewer", "resources", "mainspring.ico"
+)
+if not os.path.isfile(ICON):
+    raise RuntimeError(f"{ICON} is missing -- run `uv run tools/make_icon.py`.")
+
 # `mainspring.viewer.app._seed_numba_cache` copies this into NUMBA_CACHE_DIR on a frozen
 # build's first launch, so the 2.5-4.7 s first-ever-launch JIT cost (notes/reader-layer.md,
 # task 04) is paid at build time instead. Required, not optional: an unwarmed build would
@@ -175,7 +186,7 @@ _exe_common = dict(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=None,
+    icon=ICON,
 )
 
 if MODE == "onedir":

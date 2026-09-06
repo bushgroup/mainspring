@@ -13,7 +13,7 @@ codec against the format's own rules and against itself in both directions, and 
 synthetic file -- written through the schema a 2026 acquisition carries -- read back
 through the whole reader, rasterised, and put through `uimf-info --verify`; and, since
 task 04, the same synthetic file opened and painted by the viewer's own window,
-offscreen. Where a real file is present, `--verify` runs on that too, which is the
+offscreen, alongside the window icon that ships with it. Where a real file is present, `--verify` runs on that too, which is the
 acceptance test the milestone is written in terms of (lab record, task 03).
 
 Run:  uv run tools/check_public.py
@@ -290,6 +290,27 @@ def main() -> int:
     from mainspring.viewer.main_window import MainWindow
 
     qt_app = QApplication.instance() or QApplication([])
+
+    # The icon is package data, so a clone that has it can check it: that it is there at
+    # all (the .exe, the installer and every window take it from this one file), that Qt
+    # can read every frame out of the container this repo writes by hand, and that it
+    # still matches the drawings it came from -- an edit to packaging/icon/*.svg without
+    # a `uv run tools/make_icon.py` after it would otherwise ship the old picture.
+    import make_icon
+    from PySide6.QtGui import QIcon
+
+    from mainspring.viewer.app import _icon_path
+
+    check_true("the window icon ships with the package", os.path.isfile(_icon_path()))
+    icon_sizes = {s.width() for s in QIcon(_icon_path()).availableSizes()}
+    check_true(
+        f"the icon carries every frame Windows asks for (has {sorted(icon_sizes)})",
+        icon_sizes == {size for size, _ in make_icon.FRAMES},
+    )
+    check_true(
+        "the icon is up to date with packaging/icon/",
+        open(_icon_path(), "rb").read() == make_icon.build(),
+    )
     with tempfile.TemporaryDirectory() as tmp:
         path = os.path.join(tmp, "viewer.uimf")
         viewer_spec = write_synthetic_uimf(path, frames=1, scans=16, bins=4096)
