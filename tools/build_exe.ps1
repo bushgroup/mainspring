@@ -9,7 +9,7 @@
 .PARAMETER Mode
     onedir (default): a mainspring/ folder holding mainspring.exe beside its dependencies, no
     extraction, packaged by Inno Setup (packaging/mainspring.iss) -- task 07 measured onefile's
-    cold start at 90-190+ s here against onedir's 2.3 s and picked onedir. onefile: a single
+    cold start at 90-190+ s here against onedir's 3-4 s and picked onedir. onefile: a single
     mainspring.exe that extracts to a temp directory on every launch, kept for comparison.
 .PARAMETER SkipBuild
     Measure startup against whatever is already in dist/ without rebuilding.
@@ -41,6 +41,15 @@ if (-not $SkipBuild) {
     }
 
     Write-Host "Building mainspring.exe ($Mode) with PyInstaller..." -ForegroundColor Cyan
+    # Build with only the Windows directories and uv's on PATH. PyInstaller resolves DLL
+    # dependencies through PATH as a last resort, so a PATH carrying another Python
+    # distribution makes the build depend on the shell it ran from: anaconda3/Library/bin's
+    # ICU 73 icuuc.dll once shadowed the Windows icuuc.dll that Qt6Core links, and every
+    # launch of that build died importing QtCore. The spec's provenance guard fails the build
+    # on anything this misses.
+    $savedPath = $env:PATH
+    $uvDir = Split-Path -Parent (Get-Command uv).Source
+    $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot;$env:SystemRoot\System32\Wbem;$uvDir"
     $env:MAINSPRING_PACKAGE_MODE = $Mode
     try {
         uv run pyinstaller packaging/mainspring.spec --distpath $distDir --workpath $buildDir --noconfirm --clean
@@ -48,6 +57,7 @@ if (-not $SkipBuild) {
             throw "PyInstaller build failed (exit $LASTEXITCODE)."
         }
     } finally {
+        $env:PATH = $savedPath
         Remove-Item Env:\MAINSPRING_PACKAGE_MODE -ErrorAction SilentlyContinue
     }
 }
@@ -80,6 +90,13 @@ function Measure-Startup([string]$label) {
         throw "$label startup: process exited before showing a window (exit $($proc.ExitCode))."
     }
     $elapsed = (Get-Date) - $start
+    # PyInstaller's "Unhandled exception in script" crash dialog is a top-level window too,
+    # and a build that died importing QtCore once passed this check on its title alone.
+    $title = $proc.MainWindowTitle
+    if ($title -notlike "mainspring*") {
+        $proc | Stop-Process -Force
+        throw "$label startup: the first window was '$title', not the viewer -- the build crashed on launch."
+    }
     Write-Host ("{0} startup: {1:N2} s" -f $label, $elapsed.TotalSeconds)
     $proc | Stop-Process -Force
     return $elapsed.TotalSeconds

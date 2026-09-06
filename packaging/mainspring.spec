@@ -110,6 +110,56 @@ a = Analysis(
 # passed into Analysis itself.
 a.datas += NUMBA_SEED_DATAS
 
+# --- Provenance guard --------------------------------------------------------------------
+# PyInstaller resolves each collected binary's DLL dependencies by searching the binary's
+# own directory, then sys.path, then PATH. A PATH carrying another Python distribution
+# substitutes its DLLs quietly: with anaconda3/Library/bin on the build shell's PATH, its
+# ICU 73 `icuuc.dll` (versioned symbols) shadowed the Windows `icuuc.dll` (unversioned
+# symbols) that PySide6's Qt6Core links, and every launch of the frozen build -- on the
+# build machine and on a clean one -- died with "DLL load failed while importing QtCore:
+# The specified procedure could not be found". The same PATH also swapped in anaconda's
+# OpenSSL, TBB, MSVCP140 and UCRT forwarders. `tools/build_exe.ps1` strips PATH down to the
+# Windows directories and uv's for the build; this refuses to ship anything that still gets
+# through. Legitimate sources are exactly the venv, the interpreter it was created from, and
+# this repo (Windows system DLLs never appear in the TOC; PyInstaller excludes them).
+import sys
+
+def _root(path):
+    return os.path.normcase(os.path.realpath(path)).rstrip(os.sep) + os.sep
+
+ALLOWED_ROOTS = tuple(_root(p) for p in (sys.prefix, sys.base_prefix, os.path.dirname(SPECPATH)))
+
+def _foreign(toc):
+    for entry in toc:
+        src = os.path.normcase(os.path.realpath(entry[1]))
+        if not src.startswith(ALLOWED_ROOTS):
+            yield entry
+
+foreign = list(_foreign(a.binaries)) + list(_foreign(a.datas))
+if foreign:
+    listing = "\n".join(f"  {dest}  <-  {src}" for dest, src, *_ in foreign)
+    raise RuntimeError(
+        "Refusing to build: these files come from outside the venv, its base interpreter and "
+        "this repo (a foreign directory on PATH, most likely another Python distribution):\n"
+        + listing
+    )
+
+# --- One C++ runtime at the bundle root ---------------------------------------------------
+# numba's and llvmlite's extension modules import MSVCP140.dll by name and get whichever
+# copy PyInstaller found first; Windows then reuses that already-loaded copy for Qt6Core,
+# which needs the newer 14.44 exports PySide6 ships with. Pin the root copy to PySide6's,
+# the newest in the venv, so every importer in the bundle shares one runtime that is at
+# least as new as anything expects. (VCRUNTIME140 comes from the base interpreter and is
+# already the same 14.44 line.)
+import PySide6
+
+_pyside_msvcp = os.path.join(os.path.dirname(PySide6.__file__), "MSVCP140.dll")
+if not os.path.isfile(_pyside_msvcp):
+    raise RuntimeError(f"PySide6 no longer ships MSVCP140.dll at {_pyside_msvcp}; revisit this pin.")
+a.binaries = [e for e in a.binaries if e[0].lower() != "msvcp140.dll"] + [
+    ("MSVCP140.dll", _pyside_msvcp, "BINARY")
+]
+
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
 _exe_common = dict(
