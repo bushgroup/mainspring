@@ -23,6 +23,10 @@ you are reading this file *without* that import, you have a public clone — the
 - **Two layers, one seam.** `mainspring.uimf` is the data layer (numpy, optional numba) and
   **never imports Qt**; `mainspring.viewer` is PySide6 + pyqtgraph on top of it. A pipeline that
   installs the package for the reader must not pull a GUI into its import path.
+- **Every control the user can touch explains itself.** Build actions and toolbar widgets through
+  `mainspring.viewer.controls` (`make_action`, `add_labelled`, `describe`), which requires a
+  one-sentence tooltip; `tip=None` is a deliberate, reviewable waiver. `controls.unexplained()`
+  walks the live window by widget type and `tools/check_public.py` fails on anything mute.
 - **Never materialise a dense frame.** A frame is scans × TOF bins (5000 × 114688 on SLIMPHONY,
   2.3 GB as int32). Frames stay sparse (`SparseFrame`); the heatmap is rasterised to the viewport.
 - **The format reference is PNNL's UIMF-Library** (C#, actively maintained). Decode, calibration
