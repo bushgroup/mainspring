@@ -47,8 +47,11 @@ you are reading this file *without* that import, you have a public clone — the
 - **`.gitattributes` pins `* text=auto eol=lf`.**
 - **Outward-facing prose (README, `docs/`, user guides) follows the `manuscript-voice` skill**
   from the lab repo. Repo-internal prose (this file, docstrings, commit messages) does not.
-- **BSD 3-Clause, `LICENSE`, copyright University of Washington.** Private while the viewer is
-  built; written from the first commit as if public.
+- **BSD 3-Clause, `LICENSE`, copyright University of Washington.** Public since 2026-09-06,
+  released as `v1.0.0`; written from the first commit as if public. The version is declared
+  independently in `pyproject.toml`, `mainspring.__version__` and `packaging/mainspring.iss`, and
+  `check_public.py` fails unless the three agree; bump them together. The installer and the wheel
+  reach users as GitHub release assets, never through the repo.
 
 ## Maintaining this file
 
