@@ -39,6 +39,7 @@ from __future__ import annotations
 import numpy as np
 import pyqtgraph as pg
 
+from .controls import describe
 from .heatmap import AXIS_HEIGHT, AXIS_WIDTH, RIGHT_AXIS_WIDTH, TOP_AXIS_HEIGHT
 
 __all__ = ["SidePlots"]
@@ -95,6 +96,17 @@ class SidePlots:
         self.x_plot.layout.setColumnFixedWidth(_RIGHT_AXIS_COLUMN, RIGHT_AXIS_WIDTH)
         self.y_plot.layout.setRowFixedHeight(_TOP_AXIS_ROW, TOP_AXIS_HEIGHT)
         self.y_plot.layout.setRowFixedHeight(_BOTTOM_AXIS_ROW, AXIS_HEIGHT)
+
+        # Named by role, tipped by role: the swap-axes toggle changes what each one
+        # projects onto, so neither tooltip may name a quantity.
+        describe(
+            self.x_plot,
+            "Total intensity along the horizontal axis, over the vertical range in view.",
+        )
+        describe(
+            self.y_plot,
+            "Total intensity along the vertical axis, over the horizontal range in view.",
+        )
 
         self._x_curve = self.x_plot.plot(pen=_PEN)
         # Peak-preserving downsampling, and clipping to the visible window, both work

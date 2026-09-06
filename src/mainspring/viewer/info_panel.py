@@ -38,6 +38,8 @@ from typing import Mapping
 
 from PySide6.QtWidgets import QDockWidget, QFormLayout, QLabel, QTreeWidget, QTreeWidgetItem, QWidget
 
+from .controls import describe
+
 __all__ = ["INFO_PANEL_WIDTH", "InfoPanel", "per_push"]
 
 INFO_PANEL_WIDTH = 320
@@ -84,6 +86,10 @@ class InfoPanel(QDockWidget):
         self._tree = QTreeWidget(container)
         self._tree.setColumnCount(2)
         self._tree.setHeaderLabels(["Parameter", "Value"])
+        describe(
+            self._tree,
+            "The file's global parameters and the open frame's, as the file stores them.",
+        )
         self._global_root = QTreeWidgetItem(self._tree, ["Global", ""])
         self._frame_root = QTreeWidgetItem(self._tree, ["Frame", ""])
 
@@ -100,6 +106,22 @@ class InfoPanel(QDockWidget):
         live.addRow("Per push:", self._per_push_label)
         live.addRow("TIC in view:", self._tic_label)
         live.addRow("Points in view:", self._points_label)
+        # Both halves of each row, because the field name is what a reader questions.
+        # The per-push sentence carries the caveat the number is meaningless without:
+        # it is a quotient, over an accumulation count and a bit depth the file may not
+        # have told us (lab record, task 01).
+        for widget, tip in (
+            (self._max_label, "The largest single stored intensity inside the view."),
+            (
+                self._per_push_label,
+                "The largest stored intensity divided by Accumulations, as a fraction of"
+                " full scale at the detector bit depth set on the toolbar.",
+            ),
+            (self._tic_label, "The total stored intensity inside the view."),
+            (self._points_label, "How many stored, non-zero points are inside the view."),
+        ):
+            describe(widget, tip)
+            describe(live.labelForField(widget), tip)
 
         layout = QFormLayout(container)
         layout.addRow(self._tree)

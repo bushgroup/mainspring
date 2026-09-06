@@ -45,6 +45,7 @@ from PySide6.QtCore import QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor
 
 from ..uimf import DisplayAxes
+from .controls import describe
 from .workers import DEBOUNCE_MS
 
 __all__ = [
@@ -282,6 +283,27 @@ class HeatmapView(pg.GraphicsLayoutWidget):
         self._image_item = pg.ImageItem()
         self._plot.addItem(self._image_item)
 
+        # The gesture contract at the top of this module is the one piece of the viewer a
+        # user cannot discover by looking, because the context menu that would have
+        # advertised it is deliberately off. The image is where they point.
+        _GESTURES = (
+            "Scroll to zoom about the pointer, drag to pan, right-drag to zoom to a box,"
+            " double-click to reset."
+        )
+        describe(self._image_item, "Intensity across the frame. " + _GESTURES)
+        describe(self._plot, "Intensity across the frame. " + _GESTURES)
+        for name, what in (
+            ("left", "the vertical axis"),
+            ("bottom", "the horizontal axis"),
+            ("top", "the horizontal axis"),
+            ("right", "the vertical axis"),
+        ):
+            describe(
+                self._plot.getAxis(name),
+                f"Ticks on {what}. Ctrl-scroll zooms the horizontal axis alone and"
+                " Shift-scroll the vertical.",
+            )
+
         # The colour bar is a `PlotItem` of its own in the last column rather than
         # inserted into the heatmap's layout (`insert_in`), so that the arrival-time
         # plot can sit between the two. Its blank bottom axis is fixed to the heatmap's
@@ -290,6 +312,13 @@ class HeatmapView(pg.GraphicsLayoutWidget):
         self._colour_bar.setImageItem(self._image_item)
         self._colour_bar.getAxis("bottom").setHeight(AXIS_HEIGHT)
         self._colour_bar.getAxis("top").setHeight(TOP_AXIS_HEIGHT)
+        _BAR_TIP = (
+            "The intensity each colour stands for. Drag an end to set the limits by hand,"
+            " and tick Keep levels to hold them across frames."
+        )
+        describe(self._colour_bar, _BAR_TIP)
+        for name in ("left", "bottom", "top", "right"):
+            describe(self._colour_bar.getAxis(name), _BAR_TIP)
         self.ci.addItem(self._colour_bar, row=1, col=2)
 
         # Row 0 and column 1 are the side plots' (`side_plot_slots`); the stretch factors
