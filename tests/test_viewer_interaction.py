@@ -430,3 +430,72 @@ def test_the_window_agrees_with_a_real_files_stored_columns(qtbot, real_uimf):
 
     assert result.tic_in_view == pytest.approx(float(tic.sum()), rel=1e-9)
     assert result.max_intensity == pytest.approx(float(bpi.max()))
+
+
+# --- the layout: where the projections sit, and that they line up -----------------------
+
+def _edges(rect) -> tuple[float, float, float, float]:
+    return rect.left(), rect.top(), rect.right(), rect.bottom()
+
+
+def test_the_side_plots_sit_above_and_right_and_align_with_the_image(view, qtbot):
+    """The spectrum above the heatmap spans exactly its columns; the arrival-time plot
+    beside it spans exactly its rows; the colour bar is past both.
+
+    Alignment is checked twice, by two different mechanisms. The scene geometry says
+    the plot areas' edges coincide; the linked ranges say so independently, because
+    pyqtgraph maps a linked range through *screen* geometry -- a misaligned side plot
+    would show a shifted range rather than misplaced points.
+    """
+    from PySide6.QtWidgets import QApplication
+    from mainspring.viewer.side_plots import SidePlots
+
+    side = SidePlots(view)
+    QApplication.processEvents()
+    view.ci.layout.activate()
+    QApplication.processEvents()
+
+    img_l, img_t, img_r, img_b = _edges(view.view_box.sceneBoundingRect())
+    above = _edges(side.x_plot.getViewBox().sceneBoundingRect())
+    beside = _edges(side.y_plot.getViewBox().sceneBoundingRect())
+    bar = _edges(view._colour_bar.getViewBox().sceneBoundingRect())
+
+    assert above[0] == pytest.approx(img_l, abs=1.0) and above[2] == pytest.approx(img_r, abs=1.0)
+    assert above[3] <= img_t  # above, not overlapping
+    assert beside[1] == pytest.approx(img_t, abs=1.0) and beside[3] == pytest.approx(img_b, abs=1.0)
+    assert beside[0] >= img_r  # to the right
+    assert bar[0] >= beside[2]  # and the colour bar past that
+    assert bar[1] == pytest.approx(img_t, abs=1.0) and bar[3] == pytest.approx(img_b, abs=1.0)
+
+    view.view_box.setRange(xRange=(10.0, 40.0), yRange=(5.0, 25.0), padding=0.0)
+    QApplication.processEvents()
+    assert side.x_plot.getViewBox().viewRange()[0] == pytest.approx((10.0, 40.0))
+    assert side.y_plot.getViewBox().viewRange()[1] == pytest.approx((5.0, 25.0))
+
+
+def test_the_side_plots_are_bare_curves(view):
+    """No axis on either projection: the heatmap's axes read for the shared one, and
+    the intensity of a projection of what is on screen is not a number worth an axis."""
+    from mainspring.viewer.side_plots import SidePlots
+
+    side = SidePlots(view)
+    for plot in (side.x_plot, side.y_plot):
+        for name in ("left", "right", "top", "bottom"):
+            assert not plot.getAxis(name).isVisible()
+
+
+def test_the_heatmap_ticks_inward_on_all_four_axes_with_values_on_two(view):
+    from mainspring.viewer.heatmap import TICK_LENGTH
+
+    plot = view.plot_item
+    for name in ("left", "right", "top", "bottom"):
+        axis = plot.getAxis(name)
+        assert axis.isVisible()
+        assert axis.style["tickLength"] == TICK_LENGTH < 0  # negative: into the plot
+    assert plot.getAxis("left").style["showValues"]
+    assert plot.getAxis("bottom").style["showValues"]
+    assert not plot.getAxis("top").style["showValues"]
+    assert not plot.getAxis("right").style["showValues"]
+    # Ticks only, no room taken: the projections meet the image edge.
+    assert plot.getAxis("top").height() == 0
+    assert plot.getAxis("right").width() == 0

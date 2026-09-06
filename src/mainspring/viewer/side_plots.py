@@ -12,7 +12,15 @@ heatmap's x, the arrival-time plot's y is the heatmap's y -- and they stay share
 the axes are swapped, which is why the plots take their orientation from `DisplayAxes`
 rather than from their own idea of which is which. Everything here is named for a role,
 `x_plot` and `y_plot`, and not for a quantity: the swap-axes toggle
-(`main_window._rebuild_axes`) then changes what the roles mean and nothing else.
+(`main_window._rebuild_axes`) then changes what the roles mean and nothing else. The
+plot above the image is always the projection onto the horizontal axis and the plot
+beside it always the projection onto the vertical one, whatever those axes are.
+
+**The projections are bare curves.** No axis, no label, no tick value: the heatmap's own
+axes, which the plots are aligned to, already say what the shared axis is, and the
+intensity axis of a projection of *what is on screen* is a number that changes with
+every gesture and means little on its own. What the curve's shape says -- where the
+peaks are, and how they sharpen as the other axis narrows -- is the whole point.
 
 Their projections come from `mainspring.uimf.raster.profile`, on the render worker with
 the image, so a gesture produces one consistent set of three pictures rather than three
@@ -31,15 +39,24 @@ from __future__ import annotations
 import numpy as np
 import pyqtgraph as pg
 
-from .heatmap import AXIS_HEIGHT, AXIS_WIDTH
+from .heatmap import AXIS_HEIGHT, AXIS_WIDTH, RIGHT_AXIS_WIDTH, TOP_AXIS_HEIGHT
 
 __all__ = ["SidePlots"]
 
 _PEN = pg.mkPen(color=(190, 210, 255), width=1)
 
+# A `PlotItem`'s own grid: the axes and the view box sit in fixed cells (title row 0;
+# top axis (1, 1); left axis (2, 0); view box (2, 1); right axis (2, 2); bottom axis
+# (3, 1)). A hidden axis is zero-sized, so aligning a bare plot with the heatmap means
+# fixing these rows and columns to the heatmap's axis extents directly.
+_LEFT_AXIS_COLUMN = 0
+_RIGHT_AXIS_COLUMN = 2
+_TOP_AXIS_ROW = 1
+_BOTTOM_AXIS_ROW = 3
+
 
 class SidePlots:
-    """The mass spectrum below and the arrival-time distribution beside the heatmap.
+    """The mass spectrum above and the arrival-time distribution beside the heatmap.
 
     Not a widget. The two `PlotItem`s live in the heatmap's own `GraphicsLayout`, in the
     cells `HeatmapView.side_plot_slots()` reserves, because a linked axis that is not
@@ -58,18 +75,26 @@ class SidePlots:
             plot.setMouseEnabled(x=False, y=False)  # the heatmap is what a gesture drives
             plot.showGrid(x=False, y=False)
             plot.hideButtons()
+            for name in ("left", "right", "top", "bottom"):
+                plot.hideAxis(name)
 
-        # Each plot shows only the axis the heatmap does not already show for it: the
-        # heatmap's own left axis sits between `y_plot` and the image and reads for both,
-        # and its bottom axis sits between the image and `x_plot`.
-        self.y_plot.hideAxis("left")
-        self.y_plot.setYLink(plot_item)
-        self.x_plot.hideAxis("bottom")
+        # Linked on the shared axis, auto-ranged on the other: linking already turns
+        # auto-range off for the shared axis, and the intensity axis must follow the
+        # data since a projection of the visible window rescales with every gesture.
         self.x_plot.setXLink(plot_item)
+        self.x_plot.enableAutoRange(x=False, y=True)
+        self.y_plot.setYLink(plot_item)
+        self.y_plot.enableAutoRange(x=True, y=False)
+
         # The heatmap fixes its own axis extents for exactly this: a linked axis that
         # is not also aligned in pixels reads as a broken layout rather than a link.
-        self.x_plot.getAxis("left").setWidth(AXIS_WIDTH)
-        self.y_plot.getAxis("bottom").setHeight(AXIS_HEIGHT)
+        # `x_plot` shares the heatmap's column, so its left and right margins mirror
+        # the heatmap's left and right axes; `y_plot` shares its row, so its top and
+        # bottom margins mirror the heatmap's top and bottom axes.
+        self.x_plot.layout.setColumnFixedWidth(_LEFT_AXIS_COLUMN, AXIS_WIDTH)
+        self.x_plot.layout.setColumnFixedWidth(_RIGHT_AXIS_COLUMN, RIGHT_AXIS_WIDTH)
+        self.y_plot.layout.setRowFixedHeight(_TOP_AXIS_ROW, TOP_AXIS_HEIGHT)
+        self.y_plot.layout.setRowFixedHeight(_BOTTOM_AXIS_ROW, AXIS_HEIGHT)
 
         self._x_curve = self.x_plot.plot(pen=_PEN)
         # Peak-preserving downsampling, and clipping to the visible window, both work
@@ -85,13 +110,6 @@ class SidePlots:
     def curves(self) -> "tuple[pg.PlotDataItem, pg.PlotDataItem]":
         """`(x_curve, y_curve)`, for a caller that wants to read back what is drawn."""
         return self._x_curve, self._y_curve
-
-    def set_axes(self, axes: "object") -> None:
-        """Label the two plots for the roles the current `DisplayAxes` gives them."""
-        self.x_plot.setLabel("left", "Intensity")
-        self.y_plot.setLabel("bottom", "Intensity")
-        self.x_plot.setLabel("bottom", axes.x_label)
-        self.y_plot.setLabel("left", axes.y_label)
 
     def set_profiles(
         self,

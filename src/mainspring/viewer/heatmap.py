@@ -47,7 +47,18 @@ from PySide6.QtGui import QColor
 from ..uimf import DisplayAxes
 from .workers import DEBOUNCE_MS
 
-__all__ = ["AXIS_HEIGHT", "AXIS_WIDTH", "HeatmapView", "UimfViewBox", "pixel_of"]
+__all__ = [
+    "AXIS_HEIGHT",
+    "AXIS_WIDTH",
+    "COLOUR_BAR_WIDTH",
+    "RIGHT_AXIS_WIDTH",
+    "SIDE_PLOT_SIZE",
+    "TICK_LENGTH",
+    "TOP_AXIS_HEIGHT",
+    "HeatmapView",
+    "UimfViewBox",
+    "pixel_of",
+]
 
 
 def _scaled(image: np.ndarray, colour_scale: str) -> np.ndarray:
@@ -59,13 +70,37 @@ def _scaled(image: np.ndarray, colour_scale: str) -> np.ndarray:
     return image
 
 AXIS_WIDTH = 68
-"""Pixels reserved for a left axis. Fixed rather than fitted so that the heatmap and the
-mass-spectrum plot below it, which are linked in x, also line up in x on screen -- their
-plot areas start where their left axes end, and pyqtgraph does not equalise those."""
+"""Pixels reserved for the heatmap's left axis. Fixed rather than fitted so that the
+heatmap and the mass-spectrum plot above it, which are linked in x, also line up in x on
+screen -- their plot areas start where their left margins end, and pyqtgraph does not
+equalise those. The side plots mirror this number in their own layout grids
+(`side_plots.py`)."""
 
 AXIS_HEIGHT = 46
-"""The same for a bottom axis, so the heatmap and the arrival-time plot beside it line
-up in y."""
+"""The same for the heatmap's bottom axis, so the heatmap and the arrival-time plot to
+its right line up in y."""
+
+TOP_AXIS_HEIGHT = 0
+"""The heatmap's top axis shows ticks and nothing else, and inward ticks reserve no
+space (`AxisItem._updateHeight` adds `max(0, tickLength)`), so it is zero pixels tall.
+Named because the side plots mirror it: the spectrum above sits flush against the image."""
+
+RIGHT_AXIS_WIDTH = 0
+"""The same for the heatmap's right axis, mirrored by the arrival-time plot beside it."""
+
+SIDE_PLOT_SIZE = 160
+"""Pixels across each projection: the spectrum's height and the arrival-time plot's width."""
+
+COLOUR_BAR_WIDTH = 80
+"""Pixels for the colour bar's column: pyqtgraph's 25 px strip, its 45 px value axis and
+the item's own margins."""
+
+TICK_LENGTH = -8
+"""Major tick length on the heatmap's axes. Negative points the ticks **into** the plot
+(pyqtgraph's convention); minor levels are drawn at 1/1.5 and 1/2 of this. Inward and
+long enough to read against the image, because a tick is how a zoomed view is read
+against the axis values -- and on the top and right edges, which carry no values, the
+ticks are the whole axis."""
 
 
 class UimfViewBox(pg.ViewBox):
@@ -190,10 +225,17 @@ class UimfViewBox(pg.ViewBox):
 class HeatmapView(pg.GraphicsLayoutWidget):
     """The image, its axes, its colour bar, and the debounced view-changed signal.
 
-    The layout leaves room for the side plots without knowing what they are: the heatmap
-    sits at row 0, column 1, the colour bar at column 2, and `side_plot_slots()` hands
-    out the two cells around it. That is why `side_plots.py` can own its own widgets and
-    this module can stay about the image.
+    The layout leaves room for the side plots without knowing what they are:
+
+        row 0   spectrum cell    .            .
+        row 1   heatmap          arrival-time cell    colour bar
+                col 0            col 1                col 2
+
+    The heatmap sits at (1, 0), the colour bar at (1, 2), and `side_plot_slots()` hands
+    out the two cells above and beside the image. That is why `side_plots.py` can own
+    its own widgets and this module can stay about the image. Ticks are drawn on all
+    four of the heatmap's axes, inward; the top and right ones carry no values, so the
+    projections sit directly against the plot area they share an axis with.
     """
 
     view_resized = Signal(int, int)
@@ -216,22 +258,49 @@ class HeatmapView(pg.GraphicsLayoutWidget):
     def __init__(self, colour_map: str = "viridis", parent: "object | None" = None) -> None:
         super().__init__(parent=parent)
         self._view_box = UimfViewBox()
-        self._plot = self.addPlot(row=0, col=1, viewBox=self._view_box)
+        self._plot = self.addPlot(row=1, col=0, viewBox=self._view_box)
         self._plot.showGrid(x=False, y=False)
         self._plot.setMenuEnabled(False)
         self._plot.getAxis("left").setWidth(AXIS_WIDTH)
         self._plot.getAxis("bottom").setHeight(AXIS_HEIGHT)
+        # Every axis is created and linked to the box when the PlotItem is; the top and
+        # right ones only need showing. They carry ticks and nothing else, and at zero
+        # size, so that the projections meet the image edge they share.
+        for name, size in (("top", TOP_AXIS_HEIGHT), ("right", RIGHT_AXIS_WIDTH)):
+            self._plot.showAxis(name)
+            axis = self._plot.getAxis(name)
+            axis.setStyle(showValues=False)
+            if name == "top":
+                axis.setHeight(size)
+            else:
+                axis.setWidth(size)
+        for name in ("left", "bottom", "top", "right"):
+            axis = self._plot.getAxis(name)
+            # `tickAlpha` pinned: pyqtgraph otherwise fades each minor level by half.
+            axis.setStyle(tickLength=TICK_LENGTH, tickAlpha=255)
+            axis.setTickPen(pg.mkPen(axis.textPen().color(), width=1.5))
         self._image_item = pg.ImageItem()
         self._plot.addItem(self._image_item)
-        self._colour_bar = pg.ColorBarItem(colorMap=colour_map)
-        self._colour_bar.setImageItem(self._image_item, insert_in=self._plot)
 
-        # Columns 0 and rows 1 are the side plots' (`side_plot_slots`); the stretch
-        # factors are what keep the image the large thing on screen once they are filled.
-        self.ci.layout.setColumnFixedWidth(0, 150)
-        self.ci.layout.setRowFixedHeight(1, 160)
-        self.ci.layout.setColumnStretchFactor(1, 1)
-        self.ci.layout.setRowStretchFactor(0, 1)
+        # The colour bar is a `PlotItem` of its own in the last column rather than
+        # inserted into the heatmap's layout (`insert_in`), so that the arrival-time
+        # plot can sit between the two. Its blank bottom axis is fixed to the heatmap's
+        # bottom-axis height so the strip spans exactly the image's height.
+        self._colour_bar = pg.ColorBarItem(colorMap=colour_map)
+        self._colour_bar.setImageItem(self._image_item)
+        self._colour_bar.getAxis("bottom").setHeight(AXIS_HEIGHT)
+        self._colour_bar.getAxis("top").setHeight(TOP_AXIS_HEIGHT)
+        self.ci.addItem(self._colour_bar, row=1, col=2)
+
+        # Row 0 and column 1 are the side plots' (`side_plot_slots`); the stretch factors
+        # are what keep the image the large thing on screen once they are filled. No
+        # spacing between cells: the projections should touch the image they project.
+        self.ci.layout.setSpacing(0)
+        self.ci.layout.setRowFixedHeight(0, SIDE_PLOT_SIZE)
+        self.ci.layout.setColumnFixedWidth(1, SIDE_PLOT_SIZE)
+        self.ci.layout.setColumnFixedWidth(2, COLOUR_BAR_WIDTH)
+        self.ci.layout.setColumnStretchFactor(0, 1)
+        self.ci.layout.setRowStretchFactor(1, 1)
 
         self._debug = pg.TextItem(color=QColor(220, 220, 220), anchor=(0, 0))
         self._debug.setParentItem(self._view_box)  # parented to the box: position is in pixels
@@ -267,11 +336,14 @@ class HeatmapView(pg.GraphicsLayoutWidget):
     def side_plot_slots(self) -> "tuple[pg.GraphicsLayout, tuple[int, int], tuple[int, int]]":
         """`(layout, y_plot_cell, x_plot_cell)`: where the two side plots go.
 
-        The heatmap owns the grid because it owns the alignment -- the axis widths that
-        make a linked plot line up are set here, on `AXIS_WIDTH` and `AXIS_HEIGHT`, and
-        a caller that placed its own plots elsewhere in the layout would silently lose it.
+        `y_plot` (the projection onto the vertical axis) goes beside the image, `x_plot`
+        (onto the horizontal axis) above it. The heatmap owns the grid because it owns
+        the alignment -- the axis extents that make a linked plot line up are set here,
+        on `AXIS_WIDTH`, `AXIS_HEIGHT` and their zero-sized top and right counterparts,
+        and a caller that placed its own plots elsewhere in the layout would silently
+        lose it.
         """
-        return self.ci, (0, 0), (1, 1)
+        return self.ci, (1, 1), (0, 0)
 
     def view_range(self) -> "tuple[tuple[float, float], tuple[float, float]]":
         """The visible `(x_range, y_range)` in display units."""

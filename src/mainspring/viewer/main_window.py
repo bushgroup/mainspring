@@ -357,7 +357,6 @@ class MainWindow(QMainWindow):
         self._current_frame_number = frame_number
         self._frame_params = frame_params
         self._serial += 1
-        self.side_plots.set_axes(axes)
         self.info_panel.set_file(self._global, frame_params)
         self._frame_message = message or f"Frame {frame_number}: {len(sparse_frame)} points"
         self.statusBar().showMessage(self._frame_message)
@@ -554,7 +553,6 @@ class MainWindow(QMainWindow):
 
         self._current_axes = new_axes
         self._serial += 1
-        self.side_plots.set_axes(new_axes)
         # The box's own `set_extent`, not `HeatmapView.set_frame_extent` -- that also
         # asks for an immediate render at whatever range is still on screen, in the old
         # axes' numbers, which would be a wasted request a moment before `setRange`
