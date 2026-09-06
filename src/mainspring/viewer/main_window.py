@@ -41,7 +41,9 @@ import numpy as np
 from PySide6.QtCore import Qt, QByteArray, Signal
 from PySide6.QtGui import QActionGroup
 from PySide6.QtWidgets import (
+    QApplication,
     QComboBox,
+    QDialog,
     QDoubleSpinBox,
     QFileDialog,
     QLabel,
@@ -55,6 +57,7 @@ from PySide6.QtWidgets import (
 from ..uimf import DisplayAxes, FrameParams, GlobalParams, SparseFrame
 from ..uimf.raster import AGGREGATES
 from .controls import add_labelled, describe, make_action
+from .export import ExportDialog, content_rect, export_display
 from .heatmap import HeatmapView, pixel_of
 from .info_panel import InfoPanel
 from .settings import COLOUR_MAPS, COLOUR_SCALES, ViewerSettings, load_settings, save_settings
@@ -178,8 +181,31 @@ class MainWindow(QMainWindow):
             shortcut="Ctrl+O",
             triggered=self._prompt_open,
         )
+        # One entry per format rather than one "Export..." with a format chooser: the
+        # File menu is where a user goes looking for the words PNG and PDF, and the
+        # dialog behind both then has one thing in it (`export.ExportDialog`).
+        self.export_png_action = make_action(
+            self,
+            "Export &PNG...",
+            tip="Save the heatmap and its projections as a PNG image, without the colour bar.",
+            triggered=lambda: self._prompt_export("png"),
+        )
+        self.export_pdf_action = make_action(
+            self,
+            "Export P&DF...",
+            tip="Save the heatmap and its projections as a PDF, without the colour bar.",
+            triggered=lambda: self._prompt_export("pdf"),
+        )
+        # Nothing to export until something has been rendered, and an entry that opens a
+        # file dialog and then reports that there is no image is worse than a grey one.
+        for action in (self.export_png_action, self.export_pdf_action):
+            action.setEnabled(False)
+
         file_menu = self.menuBar().addMenu("&File")
         file_menu.addAction(self.open_action)
+        file_menu.addSeparator()
+        file_menu.addAction(self.export_png_action)
+        file_menu.addAction(self.export_pdf_action)
 
         # A window-level action rather than a key handler on the view box: the reset must
         # work wherever the focus happens to be, which is the complaint about having to
@@ -359,6 +385,58 @@ class MainWindow(QMainWindow):
         if path:
             self.settings.last_directory = os.path.dirname(path)
             self.open_file(path)
+
+    def _prompt_export(self, fmt: str) -> None:
+        """Ask where, then at what resolution, then write it.
+
+        Path first and options second, the order Windows puts them in: a cancelled file
+        dialog costs nothing, and the resolution dialog can then name the size the file
+        it is about to write will be.
+        """
+        if self._current_frame is None or self._last_render is None:
+            return
+        filters = {"png": "PNG image (*.png)", "pdf": "PDF document (*.pdf)"}
+        path, _ = QFileDialog.getSaveFileName(
+            self, f"Export {fmt.upper()}", self._export_default_path(fmt), filters[fmt]
+        )
+        if not path:
+            return
+        dialog = ExportDialog(
+            self, fmt=fmt, dpi=self.settings.export_dpi,
+            rect=content_rect(self.heatmap, self.side_plots),
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        self.settings.export_dpi = dialog.dpi()
+        self.statusBar().showMessage(f"Exporting {os.path.basename(path)}...")
+        # A re-rasterise at 600 dpi is seconds of a frozen window on a dense frame, and
+        # it is not put on the render worker: that thread's mailbox drops whatever it is
+        # holding when a newer request arrives, which is right for a gesture and would
+        # silently lose an export. A wait cursor is the honest way to say so.
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            width, height = export_display(
+                self.heatmap, self.side_plots, self._current_frame,
+                self._last_render.result, self.settings.colour_scale,
+                path, fmt, dialog.dpi(),
+            )
+        except Exception as exc:  # noqa: BLE001 -- shown in the status bar, as a failed render is
+            self._on_failed(f"could not export {os.path.basename(path)}: {exc}")
+            return
+        finally:
+            QApplication.restoreOverrideCursor()
+        self.statusBar().showMessage(
+            f"Exported {os.path.basename(path)}, {width} x {height} pixels"
+            f" at {dialog.dpi()} dpi"
+        )
+
+    def _export_default_path(self, suffix: str) -> str:
+        """The file the save dialog opens on: the frame being looked at, beside the file
+        it came from. A figure is nearly always named after both."""
+        stem = os.path.splitext(os.path.basename(self._path))[0] if self._path else APP_TITLE
+        frame = self._current_frame_number
+        name = f"{stem}-frame{frame}.{suffix}" if frame else f"{stem}.{suffix}"
+        return os.path.join(self.settings.last_directory, name)
 
     def open_file(self, path: str) -> None:
         """Open a UIMF file and show its first frame.
@@ -550,6 +628,8 @@ class MainWindow(QMainWindow):
             self.info_panel.set_view(
                 result, self._frame_params.accumulations, self.settings.detector_bits
             )
+        self.export_png_action.setEnabled(True)
+        self.export_pdf_action.setEnabled(True)
         if self._opening:
             # An explicit flag and not the progress bar's visibility: a window that has
             # not been shown yet -- every pytest-qt test that does not call `show()` --

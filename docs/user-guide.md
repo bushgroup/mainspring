@@ -249,11 +249,41 @@ How many stored, non-zero points fall inside the visible region. A UIMF frame is
 points that exist rather than as a dense array, and this is a count of those, not of screen
 pixels.
 
+## Exporting a figure
+
+`File > Export PNG` and `File > Export PDF` write what is on screen to a file. The heat map,
+the mass spectrum and the arrival-time distribution all go in, at the zoom and under the
+colour settings they are drawn with. The colour bar is left out.
+
+Both entries ask where to write the file, then at what resolution. The four choices are 96,
+150, 300 and 600 dpi. At 96 dpi the figure is the window's own pixels, one for one, and at 300
+dpi each axis carries 3.125 times as many; the dialog names the pixel size and the size in
+inches before you commit to it. A figure over 50 megapixels is refused, which a maximised
+window on a 4K display reaches at 600 dpi.
+
+The heat map is redrawn for the export rather than scaled up. The image on screen holds about
+one sample per screen pixel, so enlarging it would give a sharp frame around a blurred map.
+The frame is rasterised again at the export's own resolution instead, and a 300 dpi figure
+therefore separates peaks that ran together on screen. Note that this stops where the data do:
+zoomed in far enough that each bin and scan already covers more than one pixel, every
+resolution returns the same image.
+
+Colour limits are carried across as the fraction of the range they sit at rather than as
+numbers. A pixel of a finer image covers less of the frame and holds less intensity, so the
+limits that suit the screen would leave a 300 dpi figure nearly black. Limits left to scale
+themselves come out scaled to the exported image, and limits pinned with `Keep levels` keep
+the contrast that pinning chose.
+
+A PDF carries the axes, the ticks, the labels and both projections as vector drawings, so
+they stay sharp at any magnification, and it embeds the heat map at the resolution you asked
+for. Its page is the same size in inches whichever resolution that is.
+
 ## What the viewer remembers
 
 Every toolbar toggle, the aggregate and colour choices, the detector bit depth, whether the
-info panel is showing, the window's size and position, and the directory you last opened from
-are all saved when the viewer closes and restored when it starts. On Windows they live under
+info panel is showing, the export resolution, the window's size and position, and the
+directory you last opened from are all saved when the viewer closes and restored when it
+starts. On Windows they live under
 `HKEY_CURRENT_USER\Software\University of Washington\mainspring`. Deleting that key returns
 every setting to its default.
 

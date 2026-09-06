@@ -74,6 +74,10 @@ PYSIDE6_EXCLUDES = [
     "PySide6.QtDataVisualization",
     "PySide6.QtGraphs",
     "PySide6.QtGraphsWidgets",
+    # Both are the PDF *viewer* bindings. `File > Export PDF` writes through `QPdfWriter`,
+    # which is compiled into Qt6Gui (whose import table names only Qt6Core), so excluding
+    # them costs the export nothing. Qt6Pdf.dll is in the build regardless: the Qt hook
+    # collects plugins/imageformats, and qpdf.dll there links it.
     "PySide6.QtPdf",
     "PySide6.QtPdfWidgets",
     "PySide6.QtBluetooth",

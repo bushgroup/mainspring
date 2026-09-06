@@ -41,6 +41,12 @@ def test_validate_clamps_detector_bits_to_a_usable_range():
     assert ViewerSettings(detector_bits=14).validate().detector_bits == 14  # clockwork's
 
 
+def test_validate_clamps_an_unrecognised_export_dpi():
+    """A resolution the dialog cannot offer would leave its combo on no choice at all."""
+    assert ViewerSettings(export_dpi=137).validate().export_dpi == 300
+    assert ViewerSettings(export_dpi=600).validate().export_dpi == 600
+
+
 def test_validate_clamps_a_non_positive_cache_budget():
     assert ViewerSettings(cache_budget_mb=0).validate().cache_budget_mb == 512
     assert ViewerSettings(cache_budget_mb=-100).validate().cache_budget_mb == 512
@@ -64,6 +70,7 @@ def test_settings_round_trip_through_qsettings():
         show_info_panel=False,
         detector_bits=14,
         colour_map="plasma",
+        export_dpi=600,
         cache_budget_mb=256,
         arrival_offset_ms=-42.5,
         last_directory="F:/data/acquisitions",

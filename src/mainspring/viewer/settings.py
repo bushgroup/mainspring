@@ -34,6 +34,7 @@ __all__ = [
     "APPLICATION",
     "COLOUR_MAPS",
     "COLOUR_SCALES",
+    "EXPORT_DPIS",
     "ORGANISATION",
     "ViewerSettings",
     "load_settings",
@@ -56,6 +57,13 @@ a step in intensity that is not there -- unlike jet or a stock rainbow map, whic
 viewer deliberately does not offer."""
 
 
+EXPORT_DPIS = (96, 150, 300, 600)
+"""The File > Export resolutions, in dots per inch. 96 is the window's own pixels one
+for one (`export.BASE_DPI`), 150 is a slide, and 300 and 600 are what a journal asks for.
+Here rather than in `export.py` so that `validate` can clamp a hand-edited value without
+the settings module having to import a module that pulls in Qt's widgets."""
+
+
 @dataclass
 class ViewerSettings:
     """The persisted viewer state. Defaults are what a first run gets.
@@ -72,6 +80,7 @@ class ViewerSettings:
     show_info_panel: bool = True
     detector_bits: int = 8
     colour_map: str = "viridis"
+    export_dpi: int = 300
     cache_budget_mb: int = 512
     arrival_offset_ms: float = 0.0
     last_directory: str = ""
@@ -93,6 +102,7 @@ class ViewerSettings:
             colour_scale=self.colour_scale if self.colour_scale in COLOUR_SCALES else "linear",
             detector_bits=detector_bits,
             colour_map=self.colour_map if self.colour_map in COLOUR_MAPS else "viridis",
+            export_dpi=self.export_dpi if self.export_dpi in EXPORT_DPIS else 300,
             cache_budget_mb=cache_budget_mb,
             arrival_offset_ms=self.arrival_offset_ms if math.isfinite(self.arrival_offset_ms) else 0.0,
             last_directory=self.last_directory or "",
@@ -135,6 +145,7 @@ def load_settings() -> ViewerSettings:
         detector_bits=_as_int(store.value("detector_bits", defaults.detector_bits),
                                defaults.detector_bits),
         colour_map=str(store.value("colour_map", defaults.colour_map)),
+        export_dpi=_as_int(store.value("export_dpi", defaults.export_dpi), defaults.export_dpi),
         cache_budget_mb=_as_int(store.value("cache_budget_mb", defaults.cache_budget_mb),
                                  defaults.cache_budget_mb),
         arrival_offset_ms=_as_float(store.value("arrival_offset_ms", defaults.arrival_offset_ms),
@@ -162,6 +173,7 @@ def save_settings(settings: ViewerSettings) -> None:
     store.setValue("show_info_panel", settings.show_info_panel)
     store.setValue("detector_bits", settings.detector_bits)
     store.setValue("colour_map", settings.colour_map)
+    store.setValue("export_dpi", settings.export_dpi)
     store.setValue("cache_budget_mb", settings.cache_budget_mb)
     store.setValue("arrival_offset_ms", settings.arrival_offset_ms)
     store.setValue("last_directory", settings.last_directory)

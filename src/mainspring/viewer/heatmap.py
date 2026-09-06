@@ -38,6 +38,7 @@ new image replaces it in place when it lands.
 from __future__ import annotations
 
 import os
+from contextlib import contextmanager
 
 import numpy as np
 import pyqtgraph as pg
@@ -59,6 +60,7 @@ __all__ = [
     "HeatmapView",
     "UimfViewBox",
     "pixel_of",
+    "scaled",
 ]
 
 
@@ -78,8 +80,12 @@ Recomputed from the same config option `setTextPen` reads, since neither axis ev
 `setTextPen` itself to get a colour to read back."""
 
 
-def _scaled(image: np.ndarray, colour_scale: str) -> np.ndarray:
-    """The display transform behind the log/sqrt colour toggle. `"linear"` is a no-op."""
+def scaled(image: np.ndarray, colour_scale: str) -> np.ndarray:
+    """The display transform behind the log/sqrt colour toggle. `"linear"` is a no-op.
+
+    Public because the colour levels are computed in this space and not in the
+    intensities' own -- so anything that has to reproduce a level, `export.py` included,
+    has to be able to get into the same space rather than approximate its way there."""
     if colour_scale == "log":
         return np.log1p(np.clip(image, 0.0, None))
     if colour_scale == "sqrt":
@@ -446,7 +452,7 @@ class HeatmapView(pg.GraphicsLayoutWidget):
         axes = result.axes
         x0, x1 = result.x_range
         y0, y1 = result.y_range
-        displayed = _scaled(result.image, colour_scale)
+        displayed = scaled(result.image, colour_scale)
         self._image_item.setImage(displayed, autoLevels=False)
         self._image_item.setRect(x0, y0, x1 - x0, y1 - y0)
         self._plot.setLabel("bottom", axes.x_label, **_BOLD_LABEL_STYLE)
@@ -454,6 +460,48 @@ class HeatmapView(pg.GraphicsLayoutWidget):
         if not self._levels_held:
             low, high = float(displayed.min()), float(displayed.max())
             self._colour_bar.setLevels((low, high if high > low else low + 1.0))
+
+    @contextmanager
+    def substituted(
+        self,
+        image: np.ndarray,
+        rect: "tuple[float, float, float, float]",
+        levels: "tuple[float, float]",
+    ):
+        """Show `image` at `rect` under `levels` for the duration, then put back what
+        was on screen.
+
+        What an export renders through: the same scene, the same layout and the same
+        gestures' worth of state, with a finer image standing in for the viewport-sized
+        one for as long as the painter needs it (`export.py` says why a finer one is
+        needed at all). A context manager and not two calls, because the window is left
+        showing the substitute if the render between them raises.
+
+        `rect` is passed rather than read back because `ImageItem` does not keep one:
+        `setRect` bakes a transform out of the image's *current* shape, so a substitute
+        of a different shape has to be given the rect again, and so does the original on
+        the way back (`ImageItem.setRect`, which says as much).
+
+        The levels go through the colour bar, as every other level change does, but not
+        through `set_levels` -- that pins them against the next `set_image`, which is a
+        user's choice to make and not an export's side effect.
+        """
+        previous_image = self._image_item.image
+        previous_levels = self.levels()
+        previous_debug = self._debug.isVisible()
+        x, y, width, height = rect
+        try:
+            self._debug.setVisible(False)  # a developer's number is not part of a figure
+            self._image_item.setImage(image, autoLevels=False)
+            self._image_item.setRect(x, y, width, height)
+            self._colour_bar.setLevels((float(levels[0]), float(levels[1])))
+            yield
+        finally:
+            self._debug.setVisible(previous_debug)
+            if previous_image is not None:
+                self._image_item.setImage(previous_image, autoLevels=False)
+                self._image_item.setRect(x, y, width, height)
+            self._colour_bar.setLevels(previous_levels)
 
     def levels(self) -> "tuple[float, float]":
         """The colour bar's current `(low, high)`, whatever last set them."""

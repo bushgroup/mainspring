@@ -67,8 +67,8 @@ def section(title: str) -> None:
 
 UIMF_MODULES = ("cache", "calib", "cli", "decode", "frame", "raster", "reader")
 VIEWER_MODULES = (
-    "app", "controls", "heatmap", "info_panel", "main_window", "settings", "side_plots",
-    "workers",
+    "app", "controls", "export", "heatmap", "info_panel", "main_window", "settings",
+    "side_plots", "workers",
 )
 
 
@@ -299,7 +299,8 @@ def main() -> int:
     # still matches the drawings it came from -- an edit to packaging/icon/*.svg without
     # a `uv run tools/make_icon.py` after it would otherwise ship the old picture.
     import make_icon
-    from PySide6.QtGui import QIcon
+    import pyqtgraph as pg
+    from PySide6.QtGui import QIcon, QImage
 
     from mainspring.viewer.app import _icon_path
 
@@ -353,6 +354,40 @@ def main() -> int:
                     <= 1e-6 * max(1.0, result.tic_in_view)
                     for _, values in (profiles.x_profile, profiles.y_profile)
                 ),
+            )
+
+            # File > Export: the figure a user actually takes away. Data-free, so it
+            # runs in a bare clone -- and it checks the two things a screenshot would
+            # not, that the colour bar's column is outside the rectangle rendered and
+            # that the heatmap was resampled for the export rather than upscaled.
+            from mainspring.viewer.export import (
+                BASE_DPI, content_rect, export_display, export_pixels,
+            )
+
+            rect = content_rect(window.heatmap, window.side_plots)
+            bar = window.heatmap.scene().items()
+            colour_bar = [i for i in bar if isinstance(i, pg.ColorBarItem)]
+            check_true(
+                "the exported rectangle leaves the colour bar out",
+                bool(colour_bar)
+                and not rect.intersects(colour_bar[0].mapRectToScene(colour_bar[0].boundingRect())),
+            )
+            screen_columns = window.heatmap.image_item.image.shape[1]
+            figure = os.path.join(tmp, "figure.png")
+            dpi = 3 * int(BASE_DPI)
+            size = export_display(
+                window.heatmap, window.side_plots, window._current_frame,
+                window.last_render.result, window.settings.colour_scale,
+                figure, "png", dpi,
+            )
+            written = QImage(figure)
+            check_true(
+                f"File > Export writes a PNG at the size it promised ({size[0]}x{size[1]})",
+                size == export_pixels(rect, dpi) == (written.width(), written.height()),
+            )
+            check_true(
+                "the export resamples the heatmap rather than upscaling the screen's",
+                window.heatmap.image_item.image.shape[1] == screen_columns,
             )
 
             # And a gesture must reach the render worker and come back with a narrower
