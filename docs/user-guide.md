@@ -17,9 +17,9 @@ uv run mainspring
 uv run mainspring FILE.uimf
 ```
 
-`tools/build_exe.ps1` builds the Windows executable and, with Inno Setup installed, an
-installer over it. The installer is per-user and needs no administrator rights, because the
-viewer writes nothing outside your own profile. Windows 10 and 11 are the supported platforms.
+The same `README.md` covers building the Windows executable and compiling the installer over
+it. That installer is per-user and needs no administrator rights, because the viewer writes
+nothing outside your own profile. Windows 10 and 11 are the supported platforms.
 
 ## Opening a file
 

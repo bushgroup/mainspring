@@ -62,8 +62,8 @@ optional `fast` extra adds numba, which compiles the decoder and is worth a fact
 
 ## Requirements
 
-- Windows 10 or 11. The viewer will also be distributed as a single executable that needs no
-  Python installation.
+- Windows 10 or 11. The viewer will also be distributed as an installer that needs no Python
+  installation.
 - [uv](https://docs.astral.sh/uv/) for working from source. The interpreter (CPython 3.12)
   and every library version are pinned by `pyproject.toml`, `.python-version`, and the
   committed `uv.lock`.
@@ -93,6 +93,55 @@ rather than a bare `python` on `PATH`.
 commits do not receive the `Assisted-by:` trailer rewrite, and nothing refuses an oversized
 file or a `.uimf` file entering history.
 
+## Building the executable
+
+Building the Windows executable needs the fresh-clone steps above and nothing more, since
+PyInstaller is in the `dev` dependency group that `uv sync` installs. From a PowerShell prompt
+at the root of the checkout:
+
+```
+tools\build_exe.ps1
+```
+
+The script compiles the numba kernels into a cache that the build carries, runs PyInstaller
+against `packaging/mainspring.spec`, and then launches the result twice and reports how long
+each launch took to put a window on screen. The build lands in `dist\mainspring\`, a folder of
+about 350 MB holding `mainspring.exe` beside the Qt and numpy libraries it loads. A folder is
+the deliverable rather than one self-extracting file because a self-extracting file unpacks its
+payload to a temporary directory on every launch, which ran past 180 s with no window against
+the folder's 3 to 6 s on a fast workstation. Pass `-SkipBuild` to time a build that already
+exists.
+
+The script also cuts `PATH` down to the Windows directories and uv's own for the duration of the
+build, and the spec refuses to build if any bundled file resolves outside the virtual
+environment, the interpreter it was created from, or this repository. Both guard the same
+failure: PyInstaller resolves a library's dependencies through `PATH` as a last resort, so a
+second Python distribution there is bundled in place of the intended copy. One build made that
+way shipped another distribution's ICU library and died importing `QtCore` on every machine it
+was installed on.
+
+## Creating the installer
+
+Creating the installer needs Inno Setup 6, which is not part of the Python environment:
+
+```
+winget install JRSoftware.InnoSetup --scope user
+```
+
+The installer script packages `dist\mainspring\`, so build the executable first. Then, from the
+root of the checkout:
+
+```
+& "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe" packaging\mainspring.iss
+```
+
+Compilation takes about two minutes and writes `dist\installer\mainspring-0.1.0-setup.exe`,
+93 MB. That installer is per-user and asks for no administrator rights, because the viewer keeps
+its settings in the current user's registry hive and an instrument PC's operator account may
+have no administrator rights to give. It offers a Start menu entry, an optional desktop icon,
+and an uninstaller. The version in the file name comes from `MyAppVersion` in
+`packaging/mainspring.iss`, which is kept in step with the version in `pyproject.toml` by hand.
+
 ## Layout
 
 ```
@@ -100,9 +149,9 @@ src/mainspring/uimf/     the reader: SQLite access, blob decoding, calibration, 
                          rasterisation, and the uimf-info command line
 src/mainspring/viewer/   the PySide6 + pyqtgraph application
 tools/                   check_public.py (the self-check), fetch_testdata.py (PNNL excerpts),
-                         build_exe.ps1 (the Windows executable)
+                         build_exe.ps1 (the Windows executable), make_icon.py (its icon)
 tests/                   pytest suite; tests/fixtures/README.md says what is synthetic
-packaging/               PyInstaller specification and installer files
+packaging/               PyInstaller specification, Inno Setup script, icon artwork
 docs/                    user documentation; docs/user-guide.md is the viewer's
 external/                fetched test data, read in place and never committed (not in this repository)
 ```
