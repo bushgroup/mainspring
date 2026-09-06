@@ -55,8 +55,8 @@ intensity axis rescales with every gesture.
 **The colour bar** is the strip in the far right column of the plot area. It reads in the units
 the `Colour` control selects, so on the `Linear` setting its numbers are stored intensities and
 on `Log` or `Sqrt` they are the transformed values. Drag either handle to set the limits by
-hand. Its gradient is one of four perceptually uniform colour maps -- `Viridis`, `Plasma`,
-`Inferno`, `Magma` -- chosen from `View > Colour map`.
+hand. Its gradient is one of four perceptually uniform colour maps (`Viridis`, `Plasma`,
+`Inferno`, `Magma`), chosen from `View > Colour map`.
 
 **The info panel** is docked on the right. `Ctrl+I` hides and shows it, and it can be dragged
 out of the window and floated.

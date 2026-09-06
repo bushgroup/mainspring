@@ -15,6 +15,6 @@
   installer (`SetupIconFile`) and the viewer's own windows all use. `check_public.py` fails
   when the `.ico` is stale against the SVGs.
 
-Task 07's measurements and the onefile-vs-onedir decision are in
-`mainspring-lab/notes/packaging.md`. The public README's "Building the executable" and
-"Creating the installer" sections are the user-facing form of these steps.
+Task 07's measurements and the onefile-vs-onedir decision are in the lab record. The public
+README's "Building the executable" and "Creating the installer" sections are the user-facing
+form of these steps.

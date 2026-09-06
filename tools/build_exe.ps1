@@ -97,4 +97,4 @@ $warm = Measure-Startup "Warm"
 
 Write-Host ""
 Write-Host ("Cold {0:N2} s / Warm {1:N2} s" -f $cold, $warm) -ForegroundColor Green
-Write-Host "Record these in mainspring-lab/notes/packaging.md if the numbers move."
+Write-Host "Record these in the lab record if the numbers move."
