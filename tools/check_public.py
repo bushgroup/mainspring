@@ -341,6 +341,22 @@ def main() -> int:
         "the icon is up to date with packaging/icon/",
         open(_icon_path(), "rb").read() == make_icon.build(),
     )
+
+    # The heatmap's logo mark is the same kind of shipped-copy-of-a-drawing as the icon,
+    # just SVG rasterised at runtime instead of pre-baked into an .ico: `heatmap._resource`
+    # resolves it beside the module the same way `_icon_path` resolves the .ico, and an
+    # edit to packaging/icon/mainspring.svg without copying it into
+    # src/mainspring/viewer/resources/ would otherwise ship the old mark.
+    from mainspring.viewer.heatmap import _resource
+
+    shipped_logo = _resource("mainspring.svg")
+    source_logo = os.path.join(ROOT, "packaging", "icon", "mainspring.svg")
+    check_true(
+        "mainspring.svg ships with the package and matches packaging/icon/",
+        os.path.isfile(shipped_logo)
+        and open(shipped_logo, "rb").read() == open(source_logo, "rb").read(),
+    )
+
     with tempfile.TemporaryDirectory() as tmp:
         path = os.path.join(tmp, "viewer.uimf")
         viewer_spec = write_synthetic_uimf(path, frames=1, scans=16, bins=4096)

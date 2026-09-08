@@ -43,6 +43,9 @@ from contextlib import contextmanager
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import QRectF, Qt, QTimer, Signal
+from PySide6.QtGui import QPainter, QPixmap
+from PySide6.QtSvg import QSvgRenderer
+from PySide6.QtWidgets import QGraphicsPixmapItem
 
 from ..uimf import DisplayAxes
 from . import theme
@@ -98,6 +101,36 @@ RIGHT_AXIS_WIDTH = 0
 
 SIDE_PLOT_SIZE = 160
 """Pixels across each projection: the spectrum's height and the arrival-time plot's width."""
+
+LOGO_RENDER_SIZE = 320
+"""The mainspring mark is rendered once, at construction, at this many pixels square --
+comfortably above the ~48 px turn-closure threshold `tools/make_icon.py` documents for
+this same spiral -- and then scaled down by the view box to whatever cell (0, 1) is,
+rather than re-rendered on every resize."""
+
+
+def _resource(name: str) -> str:
+    """A file in `resources/`, resolved the same way `app._icon_path` resolves the
+    `.ico`: `os.path.dirname(__file__)` is right in a frozen build too, since
+    `packaging/mainspring.spec` collects the package's data files beside it."""
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "resources", name)
+
+
+def _render_svg_pixmap(path: str, size: int) -> QPixmap:
+    """Rasterise the SVG at `path` into a `size`x`size` transparent `QPixmap`.
+
+    The same recipe as `tools/make_icon.py`'s `_render`, aimed at a `QPixmap` instead of
+    a `QImage` because a `QGraphicsPixmapItem` is what a `ViewBox` can hold.
+    """
+    renderer = QSvgRenderer(path)
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+    renderer.render(painter, QRectF(0, 0, size, size))
+    painter.end()
+    return pixmap
 
 COLOUR_BAR_WIDTH = 80
 """Pixels for the colour bar's column: pyqtgraph's 25 px strip, its 45 px value axis and
@@ -346,6 +379,20 @@ class HeatmapView(pg.GraphicsLayoutWidget):
             describe(self._colour_bar.getAxis(name), _BAR_TIP)
         self.ci.addItem(self._colour_bar, row=1, col=2)
 
+        # The mainspring mark, in the cell above the arrival-time projection that
+        # `side_plot_slots` never hands out (row 0, col 1 is otherwise empty). Purely
+        # decorative: a `ViewBox` and a `QGraphicsPixmapItem` are neither in
+        # `controls._TIPPED_ITEMS` nor in `theme._PAINTED`, so this needs no tooltip and
+        # no palette-registered colour -- the full-colour mark is the same under both
+        # themes, unlike the axes and curves `set_palette` repaints.
+        self._logo_box = self.ci.addViewBox(row=0, col=1, lockAspect=True, enableMouse=False)
+        self._logo_box.setMenuEnabled(False)
+        self._logo_box.setBorder(None)
+        self._logo_item = QGraphicsPixmapItem(
+            _render_svg_pixmap(_resource("mainspring.svg"), LOGO_RENDER_SIZE)
+        )
+        self._logo_box.addItem(self._logo_item)
+
         # Row 0 and column 1 are the side plots' (`side_plot_slots`); the stretch factors
         # are what keep the image the large thing on screen once they are filled. No
         # spacing between cells: the projections should touch the image they project.
@@ -371,6 +418,9 @@ class HeatmapView(pg.GraphicsLayoutWidget):
         self._levels_held = False
         self._label_style: "dict[str, str]" = {}
         self.set_palette(theme.active())
+        # Both ink variants render at the same size, so the logo's bounding rect never
+        # changes between them -- one fit, not one per theme toggle.
+        self._logo_box.autoRange(padding=0.08)
 
     # --- accessors --------------------------------------------------------------------
 
