@@ -13,12 +13,15 @@ a sum over the frame's `Accumulations` pulses, so the largest single-push value 
 is `max(intensity) / Accumulations` in ADC counts, and the panel reports it as a
 percentage of full scale as well, from the detector-bits setting.
 
-**Bit depth is not in the file.** It is 8 today on SLIMPHONY and will be 14 under
-clockwork; UIMF-Library's own saturation helpers guess it from the acquisition date,
-which we do not, because a setting the user can see beats a rule they cannot. So this
-panel never shows a per-push number without also showing the `Accumulations` and the
-assumed bit depth that produced it (lab record, task 01) -- a count quoted without both
-is not reproducible, and someone will quote it.
+**Bit depth is in the file only if mainspring wrote it.** PNNL's parameter set has no
+name for it, so on their files it is 8 today on SLIMPHONY and a setting the user can
+see; UIMF-Library's own saturation helpers guess it from the acquisition date, which we
+do not, because a setting beats a rule the user cannot see. A clockwork acquisition
+stores its digitizer's own depth (`MainspringDetectorBits`, lab record, task 16) and
+the readout then uses that. Either way this panel never shows a per-push number without
+also showing the `Accumulations`, the bit depth, **and which of the two places the bit
+depth came from** (lab record, tasks 01 and 17) -- a count quoted without all three is
+not reproducible, and someone will quote it.
 
 Also here: max intensity in view, total ion current in view and the points in view, all
 taken from the `RasterResult` so that they describe the image on screen rather than a
@@ -115,7 +118,8 @@ class InfoPanel(QDockWidget):
             (
                 self._per_push_label,
                 "The largest stored intensity divided by Accumulations, as a fraction of"
-                " full scale at the detector bit depth set on the toolbar.",
+                " full scale at the detector bit depth, which is either stored in the"
+                " file or set on the toolbar.",
             ),
             (self._tic_label, "The total stored intensity inside the view."),
             (self._points_label, "How many stored, non-zero points are inside the view."),
@@ -140,18 +144,33 @@ class InfoPanel(QDockWidget):
         for column in range(2):
             self._tree.resizeColumnToContents(column)
 
-    def set_view(self, result: object, accumulations: int, detector_bits: int) -> None:
+    def set_view(
+        self,
+        result: object,
+        accumulations: int,
+        detector_bits: int,
+        *,
+        from_file: bool = False,
+    ) -> None:
         """Update the in-view readouts from a rendered `RasterResult`.
 
         `accumulations` and `detector_bits` travel with every call rather than being
         remembered from `set_file`, because the detector-bits setting can change without
         a new frame arriving and the readout must move with it immediately.
+
+        `from_file` says where the bit depth came from, and the readout says so too. A
+        clockwork acquisition stores its digitizer's depth and a PNNL-written file has
+        nowhere to store one, so the same sentence covers two different claims -- "the
+        file says 14 bits" and "you told us 8" -- and the rule that a per-push number is
+        never quoted without what produced it is not met by quoting a number that could
+        be either (lab record, tasks 01 and 17).
         """
         self._max_label.setText(f"{result.max_intensity:,.0f}")
         counts, percent = per_push(result.max_intensity, accumulations, detector_bits)
+        source = "from file" if from_file else "from setting"
         self._per_push_label.setText(
             f"{counts:,.1f} ADC/push  ({accumulations} accum., {detector_bits}-bit"
-            f" -- {percent:.2f}% full scale)"
+            f" {source} -- {percent:.2f}% full scale)"
         )
         self._tic_label.setText(f"{result.tic_in_view:,.0f}")
         self._points_label.setText(f"{result.points_in_view:,}")

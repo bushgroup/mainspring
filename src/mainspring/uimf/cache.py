@@ -38,11 +38,20 @@ class FrameCache:
     def __init__(self, budget_bytes: int = DEFAULT_BUDGET_BYTES) -> None:
         self.budget_bytes = int(budget_bytes)
         self._entries: dict[tuple[str, int], SparseFrame] = {}
+        self._nbytes = 0
 
     @property
     def nbytes(self) -> int:
-        """What the cache is holding right now."""
-        return sum(frame.nbytes for frame in self._entries.values())
+        """What the cache is holding right now.
+
+        A running total kept by `put` and by `_discard`, not a sum over the entries. The
+        sum was what `put` asked before deciding to evict, so caching a frame cost a
+        pass over everything already cached and paging through a file got steadily
+        slower the further in it went: 0.036 ms per put at a hundred entries against
+        0.58 ms at two thousand, on a default budget that holds thirty-seven thousand
+        per-repetition frames (lab record, task 17).
+        """
+        return self._nbytes
 
     def __len__(self) -> int:
         return len(self._entries)
@@ -59,7 +68,7 @@ class FrameCache:
         key = (path, int(frame))
         hit = self._entries.pop(key, None)
         if hit is not None:
-            self._entries[key] = hit
+            self._entries[key] = hit  # same frame, new place: the byte total is unchanged
         return hit
 
     def put(self, path: str, frame: SparseFrame) -> bool:
@@ -75,12 +84,21 @@ class FrameCache:
         if frame.nbytes > self.budget_bytes:
             return False
         key = (path, int(frame.frame))
-        self._entries.pop(key, None)
+        self._discard(key)
         self._entries[key] = frame
-        while self.nbytes > self.budget_bytes and len(self._entries) > 1:
-            self._entries.pop(next(iter(self._entries)))
+        self._nbytes += frame.nbytes
+        while self._nbytes > self.budget_bytes and len(self._entries) > 1:
+            self._discard(next(iter(self._entries)))
         return True
+
+    def _discard(self, key: "tuple[str, int]") -> None:
+        """Drop one entry and take its bytes off the running total. The only route out
+        of `_entries` other than `clear`, so that the total cannot drift from the truth."""
+        gone = self._entries.pop(key, None)
+        if gone is not None:
+            self._nbytes -= gone.nbytes
 
     def clear(self) -> None:
         """Drop everything. Cheap, and the right response to a file changing under us."""
         self._entries.clear()
+        self._nbytes = 0

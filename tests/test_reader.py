@@ -176,3 +176,95 @@ def test_a_real_file_declares_a_usable_calibration(real_uimf):
     calibration = uimf.frame_params(uimf.frame_numbers()[0]).calibration(bin_width)
     assert calibration.usable
     assert calibration.bin_of(calibration.mz(1000.0)) == pytest.approx(1000.0)
+
+
+# --- the grouping, for the whole file in one query ------------------------------------
+
+
+def test_the_grouping_is_read_for_the_whole_file_at_once(tmp_path):
+    """Three method frames of two repetitions, and the answer compared against the
+    fixture's own arithmetic rather than against another call to the reader."""
+    spec = write_synthetic_uimf(
+        tmp_path / "grouped.uimf", frames=6, scans=8, bins=512, grouped=True, repetitions=2
+    )
+    grouping = UimfFile(spec.path).frame_grouping()
+
+    assert grouping.grouped
+    assert grouping.method_frame_numbers == [1, 2, 3]
+    assert dict(grouping.method_frame) == {n: spec.method_frame_of(n) for n in spec.frames}
+    assert dict(grouping.repetition) == {n: spec.repetition_of(n) for n in spec.frames}
+    assert grouping.frames == {1: (1, 2), 2: (3, 4), 3: (5, 6)}
+    assert dict(grouping.repetitions) == {1: 2, 2: 2, 3: 2}
+    assert not any(grouping.is_short(n) for n in grouping.method_frame_numbers)
+
+
+def test_the_one_query_agrees_with_asking_each_frame(tmp_path):
+    """The whole point of `frame_grouping` is that it is cheaper, not that it is
+    different: 43 ms against 6.9 s over 5,000 frames (lab record, task 17). So it has
+    to give exactly what `frame_params` gives, frame by frame."""
+    spec = write_synthetic_uimf(
+        tmp_path / "grouped.uimf", frames=5, scans=8, bins=512, grouped=True, repetitions=2
+    )
+    uimf = UimfFile(spec.path)
+    grouping = uimf.frame_grouping()
+    for number in spec.frames:
+        params = uimf.frame_params(number)
+        assert grouping.method_frame[number] == params.method_frame
+        assert grouping.repetition[number] == params.repetition
+        assert grouping.repetitions[params.method_frame] == params.repetitions
+
+
+def test_a_method_frame_with_fewer_frames_than_asked_for_reads_as_cut_short(tmp_path):
+    """Five frames in method frames of two leaves the last one holding one of two --
+    which is what a power cut, a cancelled run, or an acquisition still in progress
+    looks like, and the reason `MainspringRepetitions` is on every frame."""
+    spec = write_synthetic_uimf(
+        tmp_path / "short.uimf", frames=5, scans=8, bins=512, grouped=True, repetitions=2
+    )
+    grouping = UimfFile(spec.path).frame_grouping()
+    assert grouping.frames[3] == (5,)
+    assert grouping.is_short(3)
+    assert not grouping.is_short(1) and not grouping.is_short(2)
+
+
+def test_one_frame_covering_every_repetition_is_not_cut_short(tmp_path):
+    """A method frame with no repetition on its frame holds all of them, which is what
+    the summed companion says about itself and what `repetition_mode = "single_frame"`
+    writes (lab record, task 16). It has one frame against the many the method asked
+    for and has lost nothing, so the two cases must not read alike."""
+    from mainspring.uimf.writer import FrameSpec, GlobalSpec, UimfWriter
+
+    path = tmp_path / "whole.uimf"
+    with UimfWriter(path, GlobalSpec(bins=512)) as writer:
+        writer.add_frame(FrameSpec(scans=8, method_frame=1, repetitions=8))
+        writer.add_frame(FrameSpec(scans=8, method_frame=2, repetition=1, repetitions=8))
+    grouping = UimfFile(path).frame_grouping()
+
+    assert grouping.covers_whole(1) and not grouping.is_short(1)
+    assert grouping.is_short(2) and not grouping.covers_whole(2)
+    assert 1 not in grouping.repetition, "a frame that covers the whole is not one of them"
+
+
+def test_an_ungrouped_file_gives_an_empty_grouping(synthetic_uimf):
+    """Most files are ungrouped and every file PNNL's writers produce is, so this is
+    the common answer and it must not be an exception."""
+    grouping = UimfFile(synthetic_uimf.path).frame_grouping()
+    assert not grouping.grouped
+    assert grouping.method_frame_numbers == []
+    assert not grouping.is_short(1) and not grouping.covers_whole(1)
+
+
+def test_a_legacy_only_file_cannot_carry_the_grouping(tmp_path):
+    """`Frame_Parameters` is fixed columns: there is nowhere for a custom parameter to
+    live, so the answer is empty rather than a query against a table without the keys."""
+    spec = write_synthetic_uimf(
+        tmp_path / "legacy.uimf", frames=2, scans=8, bins=512, legacy_only=True, grouped=True
+    )
+    assert not UimfFile(spec.path).frame_grouping().grouped
+
+
+def test_a_real_file_carries_no_grouping(real_uimf):
+    """Nothing PNNL writes has these parameters in it, and the viewer's method-frame
+    controls are hidden on exactly that answer -- so it is worth checking against real
+    files rather than only against a fixture written not to have them."""
+    assert not UimfFile(real_uimf).frame_grouping().grouped

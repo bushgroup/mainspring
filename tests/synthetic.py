@@ -93,11 +93,30 @@ class SyntheticFile:
     intercept: float
     legacy_only: bool
     modern_only: bool
+    grouped: bool = False
+    repetitions: int = 0
     scan_rows: dict[tuple[int, int], SyntheticScan] = field(default_factory=dict)
 
     def scan(self, frame: int, scan: int) -> SyntheticScan:
         """The written row for one `(frame, scan)`; KeyError if that scan was not stored."""
         return self.scan_rows[(frame, scan)]
+
+    def method_frame_of(self, frame: int) -> int:
+        """Which method frame a frame belongs to, computed the way the file was written.
+
+        The arithmetic rather than a stored table, so a test comparing
+        `FrameGrouping.method_frame` against this is comparing the reader's answer to
+        the fixture's intent and not to another copy of the reader's answer.
+        """
+        if not self.grouped:
+            raise ValueError("this file was not written grouped")
+        return (int(frame) - 1) // self.repetitions + 1
+
+    def repetition_of(self, frame: int) -> int:
+        """Which repetition of its method frame a frame is, 1-based."""
+        if not self.grouped:
+            raise ValueError("this file was not written grouped")
+        return (int(frame) - 1) % self.repetitions + 1
 
     def stored_scans(self, frame: int) -> list[int]:
         """The scan numbers actually written for a frame, ascending. Not `range(scans)`."""
@@ -155,6 +174,7 @@ def write_synthetic_uimf(
     journal_mode: str = "wal",
     finalise: bool = True,
     grouped: bool = False,
+    repetitions: int | None = None,
     detector_bits: int | None = None,
 ) -> SyntheticFile:
     """Write a UIMF file at `path` and return what is in it.
@@ -174,14 +194,22 @@ def write_synthetic_uimf(
     `journal_mode` is WAL, which is what a clockwork acquisition is and what a live
     reader needs; pass `"delete"` for the mode every file we have from PNNL's writers is
     in. `finalise` leaves the last frame without its completion marker when false, which
-    is what a run cut short by a power failure looks like. `grouped` writes each frame as
-    a repetition of one method frame; `detector_bits` stores a bit depth.
+    is what a run cut short by a power failure looks like.
+
+    `grouped` writes the frames as repetitions of method frames, `repetitions` many to
+    each -- so `frames=6, repetitions=2` is three method frames of two repetitions, the
+    shape of a clockwork raw acquisition in miniature. It defaults to all of them in one
+    method frame. A frame count that is not a multiple of `repetitions` leaves the last
+    method frame short, on purpose: `FrameGrouping.is_short` is the question that
+    distinguishes a cut-short run from a complete one, and a fixture that could not be
+    short could not test it. `detector_bits` stores a bit depth.
     """
     if legacy_only and modern_only:
         raise ValueError("legacy_only and modern_only are mutually exclusive")
     dtype = dtype_for(tof_intensity_type)
     amplitude = 900 if dtype == np.dtype("<i2") else 9000
     path = os.fspath(path)
+    per_method_frame = repetitions if repetitions else frames
 
     spec = SyntheticFile(
         path=os.path.abspath(path),
@@ -197,6 +225,8 @@ def write_synthetic_uimf(
         intercept=INTERCEPT,
         legacy_only=legacy_only,
         modern_only=modern_only,
+        grouped=grouped,
+        repetitions=per_method_frame,
     )
 
     tables = "legacy" if legacy_only else ("modern" if modern_only else "both")
@@ -231,9 +261,9 @@ def write_synthetic_uimf(
                     calibration_slope=SLOPE,
                     calibration_intercept=INTERCEPT,
                     average_tof_length_ns=AVERAGE_TOF_LENGTH_NS,
-                    method_frame=1 if grouped else None,
-                    repetition=frame if grouped else None,
-                    repetitions=len(spec.frames) if grouped else None,
+                    method_frame=(frame - 1) // per_method_frame + 1 if grouped else None,
+                    repetition=(frame - 1) % per_method_frame + 1 if grouped else None,
+                    repetitions=per_method_frame if grouped else None,
                 ),
                 frame=frame,
             )

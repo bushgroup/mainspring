@@ -15,7 +15,7 @@ import time
 import numpy as np
 import pytest
 
-from mainspring.uimf import DisplayAxes, GlobalParams, RasterResult
+from mainspring.uimf import DisplayAxes, FrameGrouping, GlobalParams, RasterResult
 from mainspring.viewer.heatmap import HeatmapView
 from mainspring.viewer.info_panel import InfoPanel, per_push
 from mainspring.viewer.main_window import MainWindow
@@ -359,7 +359,7 @@ def test_a_stored_arrival_offset_starts_applied(qtbot, synthetic_uimf):
 def test_frame_type_filter_narrows_the_active_frames(qtbot):
     window = MainWindow()
     qtbot.addWidget(window)
-    window._on_opened(GlobalParams(), [1, 2, 3], {1: 0, 2: 1, 3: 2})
+    window._on_opened(GlobalParams(), [1, 2, 3], {1: 0, 2: 1, 3: 2}, FrameGrouping())
 
     items = [window._type_filter.itemText(i) for i in range(window._type_filter.count())]
     assert items == ["All frames", "MS1", "MS2"]
@@ -470,3 +470,200 @@ def test_picking_a_colour_map_ticks_it_alone_and_is_remembered(qtbot):
     assert [a.isChecked() for a in _colour_map_menu(window).actions()].count(True) == 1
     assert window.settings.colour_map == "plasma"
     assert window.heatmap._colour_bar.colorMap().name == "plasma"
+
+
+# --- navigation by method frame and repetition (task 17) ------------------------------
+
+@pytest.fixture
+def grouped_uimf(tmp_path):
+    """Six frames as three method frames of two repetitions: a clockwork raw
+    acquisition in miniature, with a stored detector bit depth."""
+    return write_synthetic_uimf(
+        tmp_path / "grouped.uimf", frames=6, scans=16, bins=4096,
+        grouped=True, repetitions=2, detector_bits=14,
+    )
+
+
+@pytest.fixture
+def grouped_window(qtbot, grouped_uimf):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    with qtbot.waitSignal(window.frame_shown, timeout=5000):
+        window.open_file(grouped_uimf.path)
+    return window
+
+
+def test_the_method_frame_controls_are_hidden_on_a_file_without_the_grouping(opened_window):
+    """A file that cannot answer must behave exactly as it did before this task -- so
+    the controls go, rather than sitting there disabled on every file PNNL ever wrote."""
+    window = opened_window
+    assert not window._grouping.grouped
+    assert not window.sum_method_frame_action.isVisible()
+    assert not any(action.isVisible() for action in window._grouping_actions)
+
+
+def test_the_method_frame_controls_appear_on_a_grouped_file(grouped_window):
+    window = grouped_window
+    assert window._grouping.grouped
+    assert all(action.isVisible() for action in window._grouping_actions)
+    assert (window._method_spin.minimum(), window._method_spin.maximum()) == (1, 3)
+    # Opened on frame 1, which is repetition 1 of method frame 1.
+    assert (window._method_spin.value(), window._repetition_spin.value()) == (1, 1)
+    assert window._repetitions_readout.text().strip() == "of 2"
+
+
+def test_stepping_the_method_frame_holds_the_repetition(grouped_window, qtbot):
+    """The two spinners are two independent axes: stepping the method frame shows the
+    same point of the next experiment, stepping the repetition shows the drift within
+    one. That is only true if each holds the other's value."""
+    window = grouped_window
+
+    with qtbot.waitSignal(window.frame_shown, timeout=5000):
+        window._repetition_spin.setValue(2)
+    assert window._current_frame_number == 2  # method frame 1, repetition 2
+
+    with qtbot.waitSignal(window.frame_shown, timeout=5000):
+        window._method_spin.setValue(3)
+    assert window._current_frame_number == 6  # method frame 3, repetition 2 still
+    assert window._repetition_spin.value() == 2
+
+
+def test_the_frame_spinner_and_the_method_spinners_stay_in_step(grouped_window, qtbot):
+    """One source of truth -- the frame number -- and the other two set from it. Driving
+    the frame spinner directly must move the method-frame pair, or the toolbar would be
+    able to show two different frames at once."""
+    window = grouped_window
+
+    with qtbot.waitSignal(window.frame_shown, timeout=5000):
+        window._frame_spin.setValue(4)
+
+    assert window._current_frame_number == 4
+    assert (window._method_spin.value(), window._repetition_spin.value()) == (2, 2)
+
+
+def test_a_cut_short_method_frame_says_so_and_clamps_the_repetition(qtbot, tmp_path):
+    """Five frames in method frames of two: the third holds one of the two the method
+    asked for. The readout names both numbers, and asking for repetition 2 of it lands
+    on the one frame there is rather than refusing or reaching into the next."""
+    spec = write_synthetic_uimf(
+        tmp_path / "short.uimf", frames=5, scans=16, bins=4096, grouped=True, repetitions=2
+    )
+    window = MainWindow()
+    qtbot.addWidget(window)
+    with qtbot.waitSignal(window.frame_shown, timeout=5000):
+        window.open_file(spec.path)
+
+    with qtbot.waitSignal(window.frame_shown, timeout=5000):
+        window._repetition_spin.setValue(2)
+    with qtbot.waitSignal(window.frame_shown, timeout=5000):
+        window._method_spin.setValue(3)
+
+    assert window._current_frame_number == 5
+    assert window._repetition_spin.value() == 1
+    assert window._repetitions_readout.text().strip() == "of 1, method asked 2"
+
+
+def test_sum_method_frame_sums_exactly_that_method_frame(grouped_window, grouped_uimf, qtbot):
+    """The reason the grouping is in the file at all: a per-repetition acquisition has
+    to be addable back up into the summed heatmap of one experiment. Checked against
+    the fixture's own stored TIC columns, which is the file's arithmetic and not the
+    reader's."""
+    window = grouped_window
+
+    with qtbot.waitSignal(window.frame_shown, timeout=5000):
+        window._method_spin.setValue(2)
+    with qtbot.waitSignal(window.frame_shown, timeout=10000) as blocker:
+        window.sum_method_frame()
+    result = blocker.args[0]
+
+    expected = grouped_uimf.tic(3) + grouped_uimf.tic(4)
+    assert result.tic_in_view == pytest.approx(expected)
+    assert "method frame 2" in window.statusBar().currentMessage()
+    # And the spinners still name the method frame that was summed.
+    assert window._method_spin.value() == 2
+
+
+def test_sum_method_frame_does_nothing_on_a_file_without_the_grouping(opened_window):
+    """The action is hidden there, but a caller can still reach the method: it must be a
+    no-op rather than an exception or a sum of the wrong frames."""
+    window = opened_window
+    before = window._current_frame_number
+    window.sum_method_frame()
+    assert window._current_frame_number == before
+
+
+# --- the detector bit depth, from the file when the file has one (task 17) ------------
+
+
+def test_a_stored_bit_depth_replaces_the_setting_and_locks_the_box(qtbot, grouped_uimf):
+    """A spin box the user can turn while the number in use comes from somewhere else
+    would be a control that lies, so on a file that stores its own depth the box shows
+    it and is read-only -- and the user's persisted setting is left alone underneath."""
+    from mainspring.viewer.settings import ViewerSettings
+
+    window = MainWindow(ViewerSettings(detector_bits=8))
+    qtbot.addWidget(window)
+    with qtbot.waitSignal(window.frame_shown, timeout=5000):
+        window.open_file(grouped_uimf.path)
+
+    assert window.detector_bits == 14 and window.detector_bits_from_file
+    assert window._bits_box.value() == 14
+    assert window._bits_box.isReadOnly()
+    assert window.settings.detector_bits == 8, "the file's value is not written to the setting"
+    assert "from file" in window.info_panel._per_push_label.text()
+    assert "14-bit" in window.info_panel._per_push_label.text()
+
+
+def test_without_a_stored_bit_depth_the_setting_is_used_and_stays_editable(
+    qtbot, synthetic_uimf
+):
+    """Which is every file PNNL's writers produce: the format has no name for bit depth,
+    so a setting the user can see is the only honest answer."""
+    from mainspring.viewer.settings import ViewerSettings
+
+    window = MainWindow(ViewerSettings(detector_bits=8))
+    qtbot.addWidget(window)
+    with qtbot.waitSignal(window.frame_shown, timeout=5000):
+        window.open_file(synthetic_uimf.path)
+
+    assert window.detector_bits == 8 and not window.detector_bits_from_file
+    assert window._bits_box.value() == 8 and not window._bits_box.isReadOnly()
+    assert "from setting" in window.info_panel._per_push_label.text()
+
+    window._bits_box.setValue(12)
+    assert window.settings.detector_bits == 12
+    assert "12-bit from setting" in window.info_panel._per_push_label.text()
+
+
+def test_the_readout_says_which_of_the_two_places_the_bit_depth_came_from():
+    """The rule is that a per-push number is never quoted without the Accumulations and
+    the bit depth that produced it (lab record, task 01). A depth that could have come
+    from either place does not meet it, so the source is part of the sentence."""
+    panel = InfoPanel()
+    result = _fake_result(np.array([[0.0, 1000.0]]))
+    panel.set_view(result, accumulations=100, detector_bits=14, from_file=True)
+    assert "14-bit from file" in panel._per_push_label.text()
+    panel.set_view(result, accumulations=100, detector_bits=8, from_file=False)
+    assert "8-bit from setting" in panel._per_push_label.text()
+
+
+# --- snapping to the nearest frame, at the scale a raw acquisition reaches ------------
+
+
+def test_nearest_picks_the_closest_and_ties_go_low():
+    """Bisected rather than scanned, because the frame spinner runs it once per step and
+    a clockwork raw acquisition puts thousands of frames in the list (lab record, task
+    17). The behaviour has to be identical to the scan it replaced, ties included."""
+    from mainspring.viewer.main_window import _nearest
+
+    numbers = [2, 4, 6, 20]
+    assert _nearest(numbers, 1) == 2, "below the first"
+    assert _nearest(numbers, 99) == 20, "above the last"
+    assert _nearest(numbers, 4) == 4, "an exact hit"
+    assert _nearest(numbers, 5) == 4, "a tie goes to the lower, as min(key=) did"
+    assert _nearest(numbers, 7) == 6
+    assert _nearest(numbers, 19) == 20
+    assert _nearest([7], 100) == 7, "a single frame"
+    for value in range(-5, 30):
+        assert _nearest(numbers, value) == min(numbers, key=lambda n: abs(n - value))

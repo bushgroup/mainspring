@@ -345,6 +345,39 @@ def main() -> int:
         check_true("the grouping is readable from the parameters alone",
                    [(cut.frame_params(n).method_frame, cut.frame_params(n).repetition)
                     for n in (1, 2)] == [(1, 1), (1, 2)])
+        # And for the whole file in one query, which is the only affordable way to ask
+        # it of a clockwork raw acquisition: 43 ms against 6.9 s a frame at a time,
+        # over 5,000 frames (lab record, task 17).
+        grouping = cut.frame_grouping()
+        check_true(
+            "and for the whole file in one query rather than one per frame",
+            grouping.grouped
+            and grouping.method_frame_numbers == [1]
+            and grouping.frames == {1: (1, 2)}
+            and dict(grouping.repetition) == {1: 1, 2: 2}
+            and not grouping.is_short(1)
+            and not grouping.covers_whole(1),
+        )
+
+    # The two groupings that are not "one repetition of a method frame", which a viewer
+    # navigating by method frame has to tell apart: a run that lost repetitions, and one
+    # frame that deliberately holds all of them (lab record, task 16).
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "grouping.uimf")
+        with uimf_writer.UimfWriter(path, uimf_writer.GlobalSpec(bins=4096)) as handle:
+            handle.add_frame(uimf_writer.FrameSpec(scans=8, method_frame=1, repetition=1,
+                                                   repetitions=4))
+            handle.add_frame(uimf_writer.FrameSpec(scans=8, method_frame=2, repetitions=4))
+        grouping = UimfFile(path).frame_grouping()
+        check_true("a method frame missing repetitions reads as cut short",
+                   grouping.is_short(1) and not grouping.covers_whole(1))
+        check_true("one frame covering every repetition is not cut short",
+                   grouping.covers_whole(2) and not grouping.is_short(2))
+        ungrouped = os.path.join(tmp, "ungrouped.uimf")
+        with uimf_writer.UimfWriter(ungrouped, uimf_writer.GlobalSpec(bins=4096)) as handle:
+            handle.add_frame(uimf_writer.FrameSpec(scans=8))
+        check_true("and a file with no grouping in it says so rather than guessing",
+                   not UimfFile(ungrouped).frame_grouping().grouped)
         check_raises("an invented parameter name is refused rather than given an ID",
                      ValueError,
                      lambda: uimf_writer.FrameSpec(scans=8, extra={"DriftVoltage": 1.0}))

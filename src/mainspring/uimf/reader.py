@@ -48,6 +48,7 @@ __all__ = [
     "BUSY_TIMEOUT_MS",
     "PROVISIONAL_WINDOW_S",
     "FrameParams",
+    "FrameGrouping",
     "GlobalParams",
     "UimfFile",
     "connect",
@@ -171,6 +172,80 @@ class FrameParams:
         return self.scans * self.average_tof_length_ns * 1e-6
 
 
+@dataclass(frozen=True)
+class FrameGrouping:
+    """How a file's frames group into method frames, for the whole file at once.
+
+    A clockwork raw acquisition is one UIMF frame per repetition, so a method frame of
+    `Accumulations` = A is A consecutive frames and a session is thousands of them. The
+    grouping is per-frame parameters (`FrameParams.method_frame` and `.repetition`), and
+    asking for it a frame at a time is a connection and a join per frame: 6.9 s over
+    5,000 frames against 43 ms for the one query that answers it for the whole file
+    (lab record, task 17). So this is what a caller navigating by method frame reads,
+    and `UimfFile.frame_grouping` is the one query.
+
+    Three cases, as the writer defines them (lab record, task 16): a frame with no
+    `method_frame` is ungrouped, a frame with a `method_frame` and a `repetition` is one
+    repetition of it, and a frame with a `method_frame` and no `repetition` covers the
+    whole of it -- which is what a summed companion says about itself. So `method_frame`
+    holds every grouped frame and `repetition` only the subset that is a repetition; a
+    caller must not assume the two have the same keys.
+
+    `repetitions` is how many the method asked for, per method frame, and a method frame
+    with fewer frames than that was cut short.
+    """
+
+    method_frame: Mapping[int, int] = field(default_factory=dict)
+    """`frame -> method frame`, for the frames that carry one."""
+    repetition: Mapping[int, int] = field(default_factory=dict)
+    """`frame -> repetition within its method frame`, for the frames that carry one."""
+    repetitions: Mapping[int, int] = field(default_factory=dict)
+    """`method frame -> how many repetitions the method asked for`."""
+    frames: Mapping[int, tuple[int, ...]] = field(default_factory=dict)
+    """`method frame -> its frames, ascending`. The inverse of `method_frame`, built
+    here rather than by every caller that needs to page through one method frame."""
+
+    @property
+    def grouped(self) -> bool:
+        """Whether this file carries the grouping at all. False for every file PNNL's
+        writers produce, and the question the viewer asks before offering to navigate
+        by method frame."""
+        return bool(self.method_frame)
+
+    @property
+    def method_frame_numbers(self) -> list[int]:
+        """The method frames present, ascending."""
+        return sorted(self.frames)
+
+    def covers_whole(self, method_frame: int) -> bool:
+        """Whether this method frame is held as one frame covering all its repetitions.
+
+        A `method_frame` with no `repetition` on it means exactly that, and it is what
+        the summed companion clockwork's fold writes says about itself and what an
+        acquisition in `repetition_mode = "single_frame"` produces -- the lab's
+        Bradykinin CLOCK golden method is that mode (lab record, task 16). It is the
+        case a caller must tell apart from a run cut short: both hold fewer frames than
+        the method asked for, and only one of them lost anything.
+        """
+        members = self.frames.get(int(method_frame), ())
+        return bool(members) and not any(frame in self.repetition for frame in members)
+
+    def is_short(self, method_frame: int) -> bool:
+        """Whether this method frame lost repetitions it was meant to have.
+
+        A power cut, a cancelled run, or -- on a file still being acquired -- a method
+        frame that has simply not finished yet. `repetitions` is written on every frame
+        for exactly this reason (lab record, task 16); a file that does not carry it
+        cannot answer, and says False. Nor is a method frame held as one whole frame
+        short: it has one frame against the hundred the method asked for and has lost
+        nothing, which is why `covers_whole` exists.
+        """
+        asked = self.repetitions.get(int(method_frame))
+        if not asked or self.covers_whole(method_frame):
+            return False
+        return len(self.frames.get(int(method_frame), ())) < asked
+
+
 class UimfFile:
     """A UIMF file, opened lazily and never held open. See the module docstring.
 
@@ -281,6 +356,59 @@ class UimfFile:
             for frame, value in rows:
                 params[int(frame)] = _as_int(value, 0)
         return params
+
+    def frame_grouping(self) -> FrameGrouping:
+        """How this file's frames group into method frames, in one query.
+
+        The same trade `frame_types` makes and for the same reason, one scale further
+        on: three parameter names for every frame in the file, fetched together, because
+        the alternative is a connection and a join per frame and a clockwork raw file
+        has thousands of them (lab record, task 17).
+
+        An ungrouped file gives an empty `FrameGrouping` rather than raising -- most
+        files are ungrouped, every file PNNL's writers produce is, and "does this file
+        carry the grouping" is a question the viewer asks of every file it opens. A
+        legacy-only file cannot carry it: `Frame_Parameters` is fixed columns, so there
+        is nowhere for a custom parameter to live.
+        """
+        if self.is_legacy_only:
+            return FrameGrouping()
+        names = (METHOD_FRAME, REPETITION, REPETITIONS)
+        raw: dict[str, dict[int, int]] = {name: {} for name in names}
+        with connect(self.path, self.busy_timeout_ms) as conn:
+            rows = conn.execute(
+                "SELECT K.ParamName, FP.FrameNum, FP.ParamValue FROM Frame_Params FP"
+                " JOIN Frame_Param_Keys K ON FP.ParamID = K.ParamID"
+                f" WHERE K.ParamName IN ({', '.join('?' * len(names))})",
+                names,
+            )
+            for name, frame, value in rows:
+                parsed = _as_optional_int(value)
+                if parsed is not None:
+                    raw[str(name)][int(frame)] = parsed
+
+        method_frame = raw[METHOD_FRAME]
+        frames: dict[int, list[int]] = {}
+        for frame in sorted(method_frame):
+            frames.setdefault(method_frame[frame], []).append(frame)
+        # `MainspringRepetitions` is written on every frame, not on the method frame, so
+        # it arrives keyed by frame and has to be folded onto the method frame it
+        # describes. Every frame of one method frame carries the same value; the last
+        # one read wins, which is the same value.
+        repetitions = {
+            method_frame[frame]: count
+            for frame, count in sorted(raw[REPETITIONS].items())
+            if frame in method_frame
+        }
+        return FrameGrouping(
+            method_frame=method_frame,
+            repetition={
+                frame: value for frame, value in raw[REPETITION].items()
+                if frame in method_frame  # a repetition of nothing is not a repetition
+            },
+            repetitions=repetitions,
+            frames={number: tuple(members) for number, members in frames.items()},
+        )
 
     def frame_params(self, frame: int) -> FrameParams:
         """One frame's parameters, modern table preferred.

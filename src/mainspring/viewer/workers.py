@@ -44,7 +44,14 @@ from dataclasses import dataclass
 import numpy as np
 from PySide6.QtCore import QThread, Signal
 
-from ..uimf import DisplayAxes, RasterResult, SparseFrame, UimfFile, sum_frames
+from ..uimf import (
+    DisplayAxes,
+    FrameGrouping,
+    RasterResult,
+    SparseFrame,
+    UimfFile,
+    sum_frames,
+)
 from ..uimf.cache import DEFAULT_BUDGET_BYTES, FrameCache
 from ..uimf.decode import numba_available
 from ..uimf.raster import render_view
@@ -217,10 +224,12 @@ class LoadWorker(QThread):
     otherwise land in.
     """
 
-    opened = Signal(object, object, object)
-    """`GlobalParams, list[int], dict[int, int]` -- a file's parameters, its frame
-    numbers, and each frame's `FrameType` (the frame-type filter's own source, one query
-    for the whole file rather than one `frame_params` call per frame -- `reader.py`)."""
+    opened = Signal(object, object, object, object)
+    """`GlobalParams, list[int], dict[int, int], FrameGrouping` -- a file's parameters,
+    its frame numbers, each frame's `FrameType`, and how the frames group into method
+    frames. The last two are each **one query for the whole file** rather than one
+    `frame_params` call per frame, which is the difference between 43 ms and 6.9 s on a
+    clockwork raw file of 5,000 frames (lab record, task 17)."""
     frame_loaded = Signal(int, object, object)
     """`frame number, SparseFrame, FrameParams` -- a decoded frame and its parameters."""
     summing_progress = Signal(int, int)
@@ -294,10 +303,13 @@ class LoadWorker(QThread):
         # Skipped rather than queried on an empty result: there is nothing to filter by
         # type, and a minimal or malformed file with no frames need not carry a
         # `FrameType` column either (`frame_types()` assumes one on a legacy table).
+        # The grouping is skipped on the same condition and returns empty on any file
+        # that does not carry it, which is most of them.
         types = file.frame_types() if numbers else {}
+        grouping = file.frame_grouping() if numbers else FrameGrouping()
         self._file = file
         self._cache.clear()
-        self.opened.emit(globals_, numbers, types)
+        self.opened.emit(globals_, numbers, types, grouping)
 
     def _read_frame(self, frame: int) -> SparseFrame:
         assert self._file is not None

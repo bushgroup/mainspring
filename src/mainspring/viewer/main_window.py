@@ -30,10 +30,20 @@ setting -- paging through a run should never cost the zoom the user just set. Sw
 axes or switching to raw units does neither: it re-expresses the same visible bins and
 scans through the new axis tables (`_rebuild_axes`), which is the third way "keep the
 view" comes up here.
+
+**Three spinners name the frame, and only one of them is ever the source.** A clockwork
+raw acquisition is one frame per repetition, so a method frame is a run of consecutive
+frames and the toolbar can say which frame by number, or by method frame and repetition
+(`FrameGrouping`, lab record, tasks 16 and 17). The frame number is the truth:
+`_sync_grouping_controls` sets the other two from it with their signals blocked, and
+nothing sets the frame spinner except `_show_frame`. Three controls each able to drive
+the others would be a loop. All of them are hidden on a file that does not carry the
+grouping, which is every file PNNL's writers produce.
 """
 
 from __future__ import annotations
 
+import bisect
 import os
 import time
 
@@ -55,7 +65,7 @@ from PySide6.QtWidgets import (
     QToolBar,
 )
 
-from ..uimf import DisplayAxes, FrameParams, GlobalParams, SparseFrame
+from ..uimf import DisplayAxes, FrameGrouping, FrameParams, GlobalParams, SparseFrame
 from ..uimf.raster import AGGREGATES
 from . import theme
 from .controls import add_labelled, describe, make_action
@@ -121,8 +131,10 @@ class MainWindow(QMainWindow):
         self._frame_numbers: list[int] = []
         self._frame_types: dict[int, int] = {}
         self._active_frame_numbers: list[int] = []
+        self._grouping = FrameGrouping()
         self._sum_dialog: QProgressDialog | None = None
         self._sum_count = 0
+        self._sum_what = ""
 
         self.heatmap = HeatmapView(colour_map=self.settings.colour_map)
         self.setCentralWidget(self.heatmap)
@@ -388,6 +400,54 @@ class MainWindow(QMainWindow):
             tip="Go to a frame by number, within the frames the type filter allows.",
         )
 
+        # The method-frame group, hidden on every file that does not carry the grouping
+        # -- which is every file PNNL's writers produce. Hidden and not merely disabled:
+        # a control that can never do anything on this file is not a control, and the
+        # toolbar is already long. `_show_grouping_controls` is the one switch, and what
+        # it switches is the toolbar's own actions, not the widgets: a `QToolBar` lays
+        # out by action visibility, so hiding the widget alone would leave its gap.
+        self._grouping_actions: "list[object]" = []
+        self._method_spin = QSpinBox()
+        self._method_spin.setRange(0, 0)
+        self._method_spin.valueChanged.connect(self._on_method_spin_changed)
+        self._method_label = self._add_hideable(
+            toolbar,
+            " Method frame: ",
+            self._method_spin,
+            tip="Go to a method frame. One method frame is every repetition the method"
+                " asked for, stored here as consecutive frames.",
+        )
+
+        self._repetition_spin = QSpinBox()
+        self._repetition_spin.setRange(0, 0)
+        self._repetition_spin.valueChanged.connect(self._on_repetition_spin_changed)
+        self._repetition_label = self._add_hideable(
+            toolbar,
+            " Rep: ",
+            self._repetition_spin,
+            tip="Step through the repetitions of the method frame on screen, to see"
+                " whether they drift.",
+        )
+        # How many the method asked for, beside a spinner whose maximum is how many the
+        # file holds. The two differ exactly when a method frame was cut short, which is
+        # worth seeing at a glance rather than working out.
+        self._repetitions_readout = QLabel("")
+        describe(
+            self._repetitions_readout,
+            "How many repetitions of this method frame the file holds, and how many the"
+            " method asked for.",
+        )
+        self._grouping_actions.append(toolbar.addWidget(self._repetitions_readout))
+
+        self.sum_method_frame_action = make_action(
+            self,
+            "Sum method frame",
+            tip="Add every repetition of the method frame on screen into one heatmap.",
+            triggered=lambda: self.sum_method_frame(),
+        )
+        toolbar.addAction(self.sum_method_frame_action)
+        self._grouping_actions.append(self.sum_method_frame_action)
+
         self.sum_action = make_action(
             self,
             "Sum all",
@@ -395,6 +455,19 @@ class MainWindow(QMainWindow):
             triggered=lambda: self.sum_frames(),
         )
         toolbar.addAction(self.sum_action)
+        self._show_grouping_controls(False)
+
+    def _add_hideable(self, toolbar: QToolBar, text: str, widget: object, *, tip: str) -> QLabel:
+        """`add_labelled`, remembering the two toolbar actions that can hide the pair."""
+        before = len(toolbar.actions())
+        label = add_labelled(toolbar, text, widget, tip=tip)
+        self._grouping_actions.extend(toolbar.actions()[before:])
+        return label
+
+    def _show_grouping_controls(self, shown: bool) -> None:
+        """Show or hide the method-frame group as one thing."""
+        for action in self._grouping_actions:
+            action.setVisible(shown)
 
     def _prompt_open(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -500,21 +573,98 @@ class MainWindow(QMainWindow):
             return
         self._worker.request_frame(int(frame))
 
-    def sum_frames(self, frames: "list[int] | None" = None) -> None:
+    def _sync_grouping_controls(self, frame_number: int) -> None:
+        """Put the method-frame and repetition spinners on the frame now showing.
+
+        The frame spinner, the method-frame spinner and the repetition spinner are three
+        ways of saying the same thing, so exactly one of them is ever the source: the
+        frame number. Both others are set from it here, with their signals blocked --
+        the alternative is two controls that can each drive the other and a loop between
+        them.
+
+        Silent on a frame the grouping does not cover, which is the sum-all and
+        sum-method-frame result (frame 0, not a frame of the file). Leaving the spinners
+        where they were is right for both: after summing one method frame they still
+        name it.
+        """
+        if not self._grouping.grouped:
+            return
+        method_frame = self._grouping.method_frame.get(int(frame_number))
+        if method_frame is None:
+            return
+        members = self._grouping.frames.get(method_frame, ())
+        asked = self._grouping.repetitions.get(method_frame, len(members))
+        self._method_spin.blockSignals(True)
+        self._method_spin.setValue(method_frame)
+        self._method_spin.blockSignals(False)
+        self._repetition_spin.blockSignals(True)
+        self._repetition_spin.setRange(1, max(1, len(members)))
+        self._repetition_spin.setValue(self._grouping.repetition.get(int(frame_number), 1))
+        self._repetition_spin.blockSignals(False)
+        if self._grouping.covers_whole(method_frame):
+            text = f" (all {asked} repetitions in one frame) "
+        elif self._grouping.is_short(method_frame):
+            text = f" of {len(members)}, method asked {asked} "
+        else:
+            text = f" of {asked} "
+        self._repetitions_readout.setText(text)
+
+    def show_method_frame(self, method_frame: int, repetition: "int | None" = None) -> None:
+        """Show one repetition of a method frame, by default the one already on screen.
+
+        Keeping the repetition across a method-frame change is what makes the two
+        spinners two independent axes rather than one path: stepping the method frame
+        holds the repetition and shows the same point of each experiment, stepping the
+        repetition holds the method frame and shows the drift within one. A method frame
+        with fewer frames than the one before it clamps rather than refusing.
+        """
+        members = self._grouping.frames.get(int(method_frame), ())
+        if not members:
+            return
+        wanted = self._repetition_spin.value() if repetition is None else int(repetition)
+        index = min(max(1, wanted), len(members)) - 1
+        self.show_frame(members[index])
+
+    def sum_method_frame(self, method_frame: "int | None" = None) -> None:
+        """Sum every repetition of one method frame, by default the one on screen.
+
+        The whole reason the grouping is in the file: the summed heatmap of one ion
+        mobility experiment is what a per-repetition acquisition has to be added back up
+        into to be read the way today's files are. Straight through `sum_frames`, so it
+        is the same generator, the same cache, the same progress dialog and the same
+        cancel as Sum all.
+        """
+        if method_frame is None:
+            method_frame = self._method_spin.value()
+        members = self._grouping.frames.get(int(method_frame), ())
+        if not members:
+            return
+        self.sum_frames(list(members), what=f"method frame {int(method_frame)}")
+
+    def sum_frames(self, frames: "list[int] | None" = None, *, what: str = "") -> None:
         """Sum several frames into one image, with a progress dialog and cancel.
 
         Defaults to the frame-type filter's active set rather than literally every
         frame: "sum all" should respect whatever the filter has already narrowed the
         frame spinner to, not silently pull in a frame type the user just excluded.
+
+        `what` names the set for the status line, so that a method-frame sum and a
+        sum-all are told apart afterwards by the message they leave rather than only by
+        the frame count. The work either way is `mainspring.uimf.frame.sum_frames` on
+        the load worker's thread, read-bound at about 5 ms a frame -- so a hundred-frame
+        method frame is under a second and every frame of a five-thousand-frame
+        acquisition is twenty seconds, which is what the progress dialog and the cancel
+        are for (lab record, task 17).
         """
         numbers = list(frames) if frames is not None else list(self._active_frame_numbers)
         if not numbers or self._global is None:
             return
         self._sum_count = len(numbers)
+        self._sum_what = what
         dialog = QProgressDialog(
             f"Summing {len(numbers)} frames...", "Cancel", 0, len(numbers), self
         )
-        describe(dialog, "Summing the frames the type filter allows. Cancel keeps the "
+        describe(dialog, "Summing the frames being added up. Cancel keeps the "
                  "frame already on screen.")
         dialog.setWindowModality(Qt.WindowModality.WindowModal)
         dialog.setMinimumDuration(0)
@@ -526,15 +676,27 @@ class MainWindow(QMainWindow):
     # --- worker callbacks -------------------------------------------------------------
 
     def _on_opened(
-        self, global_params: GlobalParams, frame_numbers: "list[int]", frame_types: "dict[int, int]"
+        self,
+        global_params: GlobalParams,
+        frame_numbers: "list[int]",
+        frame_types: "dict[int, int]",
+        grouping: FrameGrouping,
     ) -> None:
         self._global = global_params
         self._frame_numbers = list(frame_numbers)
         self._frame_types = dict(frame_types)
+        self._grouping = grouping
         # Named as soon as the file has opened, frames or no frames: an empty file is
         # still the file on screen.
         self.setWindowTitle(f"{os.path.basename(self._path or '')} — {APP_TITLE}")
         self._populate_type_filter()
+        self._apply_detector_bits()
+        self._show_grouping_controls(grouping.grouped)
+        if grouping.grouped:
+            numbers = grouping.method_frame_numbers
+            self._method_spin.blockSignals(True)
+            self._method_spin.setRange(numbers[0], numbers[-1])
+            self._method_spin.blockSignals(False)
         self._active_frame_numbers = list(self._frame_numbers)
         self._frame_spin.blockSignals(True)
         if self._frame_numbers:
@@ -594,6 +756,7 @@ class MainWindow(QMainWindow):
             self._frame_spin.blockSignals(True)
             self._frame_spin.setValue(frame_number)
             self._frame_spin.blockSignals(False)
+        self._sync_grouping_controls(frame_number)
         # Sets the reset target and the gesture limits, then asks for the first render;
         # every later render comes from a gesture through the same signal.
         self.heatmap.set_frame_extent(axes, reset=reset)
@@ -667,7 +830,10 @@ class MainWindow(QMainWindow):
         )
         if self._frame_params is not None:
             self.info_panel.set_view(
-                result, self._frame_params.accumulations, self.settings.detector_bits
+                result,
+                self._frame_params.accumulations,
+                self.detector_bits,
+                from_file=self.detector_bits_from_file,
             )
         self.export_png_action.setEnabled(True)
         self.export_pdf_action.setEnabled(True)
@@ -693,9 +859,10 @@ class MainWindow(QMainWindow):
             self._sum_dialog = None
         if frame_params is None:
             return  # cancelled, or an empty frame list -- nothing to show
+        what = f" of {self._sum_what}" if self._sum_what else ""
         self._show_frame(
             0, sparse_frame, frame_params, reset=False,
-            message=f"Sum of {self._sum_count} frames: {len(sparse_frame)} points",
+            message=f"Sum of {self._sum_count} frames{what}: {len(sparse_frame)} points",
         )
 
     # --- toolbar callbacks --------------------------------------------------------------
@@ -755,9 +922,65 @@ class MainWindow(QMainWindow):
 
     def _on_detector_bits_changed(self, value: int) -> None:
         self.settings.detector_bits = int(value)
+        self._refresh_view_readouts()
+
+    @property
+    def detector_bits(self) -> int:
+        """The bit depth the per-push readout is dividing by, from wherever it came.
+
+        The file's when the file stores one, the setting's otherwise. Bit depth has no
+        name in PNNL's parameter set and so is a setting on every file PNNL's writers
+        produce; `mainspring.uimf.writer` stores it, so a clockwork acquisition carries
+        its digitizer's own depth and no longer depends on the user having set the right
+        number (lab record, tasks 16 and 17).
+        """
+        stored = self._global.detector_bits if self._global is not None else None
+        return int(stored) if stored else int(self.settings.detector_bits)
+
+    @property
+    def detector_bits_from_file(self) -> bool:
+        """Whether `detector_bits` came out of the open file rather than the setting."""
+        return bool(self._global is not None and self._global.detector_bits)
+
+    def _apply_detector_bits(self) -> None:
+        """Put the open file's stored bit depth in the toolbar box, and lock it there.
+
+        A spin box the user can turn while the number in use comes from somewhere else
+        would be a control that lies. So on a file that stores a depth the box shows it
+        and is read-only, and on a file that does not it goes back to showing the
+        setting and is editable again. Signals blocked either way: a programmatic set
+        must not write the file's value into the user's persisted setting, which they
+        would then carry to the next file.
+        """
+        from_file = self.detector_bits_from_file
+        self._bits_box.blockSignals(True)
+        self._bits_box.setValue(self.detector_bits)
+        self._bits_box.blockSignals(False)
+        self._bits_box.setReadOnly(from_file)
+        self._bits_box.setButtonSymbols(
+            QSpinBox.ButtonSymbols.NoButtons if from_file else QSpinBox.ButtonSymbols.UpDownArrows
+        )
+        describe(
+            self._bits_box,
+            "Detector bit depth that the per-push readout assumes. This file stores its"
+            " own, so it cannot be changed here."
+            if from_file
+            else "Detector bit depth, 1 to 32, that the per-push readout assumes.",
+        )
+        describe(self._bits_label, self._bits_box.toolTip())
+
+    def _refresh_view_readouts(self) -> None:
+        """Re-send the newest render's in-view numbers to the info panel.
+
+        For the changes that alter what those numbers *mean* without a new render: the
+        bit-depth setting, and opening a file whose stored depth replaces it.
+        """
         if self._last_render is not None and self._frame_params is not None:
             self.info_panel.set_view(
-                self._last_render.result, self._frame_params.accumulations, self.settings.detector_bits
+                self._last_render.result,
+                self._frame_params.accumulations,
+                self.detector_bits,
+                from_file=self.detector_bits_from_file,
             )
 
     def _on_type_filter_changed(self, text: str) -> None:
@@ -773,22 +996,24 @@ class MainWindow(QMainWindow):
         self._frame_spin.setRange(min(self._active_frame_numbers), max(self._active_frame_numbers))
         self._frame_spin.blockSignals(False)
         if self._current_frame_number not in self._active_frame_numbers:
-            nearest = min(
-                self._active_frame_numbers,
-                key=lambda n: abs(n - (self._current_frame_number or 0)),
-            )
-            self.show_frame(nearest)
+            self.show_frame(_nearest(self._active_frame_numbers, self._current_frame_number or 0))
 
     def _on_frame_spin_changed(self, value: int) -> None:
         if not self._active_frame_numbers:
             return
-        nearest = min(self._active_frame_numbers, key=lambda n: abs(n - value))
+        nearest = _nearest(self._active_frame_numbers, value)
         if nearest != value:
             self._frame_spin.blockSignals(True)
             self._frame_spin.setValue(nearest)
             self._frame_spin.blockSignals(False)
         if nearest != self._current_frame_number:
             self.show_frame(nearest)
+
+    def _on_method_spin_changed(self, value: int) -> None:
+        self.show_method_frame(value)
+
+    def _on_repetition_spin_changed(self, value: int) -> None:
+        self.show_method_frame(self._method_spin.value(), repetition=value)
 
     def _rebuild_axes(self) -> None:
         """Rebuild `DisplayAxes` for the swap or raw-units toggle, translating the
@@ -882,6 +1107,23 @@ class MainWindow(QMainWindow):
         self._worker.stop()
         self._worker.wait(2000)
         super().closeEvent(event)
+
+
+def _nearest(numbers: "list[int]", value: int) -> int:
+    """The entry of an ascending list closest to `value`; ties go to the lower.
+
+    Bisected rather than scanned. The frame spinner runs this on the GUI thread once
+    per step, including once per tick of a held arrow, and a clockwork raw acquisition
+    puts thousands of frames in the list: 0.46 ms scanned against 0.001 ms bisected at
+    5,000 frames, which was over half of what a spinner step cost (lab record, task 17).
+    """
+    index = bisect.bisect_left(numbers, value)
+    if index == 0:
+        return numbers[0]
+    if index == len(numbers):
+        return numbers[-1]
+    below, above = numbers[index - 1], numbers[index]
+    return below if value - below <= above - value else above
 
 
 def _element_of(edges: "np.ndarray", value: float) -> "int | None":

@@ -29,7 +29,7 @@ from .calib import Calibration, arrival_time_ms, scan_axis_ms
 from .decode import decode_frame_blobs, decode_intensities, encode_intensities, numba_available
 from .frame import SparseFrame, sum_frames
 from .raster import DisplayAxes, RasterResult, profile, rasterise
-from .reader import FrameParams, GlobalParams, UimfFile
+from .reader import FrameGrouping, FrameParams, GlobalParams, UimfFile
 from .writer import (
     DETECTOR_BITS,
     FRAME_COMPLETE,
@@ -52,6 +52,7 @@ __all__ = [
     "Calibration",
     "DisplayAxes",
     "FrameCache",
+    "FrameGrouping",
     "FrameParams",
     "FrameSpec",
     "GlobalParams",

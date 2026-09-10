@@ -42,6 +42,11 @@ naming the file and the reason, since the window has nothing on screen yet to ex
 a file chosen from `File > Open` that fails reports the same reason in the status bar, since
 you are already looking at the window.
 
+File size and frame count are not what the open costs. A raw per-repetition acquisition of
+5,000 frames over 83 MB opens and paints its first frame in under 0.2 seconds, because the
+viewer reads one frame and rasterises it to the size of the window rather than loading the
+file. Paging to another frame costs about 5 milliseconds however far into the file it is.
+
 mainspring opens a finished acquisition. Following a file while the instrument is still
 writing it is the next piece of work on the viewer, and it is not here yet.
 
@@ -198,9 +203,14 @@ Shows and hides the info panel, on `Ctrl+I`. The panel's own close button is the
 ### Bits
 
 The digitizer's bit depth, from 1 to 32, which the per-push readout uses to work out what
-fraction of full scale a count is. UIMF files do not record bit depth, so this is a setting
-rather than something the viewer can read. SLIMPHONY's current digitizer is 8-bit and clockwork
-will use 14-bit. Set it before you read anything off the per-push line.
+fraction of full scale a count is. PNNL's parameter set has no name for bit depth, so on a file
+their acquisition software wrote this is a setting rather than something the viewer can read.
+SLIMPHONY's current digitizer is 8-bit and clockwork will use 14-bit. Set it before you read
+anything off the per-push line.
+
+A file clockwork wrote stores the bit depth of the digitizer that produced it. On such a file
+the control shows the stored value and cannot be changed, because the number in use is the
+file's. The per-push readout says which of the two it is using.
 
 ### Type
 
@@ -213,6 +223,30 @@ as `Type N` rather than hiding those frames.
 Goes to a frame by number, within the frames the type filter allows. Typing or stepping to a
 number outside that set snaps to the nearest frame inside it. The view is preserved.
 
+### Method frame, Rep, and Sum method frame
+
+These three appear only on a file that records which method frame each of its frames belongs to.
+clockwork writes that record; PNNL's acquisition software has nowhere to put it, so on their
+files the controls are absent and everything else behaves as described above.
+
+A clockwork raw acquisition stores one frame per repetition. A method frame asking for 100
+accumulations is therefore 100 consecutive frames in the file, and a session is many method
+frames. `Method frame` and `Rep` are the two axes of that arrangement. Stepping `Method frame`
+holds the repetition and shows the same point of each successive experiment; stepping `Rep`
+holds the method frame and shows one experiment repetition by repetition, which is how you see
+whether the repetitions drift. The `Frame` spinner still reaches any frame by its file number,
+and all three stay in step.
+
+Beside `Rep` the toolbar reports how many repetitions the method asked for. When a method frame
+holds fewer frames than that, the readout gives both numbers, as in `of 87, method asked 100`.
+A method frame reads short when a run was cancelled, when a power failure ended it, and while
+it is still being acquired.
+
+`Sum method frame` adds every repetition of the method frame on screen into one heat map. That
+sum is the summed arrival-time distribution of one ion mobility experiment, which is what a
+per-repetition file has to be added back up into to be read the way a summed file is. A method
+frame of 100 frames takes about half a second.
+
 ### Sum all
 
 Adds every frame the type filter allows into one heat map, drawn in place of the current frame.
@@ -221,7 +255,8 @@ already on screen. Cancelling discards the partial total rather than showing it,
 over an unknown number of frames is not a quantity anyone can use.
 
 The status bar names the result as a sum and how many frames went into it, so a summed image is
-never mistaken for a single frame.
+never mistaken for a single frame. On a raw per-repetition file of 5,000 frames the whole sum
+takes about 20 seconds, so use `Sum method frame` when one experiment is what you want.
 
 ## The status bar
 
@@ -260,10 +295,12 @@ by `Accumulations`, reported here in ADC counts and as a percentage of full scal
 depth the `Bits` control is set to. This is the number that says whether the detector is
 saturating.
 
-The readout states the `Accumulations` and the bit depth beside the count, because both went
-into it and neither is recoverable from the count alone. Note that bit depth is not stored in
-the file: the percentage is only as right as the `Bits` setting. Quote a per-push value with
-both, or do not quote it.
+The readout states the `Accumulations`, the bit depth, and where the bit depth came from, so
+that a count is never quoted without the two numbers that produced it. A file clockwork wrote
+carries the digitizer's own bit depth and the readout says `from file`. Every other file leaves
+the depth to the `Bits` control and the readout says `from setting`. Note that in the second
+case the percentage is only as right as the setting. Quote a per-push value with the
+`Accumulations` and the bit depth, or do not quote it.
 
 ### TIC in view
 
@@ -319,3 +356,6 @@ every setting to its default.
 The pinned colour levels and the current view range are not among them. Keep levels and keep
 ranges persist as switches, and what they hold is whatever is on screen in the session where
 you turn them on.
+
+The saved bit depth is the `Bits` setting, and opening a file that stores its own does not
+overwrite it. Close such a file and the control returns to the number you set.

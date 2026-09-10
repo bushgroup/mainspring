@@ -92,3 +92,63 @@ def test_clear_drops_everything():
 
 def test_the_default_budget_is_a_number_a_setting_can_show():
     assert FrameCache().budget_bytes == DEFAULT_BUDGET_BYTES
+
+
+def test_the_byte_total_survives_an_eviction():
+    """The total is kept as a running number, not summed on demand, so every route out
+    of the cache has to maintain it -- an eviction included, which is the route `put`
+    itself takes and would otherwise be the one that drifts (lab record, task 17)."""
+    one, two, three = frame(1), frame(2), frame(3)
+    cache = FrameCache(budget_bytes=one.nbytes + two.nbytes)
+    for stored in (one, two, three):
+        cache.put("a.uimf", stored)
+    assert len(cache) == 2
+    assert cache.nbytes == sum(f.nbytes for f in cache._entries.values())
+
+
+def test_the_byte_total_does_not_grow_with_a_repeated_hit():
+    """`get` moves an entry to the most-recently-used end by removing and reinserting
+    it, which is the one removal that must *not* change the total."""
+    cache = FrameCache()
+    stored = frame(1)
+    cache.put("a.uimf", stored)
+    for _ in range(5):
+        cache.get("a.uimf", 1)
+    assert cache.nbytes == stored.nbytes
+
+
+def test_a_put_costs_the_same_whether_the_cache_is_empty_or_full():
+    """What the running total is for. Summing the entries made `put` O(entries), and a
+    default budget holds tens of thousands of per-repetition frames, so paging through
+    a clockwork raw acquisition got steadily slower the further in it went: 0.036 ms per
+    put at a hundred entries against 0.58 ms at two thousand (lab record, task 17).
+
+    Timed rather than reasoned about, because the claim is about cost. The threshold is
+    deliberately loose: a put into a full cache really is a few times dearer than into
+    an empty one -- a two-thousand-entry dict is not a fifty-entry one -- and measured
+    here that is about 4x, against 193x for the implementation this replaced. Twenty
+    sits between the two with room on both sides, so a scheduler hiccup cannot fail it
+    and a reintroduced sum cannot pass it.
+    """
+    import time
+
+    cache = FrameCache()
+    frames = [frame(n, points=8) for n in range(2000)]
+
+    def cost(subset) -> float:
+        best = float("inf")
+        for stored in subset:
+            started = time.perf_counter()
+            cache.put("a.uimf", stored)
+            best = min(best, time.perf_counter() - started)
+        return best
+
+    empty = cost(frames[:50])
+    assert len(cache) == 50
+    cost(frames[50:])  # fill it
+    assert len(cache) == 2000
+    full = cost(frames[:50])  # re-put, so the entry count does not change further
+    assert full < empty * 20, (
+        f"a put cost {full * 1e6:.1f} us into a full cache against"
+        f" {empty * 1e6:.1f} us into an empty one"
+    )
