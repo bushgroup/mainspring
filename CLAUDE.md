@@ -34,7 +34,7 @@ you are reading this file *without* that import, you have a public clone — the
   and the lab record says why (lab record, task 01).
 - **No `.uimf` file is ever committed here** — `.gitignore` excludes the extension and
   `.githooks/pre-commit` refuses the path. Sample data live in the lab repo.
-- **Windows first.** The instruments and the users run Windows 10/11; the `.exe` is the primary
+- **Windows 11 only.** The instruments and the users run Windows 11; the `.exe` is the primary
   deliverable. Nothing should *break* elsewhere, but nothing else is tested.
 - **Lab-side paths resolve through `mainspring.lab_dir()`**: `$MAINSPRING_LAB`, then this root,
   then the sibling `../mainspring-lab`. Code in `src/` refers to lab material only in opaque form

@@ -76,8 +76,7 @@ optional `fast` extra adds numba, which compiles the decoder and is worth a fact
 
 ## Requirements
 
-- Windows 11, on which the viewer and its installer are tested. Windows 10 is expected to work
-  and has not been tested.
+- Windows 11, on which the viewer and its installer are tested.
 - [uv](https://docs.astral.sh/uv/) for working from source. The interpreter (CPython 3.12)
   and every library version are pinned by `pyproject.toml`, `.python-version`, and the
   committed `uv.lock`.

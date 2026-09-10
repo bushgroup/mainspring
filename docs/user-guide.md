@@ -20,8 +20,8 @@ uv run mainspring FILE.uimf
 The same `README.md` links the installer, which needs no Python installation, and covers
 building the executable and compiling the installer yourself. That installer is per-user and
 needs no administrator rights, because the viewer writes nothing outside your own profile.
-Windows 11 is the platform the viewer is tested on, and Windows 10 is expected to work. The
-installer also offers to open `.uimf` files with mainspring; accept it and a double-click in
+Windows 11 is the platform the viewer is tested on. The installer also offers to open `.uimf`
+files with mainspring; accept it and a double-click in
 Explorer opens the viewer directly, unless something else was already set to open `.uimf` on
 that machine, in which case mainspring is offered as a choice rather than replacing it
 (Settings > Default apps).
