@@ -348,6 +348,19 @@ def main() -> int:
         check_raises("an invented parameter name is refused rather than given an ID",
                      ValueError,
                      lambda: uimf_writer.FrameSpec(scans=8, extra={"DriftVoltage": 1.0}))
+        client_key = uimf_writer.ParamDef(
+            uimf_writer.CLIENT_PARAM_ID_BASE, "ExampleClientStamp", "System.String")
+        check_true(
+            "a client may declare a parameter of its own above its own ID base",
+            uimf_writer.FrameSpec(scans=8, extra={client_key: "x"}).extra[client_key] == "x",
+        )
+        check_raises(
+            "but not one that would take an ID PNNL or mainspring already uses",
+            ValueError,
+            lambda: uimf_writer.FrameSpec(scans=8, extra={
+                uimf_writer.ParamDef(uimf_writer.CUSTOM_PARAM_ID_BASE + 1,
+                                     "ExampleClientStamp", "System.String"): "x"}),
+        )
         check_raises("an existing file is never silently replaced", FileExistsError,
                      lambda: uimf_writer.UimfWriter(path, uimf_writer.GlobalSpec(bins=64)))
 

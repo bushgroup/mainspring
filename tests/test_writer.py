@@ -22,6 +22,7 @@ from console_stub import ConsoleStub
 from mainspring.uimf import UimfFile, sum_frames
 from mainspring.uimf.cli import main as uimf_info
 from mainspring.uimf.writer import (
+    CLIENT_PARAM_ID_BASE,
     CUSTOM_PARAM_ID_BASE,
     DETECTOR_BITS,
     FRAME_COMPLETE,
@@ -31,6 +32,7 @@ from mainspring.uimf.writer import (
     WRITER_STAMP,
     FrameSpec,
     GlobalSpec,
+    ParamDef,
     UimfWriter,
 )
 from synthetic import write_synthetic_uimf
@@ -322,6 +324,22 @@ def test_the_grouping_is_readable_from_the_parameters_alone(written):
     assert uimf.frame_params(2).repetitions == 2
 
 
+def test_a_frame_can_cover_a_whole_method_frame_rather_than_one_repetition(tmp_path):
+    """What a summed companion says about itself, and what an acquisition writes when
+    one console frame holds every repetition instead of one each: a method frame with
+    no repetition number, because it is not one of them."""
+    path = tmp_path / "summed.uimf"
+    with UimfWriter(path, GlobalSpec(bins=4096)) as writer:
+        writer.add_frame(a_frame(accumulations=8, method_frame=3, repetitions=8))
+        writer.write_scans(1, some_scans())
+        writer.finalise_frame(1, duration_s=5.16)
+    params = UimfFile(path).frame_params(1)
+    assert params.method_frame == 3
+    assert params.repetition is None
+    assert params.repetitions == 8
+    assert params.accumulations == 8
+
+
 def test_an_ungrouped_file_says_so_rather_than_guessing(tmp_path):
     spec = write_synthetic_uimf(tmp_path / "flat.uimf", frames=1, scans=8)
     params = UimfFile(spec.path).frame_params(1)
@@ -382,7 +400,7 @@ def test_a_parameter_pnnl_does_name_goes_through(tmp_path):
     {"scans": 0},
     {"accumulations": 0},
     {"repetition": 2},                       # no method frame to belong to
-    {"method_frame": 1},                     # no place in the order
+    {"repetitions": 3},                      # likewise
     {"method_frame": 1, "repetition": 0},
     {"method_frame": 1, "repetition": 4, "repetitions": 3},
 ])
@@ -398,6 +416,73 @@ def test_a_frame_spec_that_cannot_mean_anything_is_refused(kwargs):
 def test_a_global_spec_that_cannot_mean_anything_is_refused(kwargs):
     with pytest.raises(ValueError):
         GlobalSpec(**{"bins": 64, **kwargs})
+
+
+# --- a client's own parameters ------------------------------------------------------------
+
+METHOD_NAME = ParamDef(CLIENT_PARAM_ID_BASE + 1, "ClockworkMethodName", "System.String",
+                       "Name of the method that produced this file")
+METHOD_SHA = ParamDef(CLIENT_PARAM_ID_BASE + 2, "ClockworkMethodSha256", "System.String",
+                      "sha256 of the canonical method TOML")
+FRAME_LABEL = ParamDef(CLIENT_PARAM_ID_BASE + 1, "ClockworkStepLabel", "System.String",
+                       "Which step of the method this frame ran")
+
+
+def test_a_client_can_record_something_the_format_has_no_name_for(tmp_path):
+    """The provenance a client wants travelling inside the file rather than beside it.
+    mainspring's own registry stays closed; the client gets a block above it."""
+    path = tmp_path / "stamped.uimf"
+    with UimfWriter(path, GlobalSpec(
+        bins=4096, extra={METHOD_NAME: "bradykinin-clock", METHOD_SHA: "a" * 64},
+    )) as writer:
+        writer.add_frame(a_frame(extra={FRAME_LABEL: "step-2"}))
+        writer.finalise_frame(1, duration_s=0.645)
+
+    uimf = UimfFile(path)
+    assert uimf.global_params().extra["ClockworkMethodName"] == "bradykinin-clock"
+    assert uimf.global_params().extra["ClockworkMethodSha256"] == "a" * 64
+    assert uimf.frame_params(1).extra["ClockworkStepLabel"] == "step-2"
+
+    conn = sqlite3.connect("file:" + str(path) + "?mode=ro", uri=True)
+    try:
+        declared = dict(conn.execute(
+            "SELECT ParamName, ParamID FROM Frame_Param_Keys"))
+        typed = dict(conn.execute(
+            "SELECT ParamName, ParamDataType FROM Global_Params"))
+    finally:
+        conn.close()
+    assert declared["ClockworkStepLabel"] == CLIENT_PARAM_ID_BASE + 1
+    assert typed["ClockworkMethodName"] == "System.String"
+
+
+def test_a_client_parameter_that_would_collide_is_refused():
+    below = ParamDef(52, "ClockworkThing", "System.String")
+    with pytest.raises(ValueError, match="start at 2000"):
+        GlobalSpec(bins=64, extra={below: "x"})
+    mainspring_block = ParamDef(CUSTOM_PARAM_ID_BASE + 1, "ClockworkThing", "System.String")
+    with pytest.raises(ValueError, match="start at 2000"):
+        FrameSpec(scans=8, extra={mainspring_block: "x"})
+    renaming = ParamDef(CLIENT_PARAM_ID_BASE + 3, "Scans", "System.Int32")
+    with pytest.raises(ValueError, match="already a frame parameter"):
+        FrameSpec(scans=8, extra={renaming: 4})
+    untyped = ParamDef(CLIENT_PARAM_ID_BASE + 4, "ClockworkThing", "System.Guid")
+    with pytest.raises(ValueError, match="ParamDataType"):
+        FrameSpec(scans=8, extra={untyped: "x"})
+    with pytest.raises(ValueError, match="share ID"):
+        FrameSpec(scans=8, extra={
+            ParamDef(CLIENT_PARAM_ID_BASE + 5, "One", "System.String"): "a",
+            ParamDef(CLIENT_PARAM_ID_BASE + 5, "Two", "System.String"): "b",
+        })
+
+
+def test_one_file_cannot_end_up_with_two_meanings_for_one_id(tmp_path):
+    """Two frames declaring the same ID under different names would leave a dictionary
+    the file's own `V_Frame_Params` view cannot resolve."""
+    with UimfWriter(tmp_path / "clash.uimf", GlobalSpec(bins=64)) as writer:
+        writer.add_frame(a_frame(extra={FRAME_LABEL: "step-1"}))
+        other = ParamDef(FRAME_LABEL.param_id, "ClockworkSomethingElse", "System.String")
+        with pytest.raises(ValueError, match="already"):
+            writer.add_frame(a_frame(extra={other: "x"}))
 
 
 @pytest.mark.parametrize("scan", [

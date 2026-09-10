@@ -56,6 +56,7 @@ from .decode import dtype_for, encode_intensities
 from .frame import SparseFrame
 
 __all__ = [
+    "CLIENT_PARAM_ID_BASE",
     "CUSTOM_PARAM_ID_BASE",
     "DETECTOR_BITS",
     "FRAME_COMPLETE",
@@ -86,6 +87,25 @@ grow. UIMF-Library maps an ID it does not know to `Unknown` and *skips the row w
 warning* rather than failing, so a custom key costs a downstream PNNL tool nothing --
 but an ID PNNL later assigns to something else would be read as that something else.
 A thousand is far enough away to be safe and small enough to read."""
+
+CLIENT_PARAM_ID_BASE = 2000
+"""Where a *client's* own parameter IDs start, above mainspring's block.
+
+mainspring's registry is closed -- a bare name in `extra` must be one PNNL's UIMF-Library
+knows -- because an ID invented on the spot is one the library may later assign to
+something else. A client with something of its own to record is a different case: it
+knows what it means and it is entitled to a block, as long as the block is somewhere
+nothing else will land. So `extra` also takes a `ParamDef` as its key, and the only
+rules are that the ID is at or above this and that neither the ID nor the name is
+already in use. Prefix the names, for the reason mainspring prefixes its own: a bare
+name is what UIMF-Library parses against its enum."""
+
+_DATA_TYPES = frozenset(
+    {"System.String", "System.Int32", "System.Double", "System.Single"}
+)
+"""The `ParamDataType` values UIMF-Library writes and every file we have carries. A
+client's own parameter has to be one of them; a type nothing downstream can parse is
+worse than no parameter."""
 
 # The four things the viewer and the acquisition client's fold need that PNNL's
 # parameter set has no name for. They are prefixed because `Frame_Param_Keys` is keyed
@@ -353,7 +373,9 @@ class GlobalSpec:
 
     `extra` carries any other parameter PNNL's `GlobalParamKeyType` names, by that name;
     an unrecognised name is refused rather than given an invented ID, because an ID this
-    repository made up is one a future UIMF-Library may assign to something else.
+    repository made up is one a future UIMF-Library may assign to something else. A
+    client with something of its own to record passes a `ParamDef` as the key instead —
+    see `CLIENT_PARAM_ID_BASE`.
     """
 
     bins: int
@@ -366,7 +388,7 @@ class GlobalSpec:
     prescan_tof_pulses: int = 0
     prescan_accumulations: int = 0
     detector_bits: int | None = None
-    extra: Mapping[str, object] = field(default_factory=dict)
+    extra: Mapping["str | ParamDef", object] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if int(self.bins) <= 0:
@@ -388,6 +410,12 @@ class FrameSpec:
     loss still says which method frame and repetition it was, and that is exactly the
     frame whose provenance is worth having.
 
+    **`method_frame` without `repetition` is a frame that covers the whole method
+    frame**, and is how a summed companion says what it is a sum of. It is also what an
+    acquisition writes when one console frame holds every repetition rather than one
+    each. `repetition` and `repetitions` both need a `method_frame` to belong to; a
+    method frame on its own does not need either.
+
     `frame_type` defaults to 1, "MS (Regular)". Real files disagree with themselves --
     our sample says 0 in the modern table and 1 in the legacy one -- and 0 is documented
     as the legacy value, so a downstream tool filtering for MS1 frames looks for 1. This
@@ -395,8 +423,8 @@ class FrameSpec:
     legacy one and exists so that the test fixture can reproduce the disagreement real
     files have, which is a reader test and not a thing to write on purpose.
 
-    `extra` carries any other parameter PNNL's `FrameParamKeyType` names; see
-    `GlobalSpec.extra` for why an unknown name is refused.
+    `extra` carries any other parameter PNNL's `FrameParamKeyType` names, or a client's
+    own under a `ParamDef` key; see `GlobalSpec.extra` and `CLIENT_PARAM_ID_BASE`.
     """
 
     scans: int
@@ -410,19 +438,19 @@ class FrameSpec:
     repetition: int | None = None
     repetitions: int | None = None
     legacy_frame_type: int | None = None
-    extra: Mapping[str, object] = field(default_factory=dict)
+    extra: Mapping["str | ParamDef", object] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if int(self.scans) <= 0:
             raise ValueError(f"scans must be positive, not {self.scans}")
         if int(self.accumulations) < 1:
             raise ValueError(f"accumulations must be at least 1, not {self.accumulations}")
-        grouped = (self.method_frame is not None, self.repetition is not None)
-        if any(grouped) and not all(grouped):
+        if self.method_frame is None and (
+            self.repetition is not None or self.repetitions is not None
+        ):
             raise ValueError(
-                "method_frame and repetition go together: a repetition with no method"
-                " frame cannot be grouped, and a method frame with no repetition cannot"
-                " be ordered"
+                "repetition and repetitions need a method_frame to belong to; a"
+                " repetition of nothing cannot be grouped"
             )
         for name in ("method_frame", "repetition", "repetitions"):
             value = getattr(self, name)
@@ -476,6 +504,10 @@ class UimfWriter:
         self._frames: list[int] = []
         self._declared: set[str] = set()
         self._closed = False
+        # This file's own key registries: PNNL's tables and mainspring's block to begin
+        # with, growing as a client declares parameters of its own through `extra`.
+        self.frame_keys: dict[str, ParamDef] = dict(FRAME_KEYS)
+        self.global_keys: dict[str, ParamDef] = dict(GLOBAL_KEYS)
 
         if os.path.exists(self.path):
             if not overwrite:
@@ -562,7 +594,7 @@ class UimfWriter:
                 self._declare_frame_keys(values)
                 self._conn.executemany(
                     "INSERT INTO Frame_Params (FrameNum, ParamID, ParamValue) VALUES (?, ?, ?)",
-                    _by_param_id(frame, values, FRAME_KEYS),
+                    _by_param_id(frame, values, self.frame_keys),
                 )
             if self.legacy:
                 self._insert_legacy_frame(frame, spec, values)
@@ -576,7 +608,7 @@ class UimfWriter:
         duration_s: float | None = None,
         *,
         complete: bool = True,
-        extra: Mapping[str, object] | None = None,
+        extra: Mapping["str | ParamDef", object] | None = None,
     ) -> None:
         """Write what is only known once the frame has been acquired.
 
@@ -592,11 +624,8 @@ class UimfWriter:
             values["DurationSeconds"] = _as_text(duration_s, FRAME_KEYS["DurationSeconds"])
         if complete:
             values[FRAME_COMPLETE] = "1"
-        for name, value in (extra or {}).items():
-            definition = FRAME_KEYS.get(name)
-            if definition is None:
-                raise ValueError(_unknown_key_message(name, "frame"))
-            values[name] = _as_text(value, definition)
+        for name, value in _register_extra(extra or {}, self.frame_keys, "frame").items():
+            values[name] = _as_text(value, self.frame_keys[name])
         if not values:
             return
 
@@ -611,7 +640,7 @@ class UimfWriter:
                     "INSERT INTO Frame_Params (FrameNum, ParamID, ParamValue) VALUES (?, ?, ?)"
                     " ON CONFLICT(FrameNum, ParamID)"
                     " DO UPDATE SET ParamValue = excluded.ParamValue",
-                    _by_param_id(frame, values, FRAME_KEYS),
+                    _by_param_id(frame, values, self.frame_keys),
                 )
             if self.legacy:
                 self._update_legacy_frame(frame, values)
@@ -720,10 +749,12 @@ class UimfWriter:
                 self._conn.executemany(
                     "INSERT INTO Global_Params (ParamID, ParamName, ParamValue,"
                     " ParamDataType, ParamDescription) VALUES (?, ?, ?, ?, ?)",
-                    [(GLOBAL_KEYS[name].param_id, name, text,
-                      GLOBAL_KEYS[name].data_type, GLOBAL_KEYS[name].description)
-                     for name, text in sorted(values.items(),
-                                              key=lambda kv: GLOBAL_KEYS[kv[0]].param_id)],
+                    [(self.global_keys[name].param_id, name, text,
+                      self.global_keys[name].data_type,
+                      self.global_keys[name].description)
+                     for name, text in sorted(
+                         values.items(),
+                         key=lambda kv: self.global_keys[kv[0]].param_id)],
                 )
                 self._declare_frame_keys(_DEFAULT_FRAME_KEYS)
             if self.legacy:
@@ -756,9 +787,9 @@ class UimfWriter:
         self._conn.executemany(
             "INSERT OR IGNORE INTO Frame_Param_Keys (ParamID, ParamName, ParamDataType,"
             " ParamDescription) VALUES (?, ?, ?, ?)",
-            [(FRAME_KEYS[name].param_id, name, FRAME_KEYS[name].data_type,
-              FRAME_KEYS[name].description)
-             for name in sorted(missing, key=lambda n: FRAME_KEYS[n].param_id)],
+            [(self.frame_keys[name].param_id, name, self.frame_keys[name].data_type,
+              self.frame_keys[name].description)
+             for name in sorted(missing, key=lambda n: self.frame_keys[n].param_id)],
         )
         self._declared.update(missing)
 
@@ -779,8 +810,9 @@ class UimfWriter:
         }
         if spec.detector_bits is not None:
             values[DETECTOR_BITS] = int(spec.detector_bits)
-        values.update(spec.extra)
-        return {name: _as_text(value, GLOBAL_KEYS[name]) for name, value in values.items()}
+        values.update(_register_extra(spec.extra, self.global_keys, "global"))
+        return {name: _as_text(value, self.global_keys[name])
+                for name, value in values.items()}
 
     def _frame_values(self, spec: FrameSpec) -> dict[str, str]:
         values: dict[str, object] = {
@@ -809,8 +841,9 @@ class UimfWriter:
             values[REPETITION] = int(spec.repetition)
         if spec.repetitions is not None:
             values[REPETITIONS] = int(spec.repetitions)
-        values.update(spec.extra)
-        return {name: _as_text(value, FRAME_KEYS[name]) for name, value in values.items()}
+        values.update(_register_extra(spec.extra, self.frame_keys, "frame"))
+        return {name: _as_text(value, self.frame_keys[name])
+                for name, value in values.items()}
 
     def _insert_legacy_frame(
         self, frame: int, spec: FrameSpec, values: Mapping[str, str]
@@ -945,18 +978,86 @@ def _by_param_id(
             for name, text in sorted(values.items(), key=lambda kv: keys[kv[0]].param_id)]
 
 
-def _check_extra(extra: Mapping[str, object], keys: Mapping[str, ParamDef], what: str) -> None:
-    for name in extra:
-        if name not in keys:
-            raise ValueError(_unknown_key_message(name, what))
+def _check_extra(
+    extra: Mapping[object, object], keys: Mapping[str, ParamDef], what: str
+) -> None:
+    """Validate a spec's `extra` on its own, before any file exists.
+
+    A string key must name a parameter UIMF-Library knows. A `ParamDef` key is a client
+    declaring one of its own, and is checked for shape here and for consistency with the
+    rest of the file when the writer registers it.
+    """
+    seen: dict[int, str] = {}
+    for key in extra:
+        if not isinstance(key, ParamDef):
+            if key not in keys:
+                raise ValueError(_unknown_key_message(key, what))
+            continue
+        _check_client_def(key, keys, what)
+        if key.param_id in seen and seen[key.param_id] != key.name:
+            raise ValueError(
+                f"two {what} parameters in one extra share ID {key.param_id}:"
+                f" {seen[key.param_id]!r} and {key.name!r}"
+            )
+        seen[key.param_id] = key.name
 
 
-def _unknown_key_message(name: str, what: str) -> str:
+def _check_client_def(
+    definition: ParamDef, keys: Mapping[str, ParamDef], what: str
+) -> None:
+    """Whether a client may declare this parameter: its own block, and nobody else's."""
+    if definition.param_id < CLIENT_PARAM_ID_BASE:
+        raise ValueError(
+            f"{definition.name!r} asks for {what} parameter ID {definition.param_id};"
+            f" a client's own parameters start at {CLIENT_PARAM_ID_BASE}, above PNNL's"
+            f" numbering and mainspring's block at {CUSTOM_PARAM_ID_BASE}"
+        )
+    if definition.data_type not in _DATA_TYPES:
+        raise ValueError(
+            f"{definition.name!r} has ParamDataType {definition.data_type!r};"
+            f" one of {sorted(_DATA_TYPES)}"
+        )
+    existing = keys.get(definition.name)
+    if existing is not None and existing != definition:
+        raise ValueError(
+            f"{definition.name!r} is already a {what} parameter, ID {existing.param_id}"
+        )
+    for other in keys.values():
+        if other.param_id == definition.param_id and other.name != definition.name:
+            raise ValueError(
+                f"{what} parameter ID {definition.param_id} is already {other.name!r}"
+            )
+
+
+def _register_extra(
+    extra: Mapping[object, object], keys: dict[str, ParamDef], what: str
+) -> dict[str, object]:
+    """Fold `extra` into this file's key registry; return it keyed by name.
+
+    The registry starts as PNNL's tables plus mainspring's own and grows as a client
+    declares parameters, so that one file cannot end up with two meanings for one ID.
+    """
+    out: dict[str, object] = {}
+    for key, value in extra.items():
+        if isinstance(key, ParamDef):
+            _check_client_def(key, keys, what)
+            keys[key.name] = key
+            name = key.name
+        else:
+            if key not in keys:
+                raise ValueError(_unknown_key_message(key, what))
+            name = key
+        out[name] = value
+    return out
+
+
+def _unknown_key_message(name: object, what: str) -> str:
     return (
-        f"{name!r} is not a UIMF {what} parameter. Only the names PNNL's UIMF-Library"
-        " knows can be written, because an ID invented here is one the library may later"
-        " assign to something else; add it to the key table in mainspring.uimf.writer if"
-        " a real file needs it."
+        f"{name!r} is not a UIMF {what} parameter. A bare name has to be one PNNL's"
+        " UIMF-Library knows, because an ID invented here is one the library may later"
+        " assign to something else. To record something of your own, pass a"
+        f" mainspring.uimf.writer.ParamDef as the key instead, with an ID at or above"
+        f" {CLIENT_PARAM_ID_BASE}."
     )
 
 
