@@ -35,6 +35,14 @@ import numpy as np
 from .calib import Calibration
 from .decode import decode_frame_blobs
 from .frame import SparseFrame
+from .writer import (
+    DETECTOR_BITS,
+    FRAME_COMPLETE,
+    METHOD_FRAME,
+    REPETITION,
+    REPETITIONS,
+    WRITER_STAMP,
+)
 
 __all__ = [
     "BUSY_TIMEOUT_MS",
@@ -52,8 +60,10 @@ is not."""
 
 PROVISIONAL_WINDOW_S = 5.0
 """How recently a file must have been written to for its last frame to count as still
-being acquired. A placeholder until the writer is measured (lab record, task 08); it is
-deliberately generous, because the cost of being wrong is one uncached frame."""
+being acquired. The fallback for a file that carries no completion marker, which is
+every file PNNL's writers produce; a file `mainspring.uimf.writer` created answers the
+question exactly instead. Deliberately generous, because the cost of being wrong here
+is one uncached frame."""
 
 
 @contextlib.contextmanager
@@ -81,6 +91,12 @@ class GlobalParams:
     type. `time_offset_ns` is read and reported but **not applied to the calibration**;
     it is here because the info panel shows it and because seeing it is how a reader of
     this code finds out that it is deliberately unused (lab record, task 01).
+
+    `detector_bits` and `written_by` are mainspring's own two global parameters and are
+    absent from every file PNNL's writers produce: the digitizer's bit depth, which the
+    UIMF parameter set has no name for and which the viewer otherwise takes from a user
+    setting, and what created the file. `written_by` is also what makes a missing
+    per-frame completion marker mean something -- see `is_provisional`.
     """
 
     instrument_name: str = ""
@@ -91,6 +107,8 @@ class GlobalParams:
     tof_intensity_type: str = "ADC"
     time_offset_ns: float = 0.0
     dataset_type: str = ""
+    detector_bits: int | None = None
+    written_by: str = ""
     extra: Mapping[str, str] = field(default_factory=dict)
 
     @property
@@ -108,6 +126,15 @@ class FrameParams:
     `frame_type` is normalised so that a caller can filter MS1 from MS2 without knowing
     which table it came from: the sample's two tables say 0 and 1 for the same frame and
     both mean MS1 (lab record, task 01).
+
+    `method_frame`, `repetition` and `repetitions` are mainspring's own grouping, and
+    are `None` on any file that does not carry it. A clockwork raw acquisition is one
+    UIMF frame per ion mobility experiment, so a method frame with `accumulations` = A
+    is A consecutive frames; this is how a viewer that never sees the method knows which
+    those are (lab record, task 16). `marked_complete` is the completion marker, and
+    means "the writer said so" rather than "this frame is finished" -- on a file with no
+    marker in it at all it is `False` on every frame. `UimfFile.is_provisional` is the
+    question worth asking; it knows which kind of file this is.
     """
 
     frame_number: int = 0
@@ -118,6 +145,10 @@ class FrameParams:
     calibration_slope: float = 0.0
     calibration_intercept: float = 0.0
     calibration_done: bool = False
+    method_frame: int | None = None
+    repetition: int | None = None
+    repetitions: int | None = None
+    marked_complete: bool = False
     extra: Mapping[str, str] = field(default_factory=dict)
 
     def calibration(self, bin_width_ns: float) -> Calibration:
@@ -254,16 +285,23 @@ class UimfFile:
     def frame_params(self, frame: int) -> FrameParams:
         """One frame's parameters, modern table preferred.
 
-        Cached per frame: a frame's parameters are written once, before its scans, and
-        the render path asks for the calibration on every view change.
+        Cached per frame, because the render path asks for the calibration on every view
+        change. On a PNNL-written file that is unconditional: those parameters are all
+        written before the frame's scans and never touched again. On a file
+        `mainspring.uimf.writer` created they are written in two phases, so a frame whose
+        completion marker is not there yet is **re-read** rather than served from the
+        cache -- otherwise a frame would stay provisional in this process for as long as
+        the file stayed open, however long ago the acquisition finished.
         """
         frame = int(frame)
-        if frame not in self._frames:
-            with connect(self.path, self.busy_timeout_ms) as conn:
-                raw = self._read_frame_params(conn, frame)
-            if not raw:
-                raise KeyError(f"{self.path}: no parameters for frame {frame}")
-            self._frames[frame] = _frame_params_from(frame, raw)
+        cached = self._frames.get(frame)
+        if cached is not None and (cached.marked_complete or not self.has_completion_markers):
+            return cached
+        with connect(self.path, self.busy_timeout_ms) as conn:
+            raw = self._read_frame_params(conn, frame)
+        if not raw:
+            raise KeyError(f"{self.path}: no parameters for frame {frame}")
+        self._frames[frame] = _frame_params_from(frame, raw)
         return self._frames[frame]
 
     def _read_frame_params(self, conn: sqlite3.Connection, frame: int) -> dict[str, str]:
@@ -312,14 +350,36 @@ class UimfFile:
             np.asarray([0 if v is None else v for v in columns[3]], dtype=np.float64),
         )
 
+    @property
+    def has_completion_markers(self) -> bool:
+        """Whether this file says, frame by frame, when a frame is finished.
+
+        True exactly of files `mainspring.uimf.writer` created, which stamp themselves
+        in `Global_Params`. Nothing in a PNNL-written file answers the question -- the
+        console publishes `finished` before its own writer has drained, and a frame
+        holds only the scans that had signal, so neither the row count nor the last scan
+        number can be compared against anything (lab record, task 16).
+        """
+        return bool(self.global_params().written_by)
+
     def is_provisional(self, frame: int) -> bool:
         """Whether this frame may still be growing under us, and so must not be cached.
 
-        Conservative and deliberately crude until the writer's behaviour is measured
-        (lab record, task 08): the last frame of a file that has been written to within
-        the last few seconds. Over-reporting costs a cache entry; under-reporting would
-        hand the viewer half a frame and let it keep it.
+        On a file that carries completion markers this is exact: a frame is provisional
+        until the client that created the file says it is done, and a frame whose marker
+        was lost to a power cut stays provisional for ever, which is honest -- it may
+        indeed be short.
+
+        Everywhere else it falls back to the heuristic task 03 wrote and task 08 owns
+        replacing: the last frame of a file written to within the last few seconds.
+        Conservative on purpose. Over-reporting costs a cache entry; under-reporting
+        would hand the viewer half a frame and let it keep it.
         """
+        if self.has_completion_markers:
+            try:
+                return not self.frame_params(frame).marked_complete
+            except KeyError:
+                return False
         try:
             age = time.time() - os.path.getmtime(self.path)
         except OSError:
@@ -419,6 +479,17 @@ def _as_int(value: object, default: int = 0) -> int:
         return default
 
 
+def _as_optional_int(value: object) -> int | None:
+    """An integer parameter that a file may simply not carry. `None`, not a default:
+    the caller has to be able to tell "not stored" from "stored as zero"."""
+    if value is None or str(value).strip() == "":
+        return None
+    try:
+        return int(float(str(value).strip()))
+    except (TypeError, ValueError):
+        return None
+
+
 def _as_float(value: object, default: float = 0.0) -> float:
     try:
         return float(str(value).strip())
@@ -436,6 +507,8 @@ def _global_params_from(raw: Mapping[str, str]) -> GlobalParams:
         tof_intensity_type=(raw.get("TOFIntensityType") or "ADC").strip() or "ADC",
         time_offset_ns=_as_float(raw.get("TimeOffset"), 0.0),
         dataset_type=raw.get("DatasetType", ""),
+        detector_bits=_as_optional_int(raw.get(DETECTOR_BITS)),
+        written_by=raw.get(WRITER_STAMP, ""),
         extra=dict(raw),
     )
 
@@ -450,5 +523,9 @@ def _frame_params_from(frame: int, raw: Mapping[str, str]) -> FrameParams:
         calibration_slope=_as_float(raw.get("CalibrationSlope"), 0.0),
         calibration_intercept=_as_float(raw.get("CalibrationIntercept"), 0.0),
         calibration_done=bool(_as_int(raw.get("CalibrationDone"), 0)),
+        method_frame=_as_optional_int(raw.get(METHOD_FRAME)),
+        repetition=_as_optional_int(raw.get(REPETITION)),
+        repetitions=_as_optional_int(raw.get(REPETITIONS)),
+        marked_complete=bool(_as_int(raw.get(FRAME_COMPLETE), 0)),
         extra=dict(raw),
     )

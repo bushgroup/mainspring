@@ -3,19 +3,20 @@
 A fresh clone has no `.uimf` file and never will -- samples live in the private lab
 repository and PNNL's excerpts are fetched, not committed -- so the only way the decode
 path can be exercised end to end in a bare clone is to write a file through the real
-SQLite schema and read it back. That is what this module does: the schema below is the
-one a 2026 SLIMPHONY acquisition carries, table for table and index for index, filled
-with a few dozen points whose every stored column we know because we computed it.
+SQLite schema and read it back. That is what this module does, and since task 16 it
+does it through `mainspring.uimf.writer`: the schema, the parameter keys and the four
+stored summary columns are the package's, so there is one definition of what a UIMF
+file is rather than one for the product and one for the tests.
 
-It is a fixture, not a writer. mainspring reads UIMF files; nothing outside `tests/`
-imports this, and the encoder it leans on (`mainspring.uimf.decode.encode_intensities`)
-is pure Python for the same reason.
-
-What it deliberately reproduces from real files (lab record, task 01):
+What is left here is the *content* -- a few dozen points whose every stored column we
+know because we computed it -- and the deliberate awkwardness that makes this a fixture
+for real files rather than for tidy ones (lab record, task 01):
 
 * **both parameter table forms**, modern and legacy, as our sample carries them --
   and with the frame type disagreeing between them, 0 modern against 1 legacy, exactly
-  as the sample does, so that a reader which picks the wrong table is caught;
+  as the sample does, so that a reader which picks the wrong table is caught. The
+  writer emits one value in both tables by default; this is the one caller that asks
+  it not to;
 * **only the scans that have signal**, starting well past zero, because the SLIMPHONY
   writer stores 1656 of 5000 and a reader must not assume a row per scan;
 * **explicit zeros in the intensity stream**, which is why `NonZeroCount` comes out
@@ -24,7 +25,8 @@ What it deliberately reproduces from real files (lab record, task 01):
 
 `BPI_MZ` here is exact -- the calibration formula applied to the argmax bin -- unlike
 every real writer, which is off by up to three bins or, in one 2011 file, never computed
-it at all. A test wanting that behaviour should use the PNNL excerpts.
+it at all. A test wanting that behaviour should use the PNNL excerpts, and one wanting
+what PNNL's console does with the column should use `console_stub.py`.
 
     from synthetic import write_synthetic_uimf
     spec = write_synthetic_uimf(tmp_path / "synth.uimf", frames=2, scans=16)
@@ -34,107 +36,24 @@ it at all. A test wanting that behaviour should use the PNNL excerpts.
 from __future__ import annotations
 
 import os
-import sqlite3
 from dataclasses import dataclass, field
 
 import numpy as np
 
 from mainspring.uimf.decode import dtype_for, encode_intensities
+from mainspring.uimf.writer import FrameSpec, GlobalSpec, UimfWriter
 
 __all__ = ["SyntheticFile", "SyntheticScan", "write_synthetic_uimf"]
-
-# --- the schema, as a 2026 SLIMPHONY file carries it -------------------------------
-
-_MODERN_SCHEMA = (
-    "CREATE TABLE Global_Params ( ParamID INTEGER NOT NULL, ParamName TEXT NOT NULL,"
-    " ParamValue TEXT, ParamDataType TEXT NOT NULL, ParamDescription TEXT NULL)",
-    "CREATE TABLE Frame_Param_Keys ( ParamID INTEGER NOT NULL, ParamName TEXT NOT NULL,"
-    " ParamDataType TEXT NOT NULL, ParamDescription TEXT NULL)",
-    "CREATE TABLE Frame_Params ( FrameNum INTEGER NOT NULL, ParamID INTEGER NOT NULL,"
-    " ParamValue TEXT)",
-    "CREATE UNIQUE INDEX pk_index_GlobalParams on Global_Params(ParamID)",
-    "CREATE UNIQUE INDEX pk_index_FrameParamKeys on Frame_Param_Keys(ParamID)",
-    "CREATE UNIQUE INDEX pk_index_FrameParams on Frame_Params(FrameNum, ParamID)",
-    "CREATE INDEX ix_index_FrameParams_By_ParamID on Frame_Params(ParamID, FrameNum)",
-    "CREATE VIEW V_Frame_Params AS SELECT FP.FrameNum, FPK.ParamName, FP.ParamID,"
-    " FP.ParamValue, FPK.ParamDescription, FPK.ParamDataType FROM Frame_Params FP"
-    " INNER JOIN Frame_Param_Keys FPK ON FP.ParamID = FPK.ParamID",
-)
-
-_LEGACY_SCHEMA = (
-    "CREATE TABLE Global_Parameters ( DateStarted TEXT, NumFrames INTEGER NOT NULL,"
-    " TimeOffset INTEGER NOT NULL, BinWidth DOUBLE NOT NULL, Bins INTEGER NOT NULL,"
-    " TOFCorrectionTime FLOAT NOT NULL, FrameDataBlobVersion FLOAT NOT NULL,"
-    " ScanDataBlobVersion FLOAT NOT NULL, TOFIntensityType TEXT NOT NULL,"
-    " DatasetType TEXT, Prescan_TOFPulses INTEGER, Prescan_Accumulations INTEGER,"
-    " Prescan_TICThreshold INTEGER, Prescan_Continuous BOOLEAN, Prescan_Profile TEXT,"
-    " Instrument_Name TEXT)",
-    "CREATE TABLE Frame_Parameters ( FrameNum INTEGER PRIMARY KEY, StartTime DOUBLE,"
-    " Duration DOUBLE, Accumulations SMALLINT, FrameType SMALLINT, Scans INTEGER,"
-    " IMFProfile TEXT, TOFLosses DOUBLE, AverageTOFLength DOUBLE NOT NULL,"
-    " CalibrationSlope DOUBLE, CalibrationIntercept DOUBLE, a2 DOUBLE, b2 DOUBLE,"
-    " c2 DOUBLE, d2 DOUBLE, e2 DOUBLE, f2 DOUBLE, Temperature DOUBLE,"
-    " PressureFront DOUBLE, PressureBack DOUBLE, MPBitOrder TINYINT,"
-    " FragmentationProfile BLOB, HighPressureFunnelPressure DOUBLE,"
-    " IonFunnelTrapPressure DOUBLE, RearIonFunnelPressure DOUBLE,"
-    " QuadrupolePressure DOUBLE, ESIVoltage DOUBLE, FloatVoltage DOUBLE,"
-    " CalibrationDone INTEGER, Decoded INTEGER)",
-)
-
-_SCANS_SCHEMA = (
-    "CREATE TABLE Frame_Scans ( FrameNum INTEGER NOT NULL, ScanNum SMALLINT NOT NULL,"
-    " NonZeroCount INTEGER NOT NULL, BPI INTEGER NOT NULL, BPI_MZ DOUBLE NOT NULL,"
-    " TIC INTEGER NOT NULL, Intensities BLOB)",
-    "CREATE UNIQUE INDEX pk_index_FrameScans on Frame_Scans(FrameNum, ScanNum)",
-)
-
-# (ParamID, ParamName, ParamDataType, ParamDescription) as the sample carries them.
-_GLOBAL_KEYS = (
-    (1, "InstrumentName", "System.String", "Instrument name"),
-    (2, "DateStarted", "System.String", "Time that the data acquisition started"),
-    (3, "NumFrames", "System.Int32", "Number of frames in the dataset"),
-    (4, "TimeOffset", "System.Int32",
-     "Time offset from 0 (in nanoseconds). All bin numbers must be offset by this amount"),
-    (5, "BinWidth", "System.Double", "Width of TOF bins (in ns)"),
-    (6, "Bins", "System.Int32", "Total number of TOF bins in frame"),
-    (8, "TOFIntensityType", "System.String",
-     "Data type of intensity in each TOF record (ADC is int, TDC is short, FOLDED is float)"),
-    (9, "DatasetType", "System.String", "Type of dataset (HMS, HMSn, or HMS-HMSn)"),
-    (10, "PrescanTOFPulses", "System.String", "Prescan TOF pulses"),
-    (11, "PrescanAccumulations", "System.String", "Number of prescan accumulations"),
-)
-
-_FRAME_KEYS = (
-    (3, "Accumulations", "System.Int32", "Number of collected and summed acquisitions in a frame"),
-    (4, "FrameType", "System.Int32",
-     "Frame Type: 0=MS (Legacy); 1=MS (Regular); 2=MS/MS (Frag); 3=Calibration; 4=Prescan"),
-    (6, "CalibrationDone", "System.Int32",
-     "Tracks whether frame has been calibrated: 1 if calibrated"),
-    (7, "Scans", "System.Int32", "Number of TOF scans in a frame"),
-    (11, "AverageTOFLength", "System.Double",
-     "Average time between TOF trigger pulses, in nanoseconds"),
-    (12, "CalibrationSlope", "System.Double", "Calibration slope, k0"),
-    (13, "CalibrationIntercept", "System.Double", "Calibration intercept, t0"),
-    (14, "MassCalibrationCoefficienta2", "System.Double",
-     "a2 parameter for residual mass error correction"),
-    (15, "MassCalibrationCoefficientb2", "System.Double",
-     "b2 parameter for residual mass error correction"),
-    (16, "MassCalibrationCoefficientc2", "System.Double",
-     "c2 parameter for residual mass error correction"),
-    (17, "MassCalibrationCoefficientd2", "System.Double",
-     "d2 parameter for residual mass error correction"),
-    (18, "MassCalibrationCoefficiente2", "System.Double",
-     "e2 parameter for residual mass error correction"),
-    (19, "MassCalibrationCoefficientf2", "System.Double",
-     "f2 parameter for residual mass error correction"),
-    (20, "AmbientTemperature", "System.Single", "Ambient temperature, in Celcius"),
-)
 
 # The sample's own calibration, so that a synthetic m/z axis lands where a real one does.
 SLOPE = 0.738123
 INTERCEPT = 0.07690495
 AVERAGE_TOF_LENGTH_NS = 129003.607843137
 ACCUMULATIONS = 100
+
+# The US locale string real files carry, frozen rather than taken from the clock so that
+# two runs of the suite write the same bytes.
+DATE_STARTED = "8/25/2026 3:23:14 PM"
 
 
 @dataclass(frozen=True)
@@ -233,6 +152,10 @@ def write_synthetic_uimf(
     store_all_scans: bool = False,
     explicit_zeros: bool = True,
     first_scan: int = 3,
+    journal_mode: str = "wal",
+    finalise: bool = True,
+    grouped: bool = False,
+    detector_bits: int | None = None,
 ) -> SyntheticFile:
     """Write a UIMF file at `path` and return what is in it.
 
@@ -247,14 +170,18 @@ def write_synthetic_uimf(
     `store_all_scans` writes a row for every scan including empty ones, as the 2011
     writers do; the default stores only scans with signal. `explicit_zeros` puts zeros
     into the intensity stream and counts them in `NonZeroCount`, as real writers do.
+
+    `journal_mode` is WAL, which is what a clockwork acquisition is and what a live
+    reader needs; pass `"delete"` for the mode every file we have from PNNL's writers is
+    in. `finalise` leaves the last frame without its completion marker when false, which
+    is what a run cut short by a power failure looks like. `grouped` writes each frame as
+    a repetition of one method frame; `detector_bits` stores a bit depth.
     """
     if legacy_only and modern_only:
         raise ValueError("legacy_only and modern_only are mutually exclusive")
     dtype = dtype_for(tof_intensity_type)
     amplitude = 900 if dtype == np.dtype("<i2") else 9000
     path = os.fspath(path)
-    if os.path.exists(path):
-        os.remove(path)
 
     spec = SyntheticFile(
         path=os.path.abspath(path),
@@ -272,111 +199,72 @@ def write_synthetic_uimf(
         modern_only=modern_only,
     )
 
-    conn = sqlite3.connect(path)
-    try:
-        conn.execute("PRAGMA journal_mode = delete")  # what every writer we have seen uses
-        for statement in _SCANS_SCHEMA:
-            conn.execute(statement)
-        if not legacy_only:
-            for statement in _MODERN_SCHEMA:
-                conn.execute(statement)
-        if not modern_only:
-            for statement in _LEGACY_SCHEMA:
-                conn.execute(statement)
-
-        _write_global(conn, spec)
-        if not spec.legacy_only:
-            conn.executemany(
-                "INSERT INTO Frame_Param_Keys (ParamID, ParamName, ParamDataType,"
-                " ParamDescription) VALUES (?, ?, ?, ?)",
-                list(_FRAME_KEYS),
-            )
+    tables = "legacy" if legacy_only else ("modern" if modern_only else "both")
+    writer = UimfWriter(
+        spec.path,
+        GlobalSpec(
+            bins=bins,
+            bin_width_ns=bin_width_ns,
+            instrument_name="SLIM3",
+            date_started=DATE_STARTED,
+            tof_intensity_type=tof_intensity_type,
+            time_offset_ns=20000,  # present, and deliberately not applied to the calibration
+            prescan_tof_pulses=5000,
+            prescan_accumulations=ACCUMULATIONS,
+            detector_bits=detector_bits,
+        ),
+        tables=tables,
+        journal_mode=journal_mode,
+        overwrite=True,
+    )
+    with writer:
         for frame in spec.frames:
-            _write_frame_params(conn, spec, frame)
-            _write_frame_scans(conn, spec, frame, amplitude, store_all_scans, explicit_zeros,
+            writer.add_frame(
+                FrameSpec(
+                    scans=scans,
+                    accumulations=ACCUMULATIONS,
+                    # 0 in the modern table and 1 in the legacy one, as our sample
+                    # disagrees with itself. Everything else this writer produces says 1
+                    # in both; see `FrameSpec.legacy_frame_type`.
+                    frame_type=0,
+                    legacy_frame_type=1,
+                    calibration_slope=SLOPE,
+                    calibration_intercept=INTERCEPT,
+                    average_tof_length_ns=AVERAGE_TOF_LENGTH_NS,
+                    method_frame=1 if grouped else None,
+                    repetition=frame if grouped else None,
+                    repetitions=len(spec.frames) if grouped else None,
+                ),
+                frame=frame,
+            )
+            rows = _frame_rows(spec, frame, amplitude, store_all_scans, explicit_zeros,
                                first_scan)
-        conn.commit()
-    finally:
-        conn.close()
+            writer.write_scans(frame, rows)
+            if finalise or frame != spec.frames[-1]:
+                writer.finalise_frame(frame, duration_s=_duration_s(spec))
     return spec
 
 
-def _write_global(conn: sqlite3.Connection, spec: SyntheticFile) -> None:
-    values = {
-        "InstrumentName": "SLIM3",
-        "DateStarted": "8/25/2026 3:23:14 PM",  # the US locale string real files carry
-        "NumFrames": str(len(spec.frames)),
-        "TimeOffset": "20000",  # present, and deliberately not applied to the calibration
-        "BinWidth": repr(spec.bin_width_ns),
-        "Bins": str(spec.bins),
-        "TOFIntensityType": spec.tof_intensity_type,
-        "DatasetType": "",
-        "PrescanTOFPulses": "5000",
-        "PrescanAccumulations": str(spec.accumulations),
-    }
-    if not spec.legacy_only:
-        conn.executemany(
-            "INSERT INTO Global_Params (ParamID, ParamName, ParamValue, ParamDataType,"
-            " ParamDescription) VALUES (?, ?, ?, ?, ?)",
-            [(pid, name, values[name], dtype, desc) for pid, name, dtype, desc in _GLOBAL_KEYS],
-        )
-    if not spec.modern_only:
-        conn.execute(
-            "INSERT INTO Global_Parameters (DateStarted, NumFrames, TimeOffset, BinWidth,"
-            " Bins, TOFCorrectionTime, FrameDataBlobVersion, ScanDataBlobVersion,"
-            " TOFIntensityType, DatasetType, Prescan_TOFPulses, Prescan_Accumulations,"
-            " Prescan_TICThreshold, Prescan_Continuous, Prescan_Profile, Instrument_Name)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (values["DateStarted"], len(spec.frames), 20000, spec.bin_width_ns, spec.bins,
-             0.0, 0.1, 0.1, spec.tof_intensity_type, "", 5000, spec.accumulations, 0, 0, "",
-             "SLIM3"),
-        )
+def _duration_s(spec: SyntheticFile) -> float:
+    """What a frame of this shape would have taken: scans x pusher period x repeats."""
+    return spec.scans * spec.average_tof_length_ns * 1e-9 * spec.accumulations
 
 
-def _write_frame_params(conn: sqlite3.Connection, spec: SyntheticFile, frame: int) -> None:
-    values = {
-        3: str(spec.accumulations),
-        4: "0",  # MS (Legacy) in the modern table ...
-        6: "1",
-        7: str(spec.scans),
-        11: repr(spec.average_tof_length_ns),
-        12: repr(spec.slope),
-        13: repr(spec.intercept),
-        14: "0", 15: "0", 16: "0", 17: "0", 18: "0", 19: "0",
-        20: "0",
-    }
-    if not spec.legacy_only:
-        conn.executemany(
-            "INSERT INTO Frame_Params (FrameNum, ParamID, ParamValue) VALUES (?, ?, ?)",
-            [(frame, pid, value) for pid, value in sorted(values.items())],
-        )
-    if not spec.modern_only:
-        conn.execute(
-            "INSERT INTO Frame_Parameters (FrameNum, StartTime, Duration, Accumulations,"
-            " FrameType, Scans, IMFProfile, TOFLosses, AverageTOFLength, CalibrationSlope,"
-            " CalibrationIntercept, a2, b2, c2, d2, e2, f2, Temperature, PressureFront,"
-            " PressureBack, MPBitOrder, FragmentationProfile, HighPressureFunnelPressure,"
-            " IonFunnelTrapPressure, RearIonFunnelPressure, QuadrupolePressure, ESIVoltage,"
-            " FloatVoltage, CalibrationDone, Decoded) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?,"
-            " ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (frame, 0.0, 0.0, spec.accumulations,
-             1,  # ... and MS (Regular) in the legacy one, as the sample disagrees
-             spec.scans, "", 0.0, spec.average_tof_length_ns, spec.slope, spec.intercept,
-             0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, None, 0.0, 0.0, 0.0, 0.0,
-             0.0, 0.0, 1, 0),
-        )
-
-
-def _write_frame_scans(
-    conn: sqlite3.Connection,
+def _frame_rows(
     spec: SyntheticFile,
     frame: int,
     amplitude: int,
     store_all_scans: bool,
     explicit_zeros: bool,
     first_scan: int,
-) -> None:
-    rows = []
+) -> list[tuple[int, np.ndarray, np.ndarray]]:
+    """The scans of one frame, and the record of them in `spec.scan_rows`.
+
+    What goes to the writer is the *stream* -- the points plus this fixture's explicit
+    zeros -- and what is recorded is the points, because the points are what a decoder
+    must give back.
+    """
+    rows: list[tuple[int, np.ndarray, np.ndarray]] = []
     # Clamp so that a small `scans` still produces signal: the point of the offset is
     # that scan 0 is not stored, not that a particular scan is the first.
     start = min(first_scan, max(0, spec.scans - 2))
@@ -399,17 +287,11 @@ def _write_frame_scans(
                 if candidate < spec.bins and candidate not in stream:
                     stream[candidate] = 0
                     zeros += 1
-        stream_bins = sorted(stream)
-        stream_values = [stream[b] for b in stream_bins]
+        stream_bins = np.array(sorted(stream), dtype=np.int64)
+        stream_values = np.array([stream[b] for b in stream_bins], dtype=spec.dtype)
 
         bin_index = np.array(bins_list, dtype=np.int64)
         intensity = np.array(values_list, dtype=spec.dtype)
-        blob = encode_intensities(
-            np.array(stream_bins, dtype=np.int64),
-            np.array(stream_values, dtype=spec.dtype),
-            spec.dtype,
-        )
-
         if intensity.size:
             argmax = int(np.argmax(intensity))
             bpi = float(intensity[argmax])
@@ -418,16 +300,11 @@ def _write_frame_scans(
             tic = float(intensity.sum())
         else:
             bpi, bpi_mz, tic = 0.0, 0.0, 0.0
-        non_zero_count = int(intensity.size + zeros)
 
         spec.scan_rows[(frame, scan)] = SyntheticScan(
             frame=frame, scan=scan, bin_index=bin_index, intensity=intensity,
-            non_zero_count=non_zero_count, bpi=bpi, bpi_mz=bpi_mz, tic=tic, blob=blob,
+            non_zero_count=int(intensity.size + zeros), bpi=bpi, bpi_mz=bpi_mz, tic=tic,
+            blob=encode_intensities(stream_bins, stream_values, spec.dtype),
         )
-        rows.append((frame, scan, non_zero_count, int(bpi), bpi_mz, int(tic), blob))
-
-    conn.executemany(
-        "INSERT INTO Frame_Scans (FrameNum, ScanNum, NonZeroCount, BPI, BPI_MZ, TIC,"
-        " Intensities) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        rows,
-    )
+        rows.append((scan, stream_bins, stream_values))
+    return rows

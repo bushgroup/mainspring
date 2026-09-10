@@ -11,7 +11,9 @@ What it covers: the package imports, the `uimf` layer stays free of Qt, the thre
 hand-carried version declarations agree, the module layout is complete, the reporting stamp, the lab-directory resolution, the intensity
 codec against the format's own rules and against itself in both directions, and a
 synthetic file -- written through the schema a 2026 acquisition carries -- read back
-through the whole reader, rasterised, and put through `uimf-info --verify`; and, since
+through the whole reader, rasterised, and put through `uimf-info --verify`; the writer
+that produces that file, including the two phases of a frame and what a run cut short
+by a power failure leaves behind; and, since
 task 04, the same synthetic file opened and painted by the viewer's own window,
 offscreen, alongside the window icon that ships with it. Where a real file is present, `--verify` runs on that too, which is the
 acceptance test the milestone is written in terms of (lab record, task 03).
@@ -84,7 +86,7 @@ def declared_versions() -> dict[str, str]:
             "packaging/mainspring.iss": found.group(1) if found else "(not found)"}
 
 
-UIMF_MODULES = ("cache", "calib", "cli", "decode", "frame", "raster", "reader")
+UIMF_MODULES = ("cache", "calib", "cli", "decode", "frame", "raster", "reader", "writer")
 VIEWER_MODULES = (
     "app", "controls", "export", "heatmap", "info_panel", "main_window", "settings",
     "side_plots", "theme", "workers",
@@ -280,6 +282,74 @@ def main() -> int:
                        - sum(spec.tic(n) for n in spec.frames)) < 1e-6)
         check_true("uimf-info --verify passes on a file whose every column we computed",
                    _quiet(uimf_info_main, [path, "--verify"]) == 0)
+
+    # --------------------------------------------------------------------------------
+    section("the writer, and the two phases of a frame")
+    # The fixture above is already written through `mainspring.uimf.writer`, so the
+    # round trip has been exercised by everything in that section. What is left is what
+    # only the writer can be asked: that a file it creates is one a live reader can
+    # follow, and that a frame nobody finalised says so rather than pretending.
+    from mainspring.uimf import writer as uimf_writer
+    from mainspring.uimf.reader import UimfFile
+
+    check_true(
+        "our own parameter IDs are clear of the range UIMF-Library assigns",
+        all(d.param_id >= uimf_writer.CUSTOM_PARAM_ID_BASE
+            for keys in (uimf_writer.FRAME_KEYS, uimf_writer.GLOBAL_KEYS)
+            for d in keys.values() if d.name.startswith("Mainspring")),
+    )
+    check_true(
+        "no two parameters share an ID",
+        all(len({d.param_id for d in keys.values()}) == len(keys)
+            for keys in (uimf_writer.FRAME_KEYS, uimf_writer.GLOBAL_KEYS)),
+    )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "written.uimf")
+        with uimf_writer.UimfWriter(
+            path, uimf_writer.GlobalSpec(bins=4096, instrument_name="SLIM3",
+                                         detector_bits=14)
+        ) as handle:
+            handle.add_frame(uimf_writer.FrameSpec(
+                scans=8, calibration_slope=0.738123, calibration_intercept=0.07690495,
+                average_tof_length_ns=129003.607843137,
+                method_frame=1, repetition=1, repetitions=2,
+            ))
+            handle.write_scans(1, [(3, np.array([12, 900, 4000]), np.array([5, 90, 7]))])
+            live = UimfFile(path)
+            check_true("a file being written is readable through a read-only connection",
+                       live.frame_numbers() == [1] and len(live.read_frame(1)) == 3)
+            check_true("a frame nobody has finalised is provisional",
+                       live.has_completion_markers and live.is_provisional(1))
+            handle.finalise_frame(1, duration_s=0.645)
+            check_true("and is not provisional once the client says it is done",
+                       not live.is_provisional(1))
+            handle.add_frame(uimf_writer.FrameSpec(scans=8, method_frame=1, repetition=2,
+                                                   repetitions=2))
+            handle.write_scans(2, [(1, np.array([50]), np.array([3]))])
+
+        # Before anything reads it: a read-only connection to a WAL database creates a
+        # `-wal` and a `-shm` of its own and, being read-only, leaves them behind.
+        check_true("closing checkpoints the write-ahead log away",
+                   not os.path.exists(path + "-wal"))
+
+        # The writer went out of scope without frame 2 being finalised, which is what a
+        # power cut on a machine with no UPS leaves behind.
+        cut = UimfFile(path)
+        check_true("a run cut short still opens, with every finished frame intact",
+                   cut.frame_numbers() == [1, 2] and len(cut.read_frame(1)) == 3)
+        check_true("and its unfinalised frame stays provisional rather than corrupt",
+                   not cut.is_provisional(1) and cut.is_provisional(2))
+        check_true("the digitizer bit depth the format has no name for round trips",
+                   cut.global_params().detector_bits == 14)
+        check_true("the grouping is readable from the parameters alone",
+                   [(cut.frame_params(n).method_frame, cut.frame_params(n).repetition)
+                    for n in (1, 2)] == [(1, 1), (1, 2)])
+        check_raises("an invented parameter name is refused rather than given an ID",
+                     ValueError,
+                     lambda: uimf_writer.FrameSpec(scans=8, extra={"DriftVoltage": 1.0}))
+        check_raises("an existing file is never silently replaced", FileExistsError,
+                     lambda: uimf_writer.UimfWriter(path, uimf_writer.GlobalSpec(bins=64)))
 
     # --------------------------------------------------------------------------------
     section("reporting and the lab checkout")
@@ -551,6 +621,7 @@ def main() -> int:
                         probe = subprocess.run(
                             [venv_python, "-c",
                              "import sys, mainspring.uimf\n"
+                             "from mainspring.uimf import UimfWriter, GlobalSpec, FrameSpec\n"
                              "qt = [m for m in sys.modules if m.startswith(('PySide6', 'pyqtgraph', 'shiboken6'))]\n"
                              "print('QT:' + ','.join(qt) if qt else 'NOQT')"],
                             capture_output=True, text=True,
