@@ -6,7 +6,9 @@ same way. Mirrors the convention of the lab's other packages (schamp.report).
 
 * **`results.json` is stamped** with the date, the mainspring version, and the commit
   of the code repo and -- when a lab checkout resolves -- of the lab repo, wrapped
-  around the results under a `results` key.
+  around the results under a `results` key. A commit is recorded only where one is
+  knowable: run from anything but a checkout of the repository in question it is
+  `None`, never a neighbouring repository's.
 * **A written table carries a `#` comment header** saying what it is, which task wrote
   it and where its numbers came from.
 * **Figures are headless and deterministic**: matplotlib is imported inside the
@@ -36,22 +38,53 @@ __all__ = [
 ]
 
 
-def commit_of(repo: str | os.PathLike[str]) -> str | None:
-    """The short HEAD commit of a git repository, or None if it is not one.
+def _is_same_dir(a: str, b: str) -> bool:
+    """Whether two paths name the same directory, as git would have to agree they do.
 
-    Never raises: a tarball rather than a checkout, or a machine with no `git`, gets
-    None and a results file that says so honestly.
+    `realpath` on both sides, not `normpath`: git answers `--show-toplevel` in long
+    form, so a caller holding an 8.3 short name (`C:/Users/BUSH-L~1/...`) compares
+    unequal against git's `C:/Users/bush-lab-admin/...` and a real checkout would
+    silently lose its commit.
+    """
+    return os.path.normcase(os.path.realpath(a)) == os.path.normcase(os.path.realpath(b))
+
+
+def commit_of(repo: str | os.PathLike[str]) -> str | None:
+    """The short HEAD commit of the git repository *rooted at* `repo`, else None.
+
+    Git searches parent directories, so asking it for a commit inside an installed
+    package answers for whatever checkout happens to enclose it: a wheel under
+    `<venv>/Lib` reports the host project's HEAD as if it were mainspring's. The
+    toplevel is read in the same call and the commit kept only when that toplevel is
+    `repo` itself.
+
+    Never raises, and answers None rather than someone else's commit: a wheel install,
+    the packaged `.exe`, a tarball rather than a checkout, a directory inside an
+    unrelated repository, or a machine with no `git`, all get None and a results file
+    that says so honestly.
     """
     try:
         done = subprocess.run(
-            ["git", "-C", os.fspath(repo), "rev-parse", "--short", "HEAD"],
+            ["git", "-C", os.fspath(repo), "rev-parse", "--show-toplevel", "--short", "HEAD"],
             capture_output=True,
             text=True,
             check=True,
         )
     except (OSError, subprocess.CalledProcessError):
         return None
-    return done.stdout.strip() or None
+    # splitlines, never split(): a repository path may contain spaces.
+    lines = done.stdout.splitlines()
+    if len(lines) != 2:
+        return None
+    toplevel, commit = lines[0].strip(), lines[1].strip()
+    if not toplevel or not commit:
+        return None
+    try:
+        if not _is_same_dir(toplevel, os.fspath(repo)):
+            return None
+    except OSError:
+        return None
+    return commit
 
 
 def stamp(results: Any, *, task: str = "") -> dict[str, Any]:

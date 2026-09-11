@@ -59,6 +59,31 @@ def check_raises(name: str, exc: type[BaseException], call) -> None:
     FAIL.append(name)
 
 
+def git_head(repo: str) -> str | None:
+    """The short HEAD of the git repository *rooted at* `repo`, asked independently.
+
+    Deliberately not `report.commit_of`: this is the check on that function, so it must
+    not share its implementation. None when `repo` is not a repository root -- a tarball
+    clone, or a checkout under some other project -- and the caller SKIPs.
+    """
+    import subprocess  # noqa: PLC0415 -- only this check needs it
+
+    try:
+        toplevel = subprocess.run(
+            ["git", "-C", repo, "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        if os.path.normcase(os.path.realpath(toplevel)) != os.path.normcase(
+                os.path.realpath(repo)):
+            return None
+        return subprocess.run(
+            ["git", "-C", repo, "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip() or None
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+
 def skip(name: str, why: str) -> None:
     print(f"SKIP {name} ({why})")
     SKIPPED.append(name)
@@ -404,6 +429,21 @@ def main() -> int:
                set(stamped) >= {"task", "date", "mainspring_version", "mainspring_commit",
                                 "results"})
     check_true("report.stamp wraps the results untouched", stamped["results"] == {"x": 1})
+
+    # A commit is either this repository's own or honestly absent -- never a neighbouring
+    # repository's, which is what an unguarded `git rev-parse` inside an installed package
+    # reports (lab record, task 19). The interesting failure here is the opposite one: a
+    # guard so strict that a legitimate checkout loses its commit.
+    check_true("report.stamp records a commit or an honest None",
+               stamped["mainspring_commit"] is None
+               or isinstance(stamped["mainspring_commit"], str))
+    head = git_head(mainspring.ROOT)
+    if head is None:
+        skip("the stamped commit is this checkout's own",
+             "not a git checkout rooted here; a wheel, an .exe or a tarball has no commit")
+    else:
+        check_true("the stamped commit is this checkout's own",
+                   stamped["mainspring_commit"] == head)
 
     lab = mainspring.lab_dir()
     if lab is None:
