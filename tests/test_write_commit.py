@@ -144,6 +144,31 @@ def test_is_dirty_counts_changes_and_not_ignored_files(write_commit, tmp_path):
 
 
 @pytest.mark.skipif(shutil.which("git") is None, reason="no git on this machine")
+def test_is_dirty_ignores_untracked_files_but_not_modified_ones(write_commit, tmp_path):
+    """`uv` leaves an untracked marker in the checkout it builds a git dependency from
+    (lab record, task 22); a clean build must not stamp `-dirty` merely because it is
+    there. A modified tracked file is a real change and still earns the suffix."""
+    root = tmp_path / "repo"
+    root.mkdir()
+
+    def git(*args):
+        subprocess.run(["git", *_GIT_IDENTITY, "-C", os.fspath(root), *args],
+                       capture_output=True, text=True, check=True)
+
+    git("init", "-q")
+    (root / "file.txt").write_text("x\n", encoding="utf-8")
+    git("add", "file.txt")
+    git("commit", "-q", "-m", "initial")
+    assert write_commit.is_dirty(os.fspath(root)) is False
+
+    (root / ".ok").write_text("", encoding="utf-8")
+    assert write_commit.is_dirty(os.fspath(root)) is False
+
+    (root / "file.txt").write_text("y\n", encoding="utf-8")
+    assert write_commit.is_dirty(os.fspath(root)) is True
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="no git on this machine")
 def test_the_guard_is_the_one_report_states_rather_than_a_second_copy(write_commit, tmp_path):
     """Imported from the tree being built, so the two can never drift apart.
 

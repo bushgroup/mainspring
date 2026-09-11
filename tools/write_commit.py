@@ -76,10 +76,15 @@ def is_dirty(root: str) -> bool:
 
     Ignored files are not changes -- `--porcelain` leaves them out, which is why the
     generated module itself, `dist/` and the numba seed never make a build dirty.
+    Untracked files do not count either (`--untracked-files=no`): hatchling selects a
+    wheel's contents by what git tracks, so an untracked file cannot reach the wheel and
+    cannot make the sha misdescribe what was built -- which is also why `uv`'s own
+    untracked marker in a git-dependency checkout must not stamp a clean build `-dirty`
+    (lab record, task 22).
     """
     try:
         done = subprocess.run(
-            ["git", "-C", root, "status", "--porcelain"],
+            ["git", "-C", root, "status", "--porcelain", "--untracked-files=no"],
             capture_output=True, text=True, check=True,
         )
     except (OSError, subprocess.CalledProcessError):
