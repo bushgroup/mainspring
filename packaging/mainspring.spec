@@ -48,6 +48,22 @@ if not os.path.isdir(SEED_DIR) or not os.listdir(SEED_DIR):
     )
 NUMBA_SEED_DATAS = Tree(SEED_DIR, prefix="numba_cache_seed")
 
+# The commit this build is built from, written by `tools/write_commit.py` into the package
+# itself so that a frozen mainspring can still say what code it is (lab record, task 20).
+# It reaches the bundle as an ordinary import -- `mainspring.report` does `from ._commit
+# import COMMIT` -- rather than through `collect_data_files`, which collects data and not a
+# `.py`. Required, not optional, and for the same reason as the numba seed above: the wheel
+# carries a commit through the hatchling build hook, and an `.exe` quietly reporting None
+# beside a wheel that reports a commit is worse than both reporting None.
+COMMIT_MODULE = os.path.join(
+    os.path.dirname(SPECPATH), "src", "mainspring", "_commit.py"
+)
+if not os.path.isfile(COMMIT_MODULE):
+    raise RuntimeError(
+        f"{COMMIT_MODULE} is missing -- run `uv run tools/write_commit.py` before "
+        "building (lab record, task 20). `tools/build_exe.ps1` does this for you."
+    )
+
 PYSIDE6_EXCLUDES = [
     "PySide6.QtWebEngineCore",
     "PySide6.QtWebEngineWidgets",
@@ -106,7 +122,12 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=collect_data_files("mainspring"),
-    hiddenimports=[],
+    # The viewer does not import `mainspring.report` -- the entry point reaches the uimf
+    # layer and the GUI, and nothing on screen is stamped today -- so the commit module
+    # would not be followed into the bundle by itself. Named here so a frozen mainspring
+    # can answer for its own code the moment anything asks it to, rather than the first
+    # caller to add a stamp discovering that the `.exe` alone reports None.
+    hiddenimports=["mainspring.report", "mainspring._commit"],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -153,6 +174,16 @@ if foreign:
         "Refusing to build: these files come from outside the venv, its base interpreter and "
         "this repo (a foreign directory on PATH, most likely another Python distribution):\n"
         + listing
+    )
+
+# And the commit module reached the bundle. `mainspring.report` imports it inside a
+# `try`/`except ImportError`, which is exactly the shape that fails silently: a bundle built
+# without it would run perfectly and stamp None for the rest of its life.
+if not any(entry[0] == "mainspring._commit" for entry in a.pure):
+    raise RuntimeError(
+        "Refusing to build: mainspring._commit is not in the bundle, so the .exe would "
+        "report no commit. It exists on disk (checked above), so the Analysis did not "
+        "follow the import in mainspring/report.py (lab record, task 20)."
     )
 
 # --- One C++ runtime at the bundle root ---------------------------------------------------

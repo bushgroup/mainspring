@@ -430,20 +430,39 @@ def main() -> int:
                                 "results"})
     check_true("report.stamp wraps the results untouched", stamped["results"] == {"x": 1})
 
-    # A commit is either this repository's own or honestly absent -- never a neighbouring
+    # A commit is either this mainspring's own or honestly absent -- never a neighbouring
     # repository's, which is what an unguarded `git rev-parse` inside an installed package
     # reports (lab record, task 19). The interesting failure here is the opposite one: a
     # guard so strict that a legitimate checkout loses its commit.
     check_true("report.stamp records a commit or an honest None",
                stamped["mainspring_commit"] is None
                or isinstance(stamped["mainspring_commit"], str))
+    # Two sources, checkout before build (lab record, task 20). A wheel and an `.exe` carry
+    # the commit they were built from in a generated module; a checkout has git, which is
+    # live, and wins -- so a generated module left behind by a build in this very tree must
+    # not change the answer below, which is what makes that ordering checkable at all.
+    check_true("a recorded build commit is a commit or an honest None",
+               report._BUILT_COMMIT is None or isinstance(report._BUILT_COMMIT, str))
     head = git_head(mainspring.ROOT)
     if head is None:
         skip("the stamped commit is this checkout's own",
-             "not a git checkout rooted here; a wheel, an .exe or a tarball has no commit")
+             "not a git checkout rooted here; a wheel, an .exe or a tarball reports its build")
     else:
         check_true("the stamped commit is this checkout's own",
                    stamped["mainspring_commit"] == head)
+        check_true("and a commit a build recorded here does not speak over it",
+                   report.mainspring_commit() == head)
+
+    # The wiring that puts the commit into a wheel: the generator, the hook that calls it,
+    # and the one table in pyproject.toml that connects them. All three are quiet when they
+    # break -- the build simply stops stamping -- so they are checked rather than trusted,
+    # the same arrangement as the three version literals above.
+    with open(os.path.join(ROOT, "pyproject.toml"), "rb") as handle:
+        hooks = tomllib.load(handle).get("tool", {}).get("hatch", {}).get("build", {})
+    check_true("the build hook that records the commit is wired up",
+               os.path.isfile(os.path.join(ROOT, "tools", "write_commit.py"))
+               and os.path.isfile(os.path.join(ROOT, "hatch_build.py"))
+               and "custom" in hooks.get("hooks", {}))
 
     lab = mainspring.lab_dir()
     if lab is None:
@@ -717,6 +736,27 @@ def main() -> int:
                             f"({probe.stdout.strip() or probe.stderr.strip()[-200:]})",
                             probe.returncode == 0 and probe.stdout.strip() == "NOQT",
                         )
+                        # The installed wheel is the only place the build hook can be
+                        # checked at all: in this checkout git answers first, so the
+                        # generated module is never what a stamp reports here (lab record,
+                        # task 20). Out there it is the only thing that can.
+                        stamp_probe = subprocess.run(
+                            [venv_python, "-c",
+                             "from mainspring.report import stamp\n"
+                             "print(stamp(None)['mainspring_commit'])"],
+                            capture_output=True, text=True,
+                        )
+                        built = stamp_probe.stdout.strip()
+                        if head is None:
+                            skip("the installed wheel carries the commit it was built from",
+                                 "this clone is not a checkout, so the build had no commit "
+                                 "to record")
+                        else:
+                            check_true(
+                                "the installed wheel carries the commit it was built from "
+                                f"({built or stamp_probe.stderr.strip()[-200:]})",
+                                built in (head, head + "-dirty"),
+                            )
 
     print()
     print(f"{len(FAIL)} failed, {len(SKIPPED)} skipped")

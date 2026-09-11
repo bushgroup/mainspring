@@ -10,6 +10,10 @@ external/
 dist/
 build/
 *.egg-info/
+# tools/write_commit.py's build-time output: the commit a wheel or the .exe was built
+# from, written before every build and never tracked. A checkout has none and answers
+# from git instead (lab record, task 20).
+src/mainspring/_commit.py
 # Numba's on-disk JIT cache when it lands beside the source.
 __nb_cache__/
 # tools/warm_numba_cache.py's build-time output, bundled into the .exe by

@@ -40,6 +40,11 @@ Documentation = "https://github.com/bushgroup/mainspring/tree/main/docs"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+# Records the commit the artefact was built from, as a generated mainspring/_commit.py
+# (hatch_build.py). Applies to every target: uv builds the wheel from the sdist, so the
+# sdist has to carry it too. Nothing here derives a version.
+[tool.hatch.build.hooks.custom]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/mainspring"]
 

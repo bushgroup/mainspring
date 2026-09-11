@@ -114,3 +114,52 @@ def test_stamp_carries_a_commit_or_an_honest_none():
     for key in ("mainspring_commit", "lab_commit"):
         assert stamped[key] is None or isinstance(stamped[key], str)
     assert stamped["results"] == {"x": 1}
+
+
+# --- Which commit a stamp reports ------------------------------------------------------
+# `commit_of` above answers about a *directory*; `mainspring_commit` answers about *this
+# mainspring*, and has two sources: the checkout it is running out of and, failing that,
+# the commit the build that produced this wheel or `.exe` was made from
+# (`tools/write_commit.py`, lab record, task 20). The order is checkout first, because git
+# is live and a generated module is a snapshot -- so a build artefact left behind in a
+# source tree can never speak over the tree it is sitting in.
+
+
+def test_a_checkout_wins_over_the_commit_a_build_recorded(monkeypatch):
+    monkeypatch.setattr(report, "commit_of", lambda repo: "1111111")
+    monkeypatch.setattr(report, "_BUILT_COMMIT", "2222222")
+    assert report.mainspring_commit() == "1111111"
+
+
+def test_the_build_answers_when_there_is_no_checkout(monkeypatch):
+    """The wheel and the `.exe`: `ROOT` is inside an install, so only the build can say."""
+    monkeypatch.setattr(report, "commit_of", lambda repo: None)
+    monkeypatch.setattr(report, "_BUILT_COMMIT", "2222222")
+    assert report.mainspring_commit() == "2222222"
+
+
+def test_neither_is_still_None(monkeypatch):
+    monkeypatch.setattr(report, "commit_of", lambda repo: None)
+    monkeypatch.setattr(report, "_BUILT_COMMIT", None)
+    assert report.mainspring_commit() is None
+
+
+def test_running_from_a_checkout_reports_that_checkout(monkeypatch):
+    """The path every test run from a source tree takes, asserted rather than assumed.
+
+    The generated module is absent in a clean checkout and present in one that has just
+    built an `.exe`; neither may change the answer, which is this repository's own HEAD.
+    """
+    head = report.commit_of(report.ROOT)
+    if head is None:
+        pytest.skip("not running out of a checkout; a wheel or a tarball has no HEAD")
+    for built in (None, "2222222"):
+        monkeypatch.setattr(report, "_BUILT_COMMIT", built)
+        assert report.mainspring_commit() == head
+
+
+def test_a_dirty_build_commit_is_still_a_plain_string(monkeypatch):
+    """`-dirty` is a suffix on the sha, not a second field: the stamp promises `str | None`."""
+    monkeypatch.setattr(report, "commit_of", lambda repo: None)
+    monkeypatch.setattr(report, "_BUILT_COMMIT", "2222222-dirty")
+    assert report.stamp({"x": 1})["mainspring_commit"] == "2222222-dirty"

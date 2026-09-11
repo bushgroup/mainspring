@@ -7,8 +7,10 @@ same way. Mirrors the convention of the lab's other packages (schamp.report).
 * **`results.json` is stamped** with the date, the mainspring version, and the commit
   of the code repo and -- when a lab checkout resolves -- of the lab repo, wrapped
   around the results under a `results` key. A commit is recorded only where one is
-  knowable: run from anything but a checkout of the repository in question it is
-  `None`, never a neighbouring repository's.
+  knowable: mainspring's own comes from the checkout it is running out of, else from
+  the build that produced this wheel or `.exe`, else it is `None` -- never a
+  neighbouring repository's. The lab commit has only the first of those and no build
+  to fall back on.
 * **A written table carries a `#` comment header** saying what it is, which task wrote
   it and where its numbers came from.
 * **Figures are headless and deterministic**: matplotlib is imported inside the
@@ -28,9 +30,19 @@ from typing import Any, Iterable, Mapping, Sequence
 
 from . import ROOT, __version__, lab_dir
 
+# The commit the wheel or the `.exe` this is running from was built from, written into a
+# generated module by `tools/write_commit.py` (lab record, task 20). A checkout has no
+# such module -- it is gitignored and every build removes it again -- and the import
+# failing is the ordinary case, not an error.
+try:
+    from ._commit import COMMIT as _BUILT_COMMIT
+except ImportError:  # pragma: no cover -- the checkout path, asserted in tests instead
+    _BUILT_COMMIT = None
+
 __all__ = [
     "commit_of",
     "figure_defaults",
+    "mainspring_commit",
     "stamp",
     "use_headless_matplotlib",
     "write_results",
@@ -60,8 +72,9 @@ def commit_of(repo: str | os.PathLike[str]) -> str | None:
 
     Never raises, and answers None rather than someone else's commit: a wheel install,
     the packaged `.exe`, a tarball rather than a checkout, a directory inside an
-    unrelated repository, or a machine with no `git`, all get None and a results file
-    that says so honestly.
+    unrelated repository, or a machine with no `git`, all get None. This is the question
+    "is `repo` a checkout, and of what", asked of one directory; what a *stamp* should
+    then say about mainspring is `mainspring_commit`, which falls back to the build.
     """
     try:
         done = subprocess.run(
@@ -87,6 +100,24 @@ def commit_of(repo: str | os.PathLike[str]) -> str | None:
     return commit
 
 
+def mainspring_commit() -> str | None:
+    """This mainspring's own commit: the checkout's, else the build's, else None.
+
+    Two sources, in that order and for that reason. A checkout is live: `commit_of` asks
+    git what HEAD is right now, which is the truth about the code being imported and
+    cannot go stale. A wheel and the `.exe` left their checkout behind, so the only
+    commit they can name is the one they were built from, carried in a module the build
+    generated. Asking git first also means a build artefact left behind in a source tree
+    can never speak over the tree it is sitting in.
+
+    A built commit may carry a `-dirty` suffix, which says the build tree had
+    uncommitted changes and so that the sha names what the build was closest to rather
+    than something that reproduces it. It is still a `str`; the contract of the stamped
+    field is `str | None` and nothing else.
+    """
+    return commit_of(ROOT) or _BUILT_COMMIT
+
+
 def stamp(results: Any, *, task: str = "") -> dict[str, Any]:
     """Wrap results in their provenance: `{task, date, ..., results}`."""
     lab = lab_dir()
@@ -94,7 +125,7 @@ def stamp(results: Any, *, task: str = "") -> dict[str, Any]:
         "task": task,
         "date": _dt.date.today().isoformat(),
         "mainspring_version": __version__,
-        "mainspring_commit": commit_of(ROOT),
+        "mainspring_commit": mainspring_commit(),
         "lab_commit": commit_of(lab) if lab else None,
         "results": results,
     }

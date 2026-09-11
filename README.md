@@ -172,7 +172,8 @@ src/mainspring/uimf/     the reader: SQLite access, blob decoding, calibration, 
                          rasterisation, and the uimf-info command line
 src/mainspring/viewer/   the PySide6 + pyqtgraph application
 tools/                   check_public.py (the self-check), fetch_testdata.py (PNNL excerpts),
-                         build_exe.ps1 (the Windows executable), make_icon.py (its icon)
+                         build_exe.ps1 (the Windows executable), make_icon.py (its icon),
+                         write_commit.py (the commit a build records in itself)
 tests/                   pytest suite; tests/fixtures/README.md says what is synthetic
 packaging/               PyInstaller specification, Inno Setup script, icon artwork
 docs/                    user documentation; docs/user-guide.md is the viewer's

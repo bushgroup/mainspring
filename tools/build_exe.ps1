@@ -32,6 +32,17 @@ if (-not $SkipBuild) {
         throw "Warming the numba cache failed (exit $LASTEXITCODE)."
     }
 
+    Write-Host "Recording the commit this build is built from..." -ForegroundColor Cyan
+    # The wheel gets this from the hatchling build hook; PyInstaller runs against the
+    # checkout and no backend is involved, so the .exe needs it written here. Left in place
+    # afterwards rather than cleaned up: it is gitignored, every build rewrites it, and
+    # `mainspring.report` asks git before it asks this file, so a leftover cannot speak
+    # over the tree it is sitting in (lab record, task 20).
+    uv run tools/write_commit.py
+    if ($LASTEXITCODE -ne 0) {
+        throw "Recording the build commit failed (exit $LASTEXITCODE)."
+    }
+
     Write-Host "Building mainspring.exe with PyInstaller..." -ForegroundColor Cyan
     # Build with only the Windows directories and uv's on PATH. PyInstaller resolves DLL
     # dependencies through PATH as a last resort, so a PATH carrying another Python
