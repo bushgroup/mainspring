@@ -423,6 +423,84 @@ def main() -> int:
                      lambda: uimf_writer.UimfWriter(path, uimf_writer.GlobalSpec(bins=64)))
 
     # --------------------------------------------------------------------------------
+    section("following a file that is still being written")
+    # The writer creating the file and the console stand-in appending to it are the two
+    # parties a real acquisition has, so this is the live path end to end with no
+    # instrument: a frame appears, grows, and becomes final, and the reader says so
+    # each time without ever asking the file a question once per frame (lab record,
+    # task 08).
+    import contextlib
+
+    from console_stub import ConsoleStub
+
+    from mainspring.uimf import LiveState, is_local_path
+    from mainspring.uimf import reader as uimf_reader
+    from mainspring.uimf.cache import FrameCache
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "live.uimf")
+        scans = [(s, np.array([100 + s, 900, 3000]), np.array([4, 7, 2])) for s in range(6)]
+        with uimf_writer.UimfWriter(path, uimf_writer.GlobalSpec(bins=4096)) as handle:
+            console = ConsoleStub(path)
+            live = UimfFile(path)
+            check_true("a file with no frames yet polls clean rather than raising",
+                       live.refresh() == LiveState())
+
+            handle.add_frame(uimf_writer.FrameSpec(scans=8, method_frame=1, repetition=1,
+                                                   repetitions=2))
+            console.acquire_frame(1, scans[:3])
+            growing = live.refresh()
+            check_true("a frame the client has not finished reads as still being written",
+                       growing.frames == (1,) and growing.provisional == frozenset({1})
+                       and growing.final == ())
+            check_true("and is decoded and handed over all the same",
+                       len(live.read_frame(1)) == 9 and live.read_frame(1).provisional)
+            check_true("and is refused by the frame cache, which must not keep half a frame",
+                       not FrameCache().put(path, live.read_frame(1)))
+
+            # The console appends the rest of the frame. Nothing in the frame *list*
+            # changes, which is why a poll that watched only that would show an
+            # experiment in one jump at the end rather than filling.
+            console.acquire_frame(1, scans[3:])
+            check_true("scans appended to a frame already known about are seen",
+                       len(live.read_frame(1)) == 18)
+
+            handle.finalise_frame(1, duration_s=0.5)
+            settled = live.refresh()
+            check_true("and the same frame reads final once the client says it is done",
+                       settled.provisional == frozenset() and settled.final == (1,))
+
+            # A poll is two queries whatever the frame count: the frame list, and the
+            # completion markers of the frames it does not already know are finished.
+            # One `frame_params` call per frame instead is 6.9 s over 5,000 frames.
+            handle.add_frame(uimf_writer.FrameSpec(scans=8, method_frame=1, repetition=2,
+                                                   repetitions=2))
+            console.acquire_frame(2, scans)
+            connections = []
+            real_connect = uimf_reader.connect
+
+            @contextlib.contextmanager
+            def counting_connect(*args, **kwargs):
+                connections.append(1)
+                with real_connect(*args, **kwargs) as conn:
+                    yield conn
+
+            uimf_reader.connect = counting_connect
+            try:
+                polled = live.refresh()
+            finally:
+                uimf_reader.connect = real_connect
+            check_true(
+                f"one poll is two queries, not one per frame (was {len(connections)})",
+                len(connections) == 2 and polled.frames == (1, 2)
+                and polled.provisional == frozenset({2}),
+            )
+
+        check_true("a path on a local drive may be followed", is_local_path(path))
+        check_true("a network path may not, because a write-ahead log is not shared over one",
+                   not is_local_path(r"\\instrument\runs\today.uimf"))
+
+    # --------------------------------------------------------------------------------
     section("reporting and the lab checkout")
     stamped = report.stamp({"x": 1}, task="check")
     check_true("report.stamp carries task, date, version, commit, results",

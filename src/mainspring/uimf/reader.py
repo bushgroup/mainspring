@@ -7,13 +7,23 @@ has. Modern tables win where both exist, which is what UIMF-Library does and wha
 own sample needs, since its two tables disagree about frame type (lab record, task 01).
 
 **Every read opens its own read-only connection and closes it.** This is not tidiness;
-it is the one rule that lets the viewer open a file the instrument is still writing.
-UIMF writers use `journal_mode=delete`, under which a reader's shared lock blocks the
-writer's commit for as long as it is held -- a long-lived connection or a cursor left
-open across a user's coffee break can stall an acquisition. So: `mode=ro` through a URI,
-a short `busy_timeout`, one query per connection, and no caching of the last frame
-(lab record, task 08). Copying a file mid-write is not an alternative; the copy is
-corrupt.
+it is the one rule that lets the viewer follow a file the instrument is still writing.
+A clockwork acquisition creates the file in WAL mode, under which a reader never blocks
+the writer's commit -- but a WAL checkpoint cannot pass an open reader's snapshot, so a
+connection held across a user's coffee break lets the `-wal` grow without bound at the
+acquisition's own write rate. A file PNNL's writers produce is in `journal_mode=delete`
+instead, where the older hazard is the real one: a reader's shared lock blocks the
+writer's commit for as long as it is held. Both are answered by the same discipline:
+`mode=ro` through a URI, a short `busy_timeout`, one query per connection, and no
+caching of a frame that may still be growing (lab record, task 08). Copying a file
+mid-write is not an alternative; the copy is corrupt. WAL also requires the reader and
+the writer to share a machine, which is what `is_local_path` refuses without.
+
+**`refresh()` is the whole live-viewing entry point.** A poll that wants to know what
+has appeared since the last look asks it, and gets back a `LiveState`: the frame list,
+and which of those frames may still be growing. Two queries, whatever the frame count,
+because a question asked once per frame is what a five-thousand-frame acquisition
+cannot afford (lab record, tasks 08 and 17).
 
 Parameter values are TEXT in the modern tables and typed by `ParamDataType`, so
 `GlobalParams` and `FrameParams` name the handful the viewer needs, coerced, and keep
@@ -24,6 +34,7 @@ happens to carry, and a key nobody anticipated is worth displaying rather than d
 from __future__ import annotations
 
 import contextlib
+import ctypes
 import os
 import sqlite3
 import time
@@ -50,8 +61,10 @@ __all__ = [
     "FrameParams",
     "FrameGrouping",
     "GlobalParams",
+    "LiveState",
     "UimfFile",
     "connect",
+    "is_local_path",
 ]
 
 BUSY_TIMEOUT_MS = 250
@@ -82,6 +95,45 @@ def connect(path: str | os.PathLike[str], busy_timeout_ms: int = BUSY_TIMEOUT_MS
         yield conn
     finally:
         conn.close()
+
+
+_LOCAL_DRIVE_TYPES = frozenset({2, 3, 6})
+"""`GetDriveTypeW` codes a file can be followed on: removable, fixed, and RAM disk.
+The one deliberately left out is 4, a network drive; 0 and 1 mean the call could not
+answer, which is not a drive to follow an acquisition on either."""
+
+
+def is_local_path(path: str | os.PathLike[str]) -> bool:
+    """Whether this path is on a drive attached to this machine.
+
+    Following a file means reading a WAL database while another process writes it, and
+    WAL coordinates the two through shared memory that only works when both are on the
+    same machine: over SMB the `-shm` is either unavailable or, worse, silently not
+    shared, and two processes each believe they have a consistent snapshot. SQLite's own
+    documentation says not to, and the never-do list in the lab record says not to. So
+    this is checked before a poll starts rather than diagnosed afterwards.
+
+    Opening and reading a file on a share is untouched by this -- a finished acquisition
+    copied to a group drive is exactly what the viewer is for. Only *following* one is
+    refused.
+
+    Off Windows this answers True for anything that is not a UNC path: the platform is
+    Windows 11 (the instruments run it and the `.exe` is the deliverable), and guessing
+    at a POSIX mount type would be a rule nobody can test here.
+    """
+    text = os.fspath(os.path.abspath(path))
+    if text.startswith("\\\\") or text.startswith("//"):
+        return False  # a UNC path is a share whatever the platform says
+    if os.name != "nt":
+        return True
+    drive = os.path.splitdrive(text)[0]
+    if not drive:
+        return True
+    try:
+        kind = int(ctypes.windll.kernel32.GetDriveTypeW(drive + os.sep))
+    except (AttributeError, OSError):  # pragma: no cover -- not Windows after all
+        return True
+    return kind in _LOCAL_DRIVE_TYPES
 
 
 @dataclass(frozen=True)
@@ -246,6 +298,39 @@ class FrameGrouping:
         return len(self.frames.get(int(method_frame), ())) < asked
 
 
+@dataclass(frozen=True)
+class LiveState:
+    """What one look at a file being written found: its frames, and which may still grow.
+
+    `UimfFile.refresh()` returns one of these and nothing else needs to be asked to
+    drive a poll: `frames` is the frame list as it stands, `provisional` the subset that
+    is not finished, and `final` the rest. Comparing two of these is how a poll decides
+    whether anything happened, which is why it is a frozen dataclass over hashable
+    fields rather than two loose values.
+
+    "Provisional" means the same thing it means in `UimfFile.is_provisional`, by the
+    same two rules: on a file `mainspring.uimf.writer` created, a frame whose completion
+    marker is absent; on every other file, the last frame if the file has been written
+    to within `PROVISIONAL_WINDOW_S`.
+    """
+
+    frames: tuple[int, ...] = ()
+    provisional: frozenset[int] = frozenset()
+
+    @property
+    def final(self) -> tuple[int, ...]:
+        """The frames that are finished, ascending.
+
+        What a running total is allowed to add up: a sum that included a frame still
+        being written would change under the user every time it was recomputed, and the
+        answer it settled on would depend on when they stopped looking. Showing a single
+        provisional frame is a different matter and is deliberately allowed -- a frame
+        filling in front of the operator is the live view worth having, and it is
+        labelled as unfinished while it fills.
+        """
+        return tuple(n for n in self.frames if n not in self.provisional)
+
+
 class UimfFile:
     """A UIMF file, opened lazily and never held open. See the module docstring.
 
@@ -262,6 +347,10 @@ class UimfFile:
         self._tables: frozenset[str] | None = None
         self._global: GlobalParams | None = None
         self._frames: dict[int, FrameParams] = {}
+        # Frames whose completion marker has been seen. A frame never un-completes, so
+        # remembering the answer is safe, and it is what keeps `is_provisional` off the
+        # database on the read path: `read_frame` asks it for every frame it decodes.
+        self._complete: set[int] = set()
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}({self.path!r})"
@@ -498,16 +587,28 @@ class UimfFile:
         was lost to a power cut stays provisional for ever, which is honest -- it may
         indeed be short.
 
-        Everywhere else it falls back to the heuristic task 03 wrote and task 08 owns
-        replacing: the last frame of a file written to within the last few seconds.
-        Conservative on purpose. Over-reporting costs a cache entry; under-reporting
-        would hand the viewer half a frame and let it keep it.
+        Everywhere else it falls back to the heuristic task 03 wrote: the last frame of
+        a file written to within the last few seconds. Conservative on purpose, and
+        still the best a PNNL-written file allows -- the console publishes `finished`
+        before its own writer has drained, so neither a row count nor an mtime is an
+        answer, only an upper bound on one. Over-reporting costs a cache entry;
+        under-reporting would hand the viewer half a frame and let it keep it.
+
+        A finished frame is remembered, because a frame never goes back to being
+        unfinished. That is what makes this affordable on the read path, where it is
+        asked once per decoded frame and would otherwise be a query each time.
         """
+        frame = int(frame)
         if self.has_completion_markers:
+            if frame in self._complete:
+                return False
             try:
-                return not self.frame_params(frame).marked_complete
+                complete = self.frame_params(frame).marked_complete
             except KeyError:
                 return False
+            if complete:
+                self._complete.add(frame)
+            return not complete
         try:
             age = time.time() - os.path.getmtime(self.path)
         except OSError:
@@ -515,7 +616,55 @@ class UimfFile:
         if age > PROVISIONAL_WINDOW_S:
             return False
         numbers = self.frame_numbers()
-        return bool(numbers) and int(frame) == numbers[-1]
+        return bool(numbers) and frame == numbers[-1]
+
+    def refresh(self) -> LiveState:
+        """Re-read what a file being written can have changed, and say what it is now.
+
+        Two queries whatever the frame count, which is the whole point: `frame_numbers`
+        is one indexed scan (11 ms over 5,000 frames) and the completion markers are one
+        join, narrowed to the frames not already known finished. Asking `frame_params`
+        per frame instead would be 6.9 s on the same file, once a second (lab record,
+        tasks 08 and 17). The grouping is deliberately *not* re-read here: it is 43 ms,
+        it only changes when the frame list grows, and the caller can see that it has.
+
+        It also drops the cached parameters of every frame that is still provisional, so
+        that a caller holding one `UimfFile` across a whole acquisition sees each frame
+        become final rather than keeping the answer it got the first time.
+        """
+        frames = self.frame_numbers()
+        if not self.has_completion_markers:
+            return LiveState(tuple(frames), self._mtime_provisional(frames))
+        unknown = [n for n in frames if n not in self._complete]
+        if unknown:
+            # `>= unknown[0]` rather than a list of ids: an acquisition finalises frames
+            # in order, so this is the tail, and it stays correct if one ever does not --
+            # the query simply re-reads a few frames already known finished.
+            with connect(self.path, self.busy_timeout_ms) as conn:
+                rows = conn.execute(
+                    "SELECT FP.FrameNum, FP.ParamValue FROM Frame_Params FP"
+                    " JOIN Frame_Param_Keys K ON FP.ParamID = K.ParamID"
+                    " WHERE K.ParamName = ? AND FP.FrameNum >= ?",
+                    (FRAME_COMPLETE, unknown[0]),
+                )
+                for number, value in rows:
+                    if _as_int(value, 0):
+                        self._complete.add(int(number))
+        provisional = frozenset(n for n in frames if n not in self._complete)
+        for number in provisional:
+            self._frames.pop(number, None)
+        return LiveState(tuple(frames), provisional)
+
+    def _mtime_provisional(self, frames: "list[int]") -> frozenset[int]:
+        """The fallback rule as a set, so `refresh` answers the same question on a file
+        with no markers in it that `is_provisional` answers one frame at a time."""
+        try:
+            age = time.time() - os.path.getmtime(self.path)
+        except OSError:
+            return frozenset()
+        if age > PROVISIONAL_WINDOW_S or not frames:
+            return frozenset()
+        return frozenset({frames[-1]})
 
     def read_frame(
         self,

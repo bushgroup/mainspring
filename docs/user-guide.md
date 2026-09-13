@@ -47,8 +47,9 @@ File size and frame count are not what the open costs. A raw per-repetition acqu
 viewer reads one frame and rasterises it to the size of the window rather than loading the
 file. Paging to another frame costs about 5 milliseconds however far into the file it is.
 
-mainspring opens a finished acquisition. Following a file while the instrument is still
-writing it is the next piece of work on the viewer, and it is not here yet.
+A file the instrument is still writing opens the same way, and the `Follow` control then keeps
+it up to date as the run continues. See [Following a file being
+acquired](#following-a-file-being-acquired).
 
 ## The window
 
@@ -258,6 +259,73 @@ The status bar names the result as a sum and how many frames went into it, so a 
 never mistaken for a single frame. On a raw per-repetition file of 5,000 frames the whole sum
 takes about 20 seconds, so use `Sum method frame` when one experiment is what you want.
 
+### Follow
+
+Watches the open file for what the instrument writes to it, once a second, and keeps the frame
+spinner, the type filter and the repetition count in step with what is there. `Show`, beside it,
+decides what following does with each new frame. Both are covered in [Following a file being
+acquired](#following-a-file-being-acquired).
+
+### Show
+
+`Fixed frame`, `Newest frame`, or `Method frame sum`. Available while `Follow` is on, and
+described with it below.
+
+## Following a file being acquired
+
+To watch a run as it happens, open the file the acquisition is writing and turn on `Follow`. The
+viewer then asks the file once a second what has been added to it. Nothing about the acquisition
+changes: every read is a separate read-only connection that is opened, used and closed, which is
+what keeps the viewer out of the writers' way.
+
+Each poll costs about 10 milliseconds of query on a file of 5,000 frames, and a frame becomes
+visible within 3 milliseconds of the software that wrote it saying it is finished. The second
+between polls is the whole of the delay you see.
+
+`Show` decides what happens to the view:
+
+- **`Fixed frame`** leaves the view exactly where you put it. The frame spinner's range grows,
+  the repetition count beside `Rep` grows, and the frame on screen stays the frame you chose.
+  This is the default, and it is what you want while studying one frame of a run that is still
+  going.
+- **`Newest frame`** moves to each frame as it arrives, including the frame being written at
+  this moment. A frame is about one second of acquisition and its scans reach the file in
+  batches, so the frame fills in front of you rather than appearing whole.
+- **`Method frame sum`** keeps a running total of the finished repetitions of the method frame
+  being acquired, which is the summed heat map a finished file holds. It appears only on a file
+  that records how its frames group, which today means a file clockwork wrote. The total is
+  recomputed when a repetition finishes and not while one is being written, so it only ever
+  grows.
+
+The zoom, the colour levels and every other setting are untouched by any of this. Following
+changes which frame is on screen, never how it is drawn.
+
+### Frames that are not finished yet
+
+A frame the instrument may still be adding scans to is drawn like any other and labelled
+`still being written`, in the status bar under the plot and beside `Frame:` in the info panel.
+The viewer never keeps such a frame in its cache, so every poll reads what is actually in the
+file rather than what was there a second ago.
+
+A file clockwork wrote says frame by frame when a frame is finished, so the label is exact. No
+other writer records it, and on their files the viewer falls back to treating the last frame of
+a recently written file as unfinished. That fallback errs towards saying `still being written`
+about a frame that is in fact complete, which costs a re-read and nothing else.
+
+A frame whose completion was lost to a power failure reads as unfinished for good. That is
+honest rather than a defect, because such a frame may well be short. Its data are intact and
+every frame before it reads as complete.
+
+### What cannot be followed
+
+`Follow` is refused on a file that is not on a drive attached to this machine, and the status bar
+says so. Following means reading a database while another process writes it, and the two
+processes coordinate through shared memory that only exists when both are on the same machine.
+Opening and reading a file over a share is unaffected. It is only following one that is refused.
+
+Following is also switched off whenever another file is opened, and it is not remembered between
+sessions. It describes one acquisition rather than a way of working.
+
 ## The status bar
 
 The left of the status bar carries the open and frame messages. The right carries the cursor
@@ -278,8 +346,15 @@ frame's, exactly as the file stores them. It is not a fixed list. Whatever keys 
 parameter tables carry are what the tree shows, so a writer's optics voltages and its own
 private keys appear alongside the handful the viewer itself parses.
 
-The lower half is four readouts, all of them describing the image on screen rather than the
-whole frame, and all of them recomputed on every view change.
+The lower half is one statement about the frame and four readouts, all of them describing the
+image on screen rather than the whole frame, and all of them recomputed on every view change.
+
+### Frame
+
+`complete`, or `still being written` for a frame the instrument may be adding scans to. A
+summed heat map shows `-`, because the question belongs to the frames that went into it and the
+status bar names those. See [Frames that are not finished
+yet](#frames-that-are-not-finished-yet).
 
 ### Max intensity in view
 
@@ -356,6 +431,10 @@ every setting to its default.
 The pinned colour levels and the current view range are not among them. Keep levels and keep
 ranges persist as switches, and what they hold is whatever is on screen in the session where
 you turn them on.
+
+`Follow` is not remembered either, and it is the one toolbar control that is not. It says
+something about one file rather than about how you like to look at data, and a viewer that
+started polling every finished acquisition anyone opened would be doing work against nothing.
 
 The saved bit depth is the `Bits` setting, and opening a file that stores its own does not
 overwrite it. Close such a file and the control returns to the number you set.

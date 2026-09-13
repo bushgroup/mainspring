@@ -27,6 +27,16 @@ number to report.
 short-lived-connection rule and the never-cache-a-provisional-frame rule live on one
 thread and nothing else touches SQLite (lab record, tasks 03 and 08).
 
+**The follow poll is that thread's idle time, not a timer.** `LoadWorker.run` already
+blocks on its work queue; following makes that block time out after `POLL_INTERVAL_S`
+and asks the file what has changed. Three things fall out of putting it there rather
+than on a `QTimer` in the window. The poll's SQLite work is on the thread that is
+allowed to do SQLite work, by construction rather than by care. A poll can never
+interleave with a frame read or a sum, because the queue is served first and the poll
+only runs when the queue is empty -- so an acquisition being followed while a
+twenty-second sum-all runs is not also being polled twenty times. And a slow poll
+delays only the next poll, never a gesture.
+
 Qt lives here, and only here on the data side of the viewer: `mainspring.uimf` knows
 nothing about threads, and everything these workers call is plain numpy. What crosses
 the seam are frozen dataclasses over read-only numpy arrays -- a `SparseFrame` and a
@@ -47,6 +57,7 @@ from PySide6.QtCore import QThread, Signal
 from ..uimf import (
     DisplayAxes,
     FrameGrouping,
+    LiveState,
     RasterResult,
     SparseFrame,
     UimfFile,
@@ -58,16 +69,42 @@ from ..uimf.raster import render_view
 
 __all__ = [
     "DEBOUNCE_MS",
+    "POLL_INTERVAL_S",
     "LoadWorker",
     "RenderMailbox",
     "RenderRequest",
     "RenderResult",
     "RenderWorker",
+    "SumRequest",
 ]
 
 DEBOUNCE_MS = 30
 """How long a view change waits for the next one before a render is requested. Long
 enough to coalesce a wheel burst, short enough that a single tick feels immediate."""
+
+POLL_INTERVAL_S = 1.0
+"""How often a followed file is asked what has changed. One console frame is one ion
+mobility experiment, about a second long at the SLIMPHONY pusher rate, so a second is
+the rate at which there is anything new to find; the poll itself costs 11 ms of query
+on a 5,000-frame file (lab record, tasks 08 and 17)."""
+
+
+@dataclass(frozen=True)
+class SumRequest:
+    """One "add these frames up" ask, echoed back with the result.
+
+    The window has two callers for one sum -- `Sum all` and `Sum method frame`, plus the
+    running total a followed acquisition recomputes on its own -- and they want different
+    things when the answer arrives: a dialog closed, a status line worded, or nothing at
+    all. Echoing the ask beside the answer is what lets `_on_summed` tell them apart
+    without the window holding a flag that a second sum arriving first would falsify.
+    """
+
+    frames: tuple[int, ...] = ()
+    what: str = ""
+    live: bool = False
+    """A total the follow poll asked for rather than the user: no progress dialog, and
+    the view must not move if a newer one is already on screen."""
 
 
 @dataclass(frozen=True)
@@ -236,11 +273,30 @@ class LoadWorker(QThread):
     """`(frames done, frames total)` -- one tick per frame `sum_all` has read, for a
     progress dialog. Emitted from this thread; the window marshals it onto the GUI
     thread the way every other signal here does."""
-    summed = Signal(object, object)
-    """`SparseFrame, FrameParams | None` -- the sum of the requested frames, its `frame`
-    number 0 (`mainspring.uimf.frame.sum_frames`), paired with the first summed frame's
-    parameters so the window has a calibration to build axes from. `None` for both if
-    the sum was cancelled or the frame list was empty -- nothing to show."""
+    summed = Signal(object, object, object)
+    """`SparseFrame, FrameParams | None, SumRequest` -- the sum of the requested frames,
+    its `frame` number 0 (`mainspring.uimf.frame.sum_frames`), paired with the first
+    summed frame's parameters so the window has a calibration to build axes from, and
+    with the ask that produced it. `None` for the first two if the sum was cancelled or
+    the frame list was empty -- nothing to show."""
+    live_update = Signal(object, object, object)
+    """`LiveState, dict[int, int] | None, FrameGrouping | None` -- what one poll of a
+    followed file found: the frame list and which frames may still be growing, and the
+    same two whole-file answers `opened` carries, each frame's `FrameType` and the
+    method-frame grouping.
+
+    Emitted only when there is something to act on: the frame list changed, a frame
+    became final, or a frame is still growing and so may have more in it than the last
+    look found. The types and the grouping are `None` unless the frame list actually
+    *grew*, because neither can change while it does not and re-reading the grouping is
+    43 ms against the poll's own 11 ms (lab record, task 17)."""
+    follow_stopped = Signal(str)
+    """A poll raised, and following has been switched off; the message.
+
+    Its own signal rather than `failed`, because a failing poll is the one failure that
+    repeats: the file has been moved, deleted or unmounted, and a viewer that reported
+    that once a second until someone noticed would be worse than one that stops and says
+    so. The window puts its own toggle back with this."""
     failed = Signal(str)
     """An open or a decode raised; the message, never the exception object itself."""
 
@@ -250,6 +306,8 @@ class LoadWorker(QThread):
         self._file: UimfFile | None = None
         self._queue: queue.Queue[tuple[str, object]] = queue.Queue()
         self._cancel_sum = threading.Event()
+        self._poll_interval: float | None = None
+        self._live: LiveState | None = None
         self.start()
         self._queue.put(("warm", None))
 
@@ -261,15 +319,29 @@ class LoadWorker(QThread):
         """Ask for a frame; the `frame_loaded` signal carries it."""
         self._queue.put(("frame", int(frame)))
 
-    def sum_all(self, frames: "list[int]") -> None:
+    def sum_all(self, frames: "list[int]", what: str = "", *, live: bool = False) -> None:
         """Sum several frames into one; the `summed` signal carries the result.
 
         Progress is one `summing_progress` tick per frame *read*, not per frame added --
         reading (a query plus a decode) is the part of this that takes real time, the
         sparse addition itself is fast, so a tick per read is what makes the bar move at
         the rate the user is actually waiting on.
+
+        `what` and `live` are not used here at all: they are carried through to the
+        `summed` signal in a `SumRequest`, so that the window knows which of its several
+        reasons for asking this answer belongs to.
         """
-        self._queue.put(("sum", list(frames)))
+        self._queue.put(("sum", SumRequest(tuple(int(f) for f in frames), what, live)))
+
+    def set_follow(self, following: bool) -> None:
+        """Start or stop polling the open file for what the instrument has written.
+
+        Goes through the queue rather than setting a flag, because the loop spends its
+        life blocked in `get()` and a flag set from the GUI thread would not be looked
+        at until the next piece of real work arrived -- which, on an idle viewer
+        watching an acquisition, is never.
+        """
+        self._queue.put(("follow", bool(following)))
 
     def cancel_sum(self) -> None:
         """Ask an in-progress `sum_all` to stop at its next frame. Idempotent."""
@@ -281,7 +353,18 @@ class LoadWorker(QThread):
 
     def run(self) -> None:
         while True:
-            kind, payload = self._queue.get()
+            try:
+                kind, payload = self._queue.get(timeout=self._poll_interval)
+            except queue.Empty:
+                # Nothing asked of us for a whole interval, and we are following: this
+                # is the poll. Work always wins -- a frame request, a sum or a close
+                # sitting in the queue is served before the file is asked anything.
+                try:
+                    self._poll()
+                except Exception as exc:  # noqa: BLE001 -- a poll must not kill the thread
+                    self._poll_interval = None
+                    self.follow_stopped.emit(str(exc))
+                continue
             if kind == "stop":
                 return
             try:
@@ -290,7 +373,9 @@ class LoadWorker(QThread):
                 elif kind == "frame":
                     self._request_frame(int(payload))
                 elif kind == "sum":
-                    self._sum_all(list(payload))
+                    self._sum(payload)
+                elif kind == "follow":
+                    self._set_follow(bool(payload))
                 elif kind == "warm":
                     numba_available()  # compiles the kernels; return value unneeded here
             except Exception as exc:  # noqa: BLE001 -- reported to the window, not raised here
@@ -309,6 +394,11 @@ class LoadWorker(QThread):
         grouping = file.frame_grouping() if numbers else FrameGrouping()
         self._file = file
         self._cache.clear()
+        # A new file is a new acquisition: stop following the old one and forget what
+        # the last poll of it found, so the window's first poll of this file reports
+        # everything rather than a difference against something else's frame list.
+        self._poll_interval = None
+        self._live = None
         self.opened.emit(globals_, numbers, types, grouping)
 
     def _read_frame(self, frame: int) -> SparseFrame:
@@ -325,9 +415,43 @@ class LoadWorker(QThread):
         sparse = self._read_frame(frame)
         self.frame_loaded.emit(frame, sparse, self._file.frame_params(frame))
 
-    def _sum_all(self, frames: "list[int]") -> None:
+    def _set_follow(self, following: bool) -> None:
+        """Turn the idle-time poll on or off, and poll once immediately when turning on.
+
+        The immediate poll is what makes the toggle feel like a switch rather than a
+        subscription: a user who turns Follow on while the instrument is between frames
+        would otherwise wait a whole interval to be told what is already there.
+        """
+        self._poll_interval = POLL_INTERVAL_S if following else None
+        self._live = None
+        if following:
+            self._poll()
+
+    def _poll(self) -> None:
+        """Ask the file what has changed, and report it if anything has.
+
+        Emits on three conditions, and the third is the one that is easy to miss: the
+        frame list changed; a frame became final; or some frame is *still* provisional,
+        in which case the file may have grown inside a frame the list cannot see. A
+        frame is one ion mobility experiment and its scans arrive in batches, so a view
+        of the newest frame that only repainted when the frame count changed would show
+        the experiment in one jump at the end rather than filling.
+        """
+        if self._file is None or self._poll_interval is None:
+            return
+        state = self._file.refresh()
+        if state == self._live and not state.provisional:
+            return
+        grew = self._live is None or len(state.frames) != len(self._live.frames)
+        types = self._file.frame_types() if grew and state.frames else None
+        grouping = self._file.frame_grouping() if grew and state.frames else None
+        self._live = state
+        self.live_update.emit(state, types, grouping)
+
+    def _sum(self, request: SumRequest) -> None:
         if self._file is None:
             raise RuntimeError("sum_all before a file is open")
+        frames = list(request.frames)
         self._cancel_sum.clear()
         total = len(frames)
 
@@ -344,7 +468,9 @@ class LoadWorker(QThread):
 
         combined = sum_frames(_read_each(), should_cancel=self._cancel_sum.is_set)
         if combined is None:
-            self.summed.emit(None, None)  # cancelled: sum_frames discarded the partial total
+            # Cancelled: `sum_frames` discarded the partial total rather than returning
+            # it, so there is nothing to show and the request is echoed empty-handed.
+            self.summed.emit(None, None, request)
             return
         params = self._file.frame_params(frames[0]) if frames else None
-        self.summed.emit(combined, params)
+        self.summed.emit(combined, params, request)

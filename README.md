@@ -14,7 +14,8 @@ instrument writes UIMF.
 
 Version 1.0.0. The reader layer, the viewer, and the Windows installer are written and
 verified, and the development record lives in a private companion repository. Following a file
-while the instrument is still writing it is the next phase and is not in this release.
+while the instrument is still writing it is written and tested in the repository, and reaches
+users in the next release. The [user guide](docs/user-guide.md) covers it.
 
 The reader reproduces every scan's stored total ion current and base peak intensity exactly
 on the four files it has been tested against, which were written by four different versions

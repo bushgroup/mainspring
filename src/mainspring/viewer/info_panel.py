@@ -96,6 +96,7 @@ class InfoPanel(QDockWidget):
         self._global_root = QTreeWidgetItem(self._tree, ["Global", ""])
         self._frame_root = QTreeWidgetItem(self._tree, ["Frame", ""])
 
+        self._state_label = QLabel("-", container)
         self._max_label = QLabel("-", container)
         self._per_push_label = QLabel("-", container)
         self._per_push_label.setWordWrap(True)  # the one readout longer than the panel
@@ -105,6 +106,7 @@ class InfoPanel(QDockWidget):
         # A field too wide for the space beside its label drops to the next line rather
         # than squeezing into a sliver -- the per-push line, at the fixed panel width.
         live.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        live.addRow("Frame:", self._state_label)
         live.addRow("Max intensity in view:", self._max_label)
         live.addRow("Per push:", self._per_push_label)
         live.addRow("TIC in view:", self._tic_label)
@@ -114,6 +116,11 @@ class InfoPanel(QDockWidget):
         # it is a quotient, over an accumulation count and a bit depth the file may not
         # have told us (lab record, task 01).
         for widget, tip in (
+            (
+                self._state_label,
+                "Whether the instrument may still be adding scans to the frame on"
+                " screen, which is what the viewer knows rather than a guess at it.",
+            ),
             (self._max_label, "The largest single stored intensity inside the view."),
             (
                 self._per_push_label,
@@ -143,6 +150,22 @@ class InfoPanel(QDockWidget):
         self._tree.expandAll()
         for column in range(2):
             self._tree.resizeColumnToContents(column)
+
+    def set_frame_state(self, provisional: "bool | None") -> None:
+        """Say whether the frame on screen is finished, in the panel's own words.
+
+        The status bar says it too, in the line under the plot; this is where a reader
+        checking what they are about to quote looks, beside the numbers they would
+        quote. `None` for a frame that is not a frame of the file at all -- a sum -- for
+        which the question is about its inputs, and the status line names those.
+
+        The words are "still being written" rather than "provisional", which is the
+        code's word for it and says nothing to an operator watching a run.
+        """
+        if provisional is None:
+            self._state_label.setText("-")
+        else:
+            self._state_label.setText("still being written" if provisional else "complete")
 
     def set_view(
         self,
