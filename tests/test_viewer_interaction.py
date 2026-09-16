@@ -517,6 +517,62 @@ def test_the_cursor_readout_names_every_unit_and_the_aggregation(loaded_window):
     assert window._readout.text() == ""
 
 
+# --- the status bar's three zones (task 24) -------------------------------------------
+
+def test_peak_of_names_the_centre_of_the_winning_element():
+    """The centre, because that is where `set_profiles` plots it: a number half an
+    element away from the point the eye picks off the curve would be worse than none."""
+    from mainspring.viewer.side_plots import peak_of
+
+    edges = np.array([0.0, 1.0, 2.0, 3.0])
+    assert peak_of(edges, np.array([1.0, 9.0, 4.0])) == (1.5, 9.0)
+    assert peak_of(np.empty(0), np.empty(0)) is None
+    assert peak_of(edges, np.array([1.0, 2.0])) is None  # not this curve's edges
+
+
+def test_the_status_bar_never_covers_its_own_widgets(loaded_window):
+    """`showMessage` is retired: every one of its twelve call sites was untimed, and an
+    untimed message sits over the bar's left-hand widgets for the rest of the session."""
+    window, _ = loaded_window
+
+    assert window.statusBar().currentMessage() == ""
+    assert window.status_text()  # the open said something, in the middle zone
+    window._on_cursor_moved(*[0.5 * (a + b) for a, b in window._current_axes.full_range])
+    assert window._readout.text()
+    assert window.status_text()  # and the two do not displace each other
+
+
+def test_the_peak_readout_names_whichever_axis_each_projection_is_on(loaded_window, qtbot):
+    """Named by the axis rather than by a quantity: the swap moves m/z from one
+    projection to the other, and a readout fixed to one of them would be wrong half the
+    time."""
+    window, _ = loaded_window
+    axes = window._current_axes
+
+    text = window._peaks.text()
+    assert labels.plain(axes.x_label) in text and labels.plain(axes.y_label) in text
+
+    with qtbot.waitSignal(window.frame_shown, timeout=5000):
+        window._swap_action.setChecked(True)
+
+    swapped = window._peaks.text()
+    assert swapped.index(labels.plain(axes.y_label)) < swapped.index(
+        labels.plain(axes.x_label)
+    )
+
+
+def test_the_peak_readout_is_the_projections_own_maximum(loaded_window):
+    from mainspring.viewer.side_plots import peak_of
+
+    window, _ = loaded_window
+    render = window.last_render
+
+    for profile in (render.x_profile, render.y_profile):
+        position, height = peak_of(*profile)
+        assert f"{position:,.6g}" in window._peaks.text()
+        assert f"{height:,.0f}" in window._peaks.text()
+
+
 def test_a_stale_render_is_dropped_rather_than_drawn(loaded_window):
     """A result for a superseded frame must not repaint the current one.
 

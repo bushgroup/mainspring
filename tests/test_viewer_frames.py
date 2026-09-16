@@ -727,7 +727,7 @@ def test_sum_method_frame_sums_exactly_that_method_frame(grouped_window, grouped
 
     expected = grouped_uimf.tic(3) + grouped_uimf.tic(4)
     assert result.tic_in_view == pytest.approx(expected)
-    assert "method frame 2" in window.statusBar().currentMessage()
+    assert "method frame 2" in window.status_text()
     # And the spinners still name the method frame that was summed.
     assert window._method_spin.value() == 2
 

@@ -308,7 +308,7 @@ def test_follow_is_refused_on_a_path_that_is_not_a_local_drive(qtbot, monkeypatc
 
     assert not window.following
     assert not window._follow_action.isChecked()
-    assert "local drive" in window.statusBar().currentMessage()
+    assert "local drive" in window.status_text()
 
 
 def test_follow_is_refused_before_a_file_is_open(qtbot):
@@ -316,7 +316,7 @@ def test_follow_is_refused_before_a_file_is_open(qtbot):
     qtbot.addWidget(window)
     window._follow_action.setChecked(True)
     assert not window.following
-    assert "Open a file" in window.statusBar().currentMessage()
+    assert "Open a file" in window.status_text()
 
 
 def test_following_grows_the_frame_axis_without_moving_the_view(following_window, qtbot):
@@ -359,7 +359,7 @@ def test_a_frame_still_being_written_is_drawn_and_labelled_as_unfinished(followi
     acquisition.start(method_frame=1, repetition=2, repetitions=3)
     qtbot.waitUntil(lambda: window._current_frame_number == 2, timeout=5000)
     assert window._current_frame is not None and window._current_frame.provisional
-    assert "still being written" in window.statusBar().currentMessage()
+    assert "still being written" in window.status_text()
     assert window.info_panel._state_label.text() == "still being written"
 
     acquisition.finish()
@@ -367,7 +367,7 @@ def test_a_frame_still_being_written_is_drawn_and_labelled_as_unfinished(followi
         lambda: window._current_frame is not None and not window._current_frame.provisional,
         timeout=5000,
     )
-    assert "still being written" not in window.statusBar().currentMessage()
+    assert "still being written" not in window.status_text()
     assert window.info_panel._state_label.text() == "complete"
 
 
@@ -381,9 +381,9 @@ def test_the_running_sum_totals_the_finished_repetitions_only(following_window, 
 
     acquisition.frame(method_frame=1, repetition=2, repetitions=3)
     qtbot.waitUntil(
-        lambda: "2 repetitions" in window.statusBar().currentMessage(), timeout=5000
+        lambda: "2 repetitions" in window.status_text(), timeout=5000
     )
-    assert "Running sum of method frame 1" in window.statusBar().currentMessage()
+    assert "Running sum of method frame 1" in window.status_text()
     assert window._live_sum_frames == (1, 2)
 
     # An unfinished third repetition is not added until it is finished.
@@ -405,7 +405,7 @@ def test_the_running_sum_totals_what_the_frames_own_tic_columns_say(following_wi
     # On the message rather than on `_live_sum_frames`, which is set when the sum is
     # *asked for*: the total itself arrives from the load worker a moment later.
     qtbot.waitUntil(
-        lambda: "2 repetitions" in window.statusBar().currentMessage(), timeout=5000
+        lambda: "2 repetitions" in window.status_text(), timeout=5000
     )
     assert window._current_frame_number == 0
 
@@ -465,7 +465,7 @@ def test_a_poll_that_keeps_failing_stops_following_instead_of_repeating(followin
 
     assert not window._follow_action.isChecked()
     assert not window._follow_mode.isEnabled()
-    assert "gone away" in window.statusBar().currentMessage()
+    assert "gone away" in window.status_text()
 
 
 def test_following_does_not_reset_a_frame_type_filter_the_user_set(following_window, qtbot):

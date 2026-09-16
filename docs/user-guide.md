@@ -373,8 +373,8 @@ sessions. It describes one acquisition rather than a way of working.
 
 ## The status bar
 
-The left of the status bar carries the open and frame messages. The right carries the cursor
-readout, which reports, for the pointer's position:
+The status bar has three zones. On the left is the cursor readout, which reports, for the
+pointer's position:
 
 - both display values with their axis labels, m/z and arrival time by default;
 - the raw TOF bin and scan number, always, whichever units the axes are in;
@@ -383,6 +383,13 @@ readout, which reports, for the pointer's position:
 Both unit systems appear because they answer different questions and neither can be recovered
 from the other by eye. The intensity is read back out of the image on screen rather than
 recomputed, so it describes what you are looking at.
+
+In the middle are the open and frame messages, and anything else the viewer has to say.
+
+On the right is the peak of each projection: where the mass spectrum peaks and how high, and
+the same for the arrival-time distribution. Each is named by the axis it is on, so the two
+swap over when `Swap X/Y` does. The height is a sum over the range in view on the other axis,
+like every value in a projection, so it moves as you zoom.
 
 ## The info panel
 

@@ -354,7 +354,7 @@ def test_the_menu_entry_asks_where_then_at_what_resolution_then_writes_it(
 
     assert QImage(str(path)).size().isValid()
     assert viewer.settings.export_dpi == 150  # remembered for the next export
-    assert "150 dpi" in viewer.statusBar().currentMessage()
+    assert "150 dpi" in viewer.status_text()
 
 
 def test_a_cancelled_save_dialog_writes_nothing(viewer, monkeypatch):

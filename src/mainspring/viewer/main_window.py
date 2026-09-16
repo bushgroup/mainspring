@@ -96,7 +96,7 @@ from .settings import (
     load_settings,
     save_settings,
 )
-from .side_plots import SidePlots
+from .side_plots import SidePlots, peak_of
 from .workers import LoadWorker, RenderMailbox, RenderRequest, RenderWorker, SumRequest
 
 __all__ = ["APP_TITLE", "FOLLOW_MODES", "MainWindow"]
@@ -221,12 +221,25 @@ class MainWindow(QMainWindow):
         self._busy.setMaximumWidth(120)
         self._busy.hide()
         describe(self._busy, "A frame is being decoded.")
+        # Three zones, left to right: where the pointer is, what the window is doing,
+        # and where each projection peaks. `QStatusBar.showMessage` is not used at all
+        # (`_show_status`), so the left-hand widgets are never covered over.
         self._readout = QLabel("")
         describe(
             self._readout,
             "The axis values under the pointer, and the intensity of the pixel it is over.",
         )
-        self.statusBar().addPermanentWidget(self._readout)
+        self._status = QLabel("")
+        describe(self._status, "What the viewer last did, and what the frame on screen is.")
+        self._peaks = QLabel("")
+        describe(
+            self._peaks,
+            "Where each projection peaks and how high, with each projection being a sum"
+            " over the range in view on the other axis.",
+        )
+        self.statusBar().addWidget(self._readout, 0)
+        self.statusBar().addWidget(self._status, 1)
+        self.statusBar().addPermanentWidget(self._peaks)
         self.statusBar().addPermanentWidget(self._busy)
         # After all three owners exist and before the menus are built: the application
         # font reaches a widget made afterwards as surely as one made already, so this
@@ -662,7 +675,7 @@ class MainWindow(QMainWindow):
         # made last time (lab record, task 24).
         if fmt != "pdf":
             self.settings.export_dpi = dialog.dpi()
-        self.statusBar().showMessage(f"Exporting {os.path.basename(path)}...")
+        self._show_status(f"Exporting {os.path.basename(path)}...")
         # A 600 dpi render of a maximised window is still a second or two of a frozen
         # window, and it happens on this thread: the render worker's mailbox drops
         # whatever it is holding when a newer request arrives, which is right for a
@@ -678,7 +691,7 @@ class MainWindow(QMainWindow):
             return
         finally:
             QApplication.restoreOverrideCursor()
-        self.statusBar().showMessage(
+        self._show_status(
             f"Exported {os.path.basename(path)}, {width} x {height} pixels"
             f" at {dialog.dpi()} dpi"
         )
@@ -712,7 +725,7 @@ class MainWindow(QMainWindow):
         self.stop_following()
         self._path = path
         self._opened_from_command_line = from_command_line
-        self.statusBar().showMessage(f"Opening {os.path.basename(path)}...")
+        self._show_status(f"Opening {os.path.basename(path)}...")
         self._busy.show()
         self._opening = True
         self._worker.open(path)
@@ -861,7 +874,7 @@ class MainWindow(QMainWindow):
             self._live_sum_frames = ()
             self._worker.set_follow(False)
             if self._path is not None:
-                self.statusBar().showMessage(
+                self._show_status(
                     f"Stopped following {os.path.basename(self._path)}"
                 )
             return
@@ -875,12 +888,12 @@ class MainWindow(QMainWindow):
             self._follow_action.blockSignals(True)
             self._follow_action.setChecked(False)
             self._follow_action.blockSignals(False)
-            self.statusBar().showMessage(refusal)
+            self._show_status(refusal)
             return
         self._follow_mode.setEnabled(True)
         self._live_sum_frames = ()
         self._worker.set_follow(True)
-        self.statusBar().showMessage(f"Following {os.path.basename(self._path)}")
+        self._show_status(f"Following {os.path.basename(self._path)}")
 
     def stop_following(self) -> None:
         """Turn Follow off, if it is on, by the same route the user would. Idempotent."""
@@ -970,7 +983,7 @@ class MainWindow(QMainWindow):
         self._follow_mode.setEnabled(False)
         self._live = None
         self._live_sum_frames = ()
-        self.statusBar().showMessage(f"Stopped following: {message}")
+        self._show_status(f"Stopped following: {message}")
 
     def _act_on_live_state(self, state: LiveState) -> None:
         """The `Show` half of a poll: leave the view alone, chase it, or total it up."""
@@ -1047,7 +1060,7 @@ class MainWindow(QMainWindow):
         if not frame_numbers:
             self._busy.hide()
             self._opening = False
-            self.statusBar().showMessage("This file has no frames")
+            self._show_status("This file has no frames")
             return
         self._worker.request_frame(frame_numbers[0])
 
@@ -1128,7 +1141,7 @@ class MainWindow(QMainWindow):
         unfinished = " -- still being written" if sparse_frame.provisional else ""
         base = message or f"Frame {frame_number}: {len(sparse_frame):,} points"
         self._frame_message = base + unfinished
-        self.statusBar().showMessage(self._frame_message)
+        self._show_status(self._frame_message)
         if frame_number in self._frame_numbers:
             self._frame_spin.blockSignals(True)
             self._frame_spin.setValue(frame_number)
@@ -1163,7 +1176,7 @@ class MainWindow(QMainWindow):
         if self._sum_dialog is not None:
             self._sum_dialog.close()
             self._sum_dialog = None
-        self.statusBar().showMessage(f"Error: {message}")
+        self._show_status(f"Error: {message}")
 
     def _on_view_resized(self, width: int, height: int) -> None:
         self._request_render(*self.heatmap.view_range(), width, height)
@@ -1201,6 +1214,7 @@ class MainWindow(QMainWindow):
         self._last_render = render
         self.heatmap.set_image(result, colour_scale=self.settings.colour_scale)
         self.side_plots.set_profiles(render.x_profile, render.y_profile)
+        self._show_peaks(render)
         self.heatmap.set_debug_text(
             f"{render.elapsed_ms:.1f} ms  {result.image.shape[1]}x{result.image.shape[0]}"
             f"  {result.points_in_view} pts"
@@ -1221,7 +1235,7 @@ class MainWindow(QMainWindow):
             self._opening = False
             self._busy.hide()
             elapsed_ms = (time.perf_counter() - self._open_started) * 1000.0
-            self.statusBar().showMessage(
+            self._show_status(
                 f"{self._frame_message} -- opened in {elapsed_ms:.0f} ms"
             )
         self.frame_shown.emit(result)
@@ -1531,6 +1545,47 @@ class MainWindow(QMainWindow):
 
     def _clear_readout(self) -> None:
         self._readout.setText("")
+
+    # --- the status bar ---------------------------------------------------------------
+
+    def _show_status(self, text: str) -> None:
+        """Say what the window is doing, in the middle zone of the status bar.
+
+        A label rather than `QStatusBar.showMessage`. Every one of the twelve places this
+        replaced was untimed, and an untimed message covers the bar's own left-hand
+        widgets for the rest of the session -- which is fine when nothing is there and
+        impossible once the cursor readout is (lab record, task 24).
+        """
+        self._status.setText(text)
+
+    def status_text(self) -> str:
+        """What the status bar is saying. The read side of `_show_status`."""
+        return self._status.text()
+
+    def _show_peaks(self, render: "object | None") -> None:
+        """Where each projection peaks, on the right of the status bar.
+
+        Named by whatever the axis currently is rather than by a quantity, because the
+        swap-axes toggle moves m/z from one projection to the other and a readout that
+        said `m/z` in a fixed place would be wrong half the time. The height is a sum
+        over the range in view on the other axis, which is what the tooltip says.
+        """
+        if render is None:
+            self._peaks.setText("")
+            return
+        axes = render.result.axes
+        parts = []
+        for profile, name in (
+            (render.x_profile, axes.x_label),
+            (render.y_profile, axes.y_label),
+        ):
+            found = peak_of(*profile)
+            if found is not None:
+                position, height = found
+                parts.append(
+                    f"peak {labels.plain(name)} {position:,.6g} ({height:,.0f})"
+                )
+        self._peaks.setText("   |   ".join(parts))
 
     def closeEvent(self, event) -> None:
         self.settings.window_geometry = bytes(self.saveGeometry())

@@ -44,7 +44,7 @@ from . import fonts, theme
 from .controls import describe
 from .heatmap import AXIS_HEIGHT, AXIS_WIDTH, RIGHT_AXIS_WIDTH, TOP_AXIS_HEIGHT
 
-__all__ = ["ProjectionViewBox", "SidePlots"]
+__all__ = ["ProjectionViewBox", "SidePlots", "peak_of"]
 
 MIN_BAND_PIXELS = 2.0
 """How far a drag has to travel along the shared axis before it is a band rather than a
@@ -310,6 +310,28 @@ class SidePlots:
         empty = np.empty(0, dtype=np.float64)
         self._x_curve.setData(empty, empty)
         self._y_curve.setData(empty, empty)
+
+
+def peak_of(
+    edges: "np.ndarray", values: "np.ndarray"
+) -> "tuple[float, float] | None":
+    """`(position, height)` of a projection's largest value, or None from an empty one.
+
+    Here rather than beside `profile` in `uimf/raster.py` because the answer is about the
+    drawn curve: the position is the *centre* of the winning element, which is where
+    `set_profiles` plots it, so the number in the status bar names the point the eye
+    picks off the plot rather than an edge half an element away from it (lab record,
+    task 24).
+
+    The height is a sum over the range in view on the other axis, like every value in a
+    projection, which is why the readout that quotes it says so.
+    """
+    values = np.asarray(values, dtype=np.float64)
+    centres = _centres(edges)
+    if values.size == 0 or centres.size != values.size:
+        return None
+    index = int(np.argmax(values))
+    return float(centres[index]), float(values[index])
 
 
 def _centres(edges: "np.ndarray") -> "np.ndarray":

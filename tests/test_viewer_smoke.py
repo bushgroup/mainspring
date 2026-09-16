@@ -51,7 +51,7 @@ def test_a_file_with_no_frames_fails_without_a_frame_paint(qtbot, tmp_path):
 
     window.open_file(str(path))
     qtbot.waitUntil(
-        lambda: "no frames" in (window.statusBar().currentMessage() or "").lower(),
+        lambda: "no frames" in (window.status_text() or "").lower(),
         timeout=5000,
     )
     # It opened, so it is the file on screen, frames or not.
@@ -101,7 +101,7 @@ def test_a_failed_open_leaves_the_title_bare(qtbot, tmp_path):
 
     window.open_file(str(tmp_path / "does-not-exist.uimf"))
     qtbot.waitUntil(
-        lambda: (window.statusBar().currentMessage() or "").startswith("Error"), timeout=5000
+        lambda: (window.status_text() or "").startswith("Error"), timeout=5000
     )
 
     assert window.windowTitle() == "mainspring"
@@ -118,7 +118,7 @@ def test_a_failed_dialog_open_shows_no_modal(qtbot, tmp_path, monkeypatch):
 
     window.open_file(str(tmp_path / "does-not-exist.uimf"))
     qtbot.waitUntil(
-        lambda: (window.statusBar().currentMessage() or "").startswith("Error"), timeout=5000
+        lambda: (window.status_text() or "").startswith("Error"), timeout=5000
     )
 
     assert shown == []
@@ -139,7 +139,7 @@ def test_a_failed_command_line_open_shows_a_modal_naming_the_file(qtbot, tmp_pat
     bad_path = str(tmp_path / "does-not-exist.uimf")
     window.open_file(bad_path, from_command_line=True)
     qtbot.waitUntil(
-        lambda: (window.statusBar().currentMessage() or "").startswith("Error"), timeout=5000
+        lambda: (window.status_text() or "").startswith("Error"), timeout=5000
     )
 
     assert len(shown) == 1
