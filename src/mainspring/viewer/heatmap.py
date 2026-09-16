@@ -207,6 +207,34 @@ class UimfViewBox(pg.ViewBox):
         (x0, x1), (y0, y1) = self._full_range
         self.setRange(xRange=(x0, x1), yRange=(y0, y1), padding=0.0)
 
+    def zoom_axis(self, axis: int, lo: float, hi: float) -> None:
+        """Set one axis's visible range and leave the other where it is.
+
+        What a band drawn on a projection means (`side_plots.ProjectionViewBox`). It
+        goes through `setRange` like every other gesture, so `set_extent`'s limits clamp
+        it -- a band cannot leave the frame and cannot zoom in past the floor of two
+        source elements.
+        """
+        if axis == 0:
+            self.setRange(xRange=(lo, hi), padding=0.0)
+        else:
+            self.setRange(yRange=(lo, hi), padding=0.0)
+
+    def reset_axis(self, axis: int) -> None:
+        """Back to the frame's full range on one axis, leaving the other zoomed.
+
+        The one-axis counterpart of `reset_range`, and the same one-step contract: a
+        band is undone by a double-click on the plot that drew it, with no history in
+        between.
+        """
+        if self._full_range is None:
+            return
+        (x0, x1), (y0, y1) = self._full_range
+        if axis == 0:
+            self.setRange(xRange=(x0, x1), padding=0.0)
+        else:
+            self.setRange(yRange=(y0, y1), padding=0.0)
+
     # --- gestures ---------------------------------------------------------------------
 
     def wheelEvent(self, ev, axis=None) -> None:
@@ -480,6 +508,14 @@ class HeatmapView(pg.GraphicsLayoutWidget):
     def reset_range(self) -> None:
         """Back to the frame's full range: what Home and the double-click both call."""
         self._view_box.reset_range()
+
+    def zoom_axis(self, axis: int, lo: float, hi: float) -> None:
+        """Set one axis's visible range: what a band on a projection asks for."""
+        self._view_box.zoom_axis(axis, lo, hi)
+
+    def reset_axis(self, axis: int) -> None:
+        """Back to the frame's full range on one axis alone."""
+        self._view_box.reset_axis(axis)
 
     def set_image(self, result: object, colour_scale: str = "linear") -> None:
         """Show a `RasterResult`, placing it by its display ranges.

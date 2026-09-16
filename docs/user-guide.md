@@ -113,6 +113,22 @@ because a wrong zoom costs one keystroke to undo.
 | `Shift` + left-drag | The same box, for trackpads and remote desktop |
 | Double-click | Reset to the frame's full range |
 
+The same two gestures work on either projection, where they act on the one axis that
+projection shares with the heat map.
+
+| Gesture on a projection | What it does |
+|---|---|
+| Right-drag | Zoom the shared axis to the band, applied when you release |
+| `Shift` + left-drag | The same band, for trackpads and remote desktop |
+| Double-click | Reset that axis alone, leaving the other where it is |
+
+A projection is often where the peak you want is visible: the mass spectrum resolves an
+isotope pattern that the heat map draws as a single column, so picking the pattern off the
+curve is easier than boxing it on the image. Dragging along the curve sets the m/z range and
+leaves the arrival-time range alone; dragging down the arrival-time distribution does the
+reverse. Panning and the wheel do nothing on a projection, because a curve moved away from the
+image it belongs to would no longer describe it.
+
 | Shortcut | What it does |
 |---|---|
 | `Ctrl+O` | Open a file |

@@ -104,6 +104,9 @@ class _Wheel:
     def accept(self):
         self.accepted = True
 
+    def ignore(self):
+        self.accepted = False
+
 
 class _Drag:
     """A drag in `ViewBox`-local pixels: one step of it, marked start, middle or finish."""
@@ -278,6 +281,123 @@ def test_a_double_click_resets_to_the_full_range(view, qtbot):
         box.mouseClickEvent(_Click())
 
     assert _spans(box) == pytest.approx((100.0, 50.0))
+
+
+# --- a band on a projection zooms that axis alone (task 24) ---------------------------
+
+@pytest.fixture
+def projections(view, qtbot):
+    """`SidePlots` over the `view` fixture's heatmap, laid out and exposed."""
+    from mainspring.viewer.side_plots import SidePlots
+
+    side = SidePlots(view)
+    view.ci.layout.activate()
+    qtbot.wait(50)
+    return side, view
+
+
+@pytest.mark.parametrize(
+    "button, modifiers",
+    [
+        (Qt.MouseButton.RightButton, Qt.KeyboardModifier.NoModifier),
+        (Qt.MouseButton.LeftButton, Qt.KeyboardModifier.ShiftModifier),
+    ],
+)
+def test_a_band_on_the_spectrum_zooms_the_horizontal_axis_alone(
+    projections, button, modifiers
+):
+    side, widget = projections
+    box = side.x_plot.getViewBox()
+    down = box.mapFromView(pg.Point(20.0, 0.0))
+    up = box.mapFromView(pg.Point(60.0, 0.0))
+
+    box.mouseDragEvent(_Drag(button, down, down, up, modifiers=modifiers), None)
+    assert box.rbScaleBox.isVisible()  # mid-drag: the band is drawn, the view has not moved
+    assert _spans(widget.view_box) == pytest.approx((100.0, 50.0))
+
+    box.mouseDragEvent(_Drag(button, down, up, up, finish=True, modifiers=modifiers), None)
+
+    (x0, x1), (y0, y1) = widget.view_box.viewRange()
+    assert (x0, x1) == pytest.approx((20.0, 60.0), abs=0.2)
+    assert (y0, y1) == pytest.approx((0.0, 50.0), abs=0.2)  # the other axis is untouched
+    assert not box.rbScaleBox.isVisible()
+
+
+def test_a_band_on_the_arrival_time_plot_zooms_the_vertical_axis_alone(projections):
+    side, widget = projections
+    box = side.y_plot.getViewBox()
+    down = box.mapFromView(pg.Point(0.0, 10.0))
+    up = box.mapFromView(pg.Point(0.0, 30.0))
+
+    box.mouseDragEvent(_Drag(Qt.MouseButton.RightButton, down, down, up), None)
+    box.mouseDragEvent(_Drag(Qt.MouseButton.RightButton, down, up, up, finish=True), None)
+
+    (x0, x1), (y0, y1) = widget.view_box.viewRange()
+    assert (y0, y1) == pytest.approx((10.0, 30.0), abs=0.2)
+    assert (x0, x1) == pytest.approx((0.0, 100.0), abs=0.2)
+
+
+def test_a_band_that_is_really_a_click_leaves_the_view_alone(projections):
+    side, widget = projections
+    box = side.x_plot.getViewBox()
+    down = box.mapFromView(pg.Point(20.0, 0.0))
+    nudge = pg.Point(down.x() + 1.0, down.y())
+
+    box.mouseDragEvent(_Drag(Qt.MouseButton.RightButton, down, down, nudge, finish=True), None)
+
+    assert _spans(widget.view_box) == pytest.approx((100.0, 50.0))
+
+
+def test_a_plain_drag_and_the_wheel_do_nothing_on_a_projection(projections):
+    side, widget = projections
+    box = side.x_plot.getViewBox()
+    widget.view_box.setRange(xRange=(20.0, 60.0), yRange=(10.0, 30.0), padding=0.0)
+    before = widget.view_box.viewRange()
+
+    down = box.mapFromView(pg.Point(30.0, 0.0))
+    up = box.mapFromView(pg.Point(50.0, 0.0))
+    drag = _Drag(Qt.MouseButton.LeftButton, down, down, up, finish=True)
+    box.mouseDragEvent(drag, None)
+    wheel = _Wheel(down, 480)
+    box.wheelEvent(wheel, None)
+
+    assert not drag.accepted and not wheel.accepted
+    assert widget.view_box.viewRange() == before
+
+
+def test_a_double_click_on_a_projection_resets_that_axis_alone(projections):
+    side, widget = projections
+    widget.view_box.setRange(xRange=(30.0, 40.0), yRange=(15.0, 20.0), padding=0.0)
+
+    class _Click:
+        def double(self):
+            return True
+
+        def accept(self):
+            pass
+
+        def ignore(self):
+            pass
+
+    side.x_plot.getViewBox().mouseClickEvent(_Click())
+
+    (x0, x1), (y0, y1) = widget.view_box.viewRange()
+    assert (x0, x1) == pytest.approx((0.0, 100.0))
+    assert (y0, y1) == pytest.approx((15.0, 20.0))  # the vertical zoom survives
+
+
+def test_a_band_cannot_leave_the_frame(projections):
+    """`set_extent`'s limits clamp a band exactly as they clamp a wheel tick."""
+    side, widget = projections
+    box = side.x_plot.getViewBox()
+    down = box.mapFromView(pg.Point(-500.0, 0.0))
+    up = box.mapFromView(pg.Point(500.0, 0.0))
+
+    box.mouseDragEvent(_Drag(Qt.MouseButton.RightButton, down, down, up), None)
+    box.mouseDragEvent(_Drag(Qt.MouseButton.RightButton, down, up, up, finish=True), None)
+
+    (x0, x1), _ = widget.view_box.viewRange()
+    assert (x0, x1) == pytest.approx((0.0, 100.0))
 
 
 def test_a_view_change_is_debounced_into_one_render_request(view, qtbot):

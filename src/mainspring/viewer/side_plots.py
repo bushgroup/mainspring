@@ -38,12 +38,18 @@ from __future__ import annotations
 
 import numpy as np
 import pyqtgraph as pg
+from PySide6.QtCore import QPointF, QRectF, Qt
 
 from . import theme
 from .controls import describe
 from .heatmap import AXIS_HEIGHT, AXIS_WIDTH, RIGHT_AXIS_WIDTH, TOP_AXIS_HEIGHT
 
-__all__ = ["SidePlots"]
+__all__ = ["ProjectionViewBox", "SidePlots"]
+
+MIN_BAND_PIXELS = 2.0
+"""How far a drag has to travel along the shared axis before it is a band rather than a
+click that wobbled. The same number `UimfViewBox._rect_zoom` uses on the heatmap, so one
+hand produces one result wherever it presses."""
 
 CURVE_WIDTH = 1
 """How thick a projection is drawn. One pixel, so that a spectrum reduced by the
@@ -60,6 +66,90 @@ _TOP_AXIS_ROW = 1
 _BOTTOM_AXIS_ROW = 3
 
 
+class ProjectionViewBox(pg.ViewBox):
+    """The box under one projection, where a drag zooms the axis it shares.
+
+    A projection is where the peak you want is *visible*: the spectrum resolves an
+    isotope pattern that the heatmap draws as one column, and picking the pattern off
+    the curve is the natural gesture. Until task 24 these boxes had the mouse disabled
+    entirely, so the pointer over a projection did nothing at all -- the right button was
+    free, and this is what it now means.
+
+    Same contract as `UimfViewBox`, so there is one gesture to learn and not two: a
+    right-drag, or Shift and a left-drag, sets a range; a double-click resets. What
+    differs is the dimension. The drag is read on the **shared** axis alone and the band
+    is drawn across the whole plot on the other, because the other one is intensity,
+    which the projection auto-ranges and which nobody means to zoom. A plain left drag
+    and the wheel stay inert, since panning a curve away from the image it belongs to
+    would only break the alignment the two are built around.
+
+    The box does not act on itself. `axis` is the heatmap's axis index (0 for the
+    horizontal, 1 for the vertical) and the two callbacks reach `HeatmapView`, which owns
+    the range the projections are linked to -- so a band drawn here travels the same path
+    to the render worker as a gesture on the image, and `setLimits` clamps it the same
+    way (lab record, task 24).
+    """
+
+    def __init__(self, axis: int, zoom, reset, parent: "object | None" = None) -> None:
+        super().__init__(parent=parent, enableMenu=False, defaultPadding=0.0)
+        self._axis = int(axis)
+        self._zoom = zoom
+        self._reset = reset
+
+    # --- gestures ---------------------------------------------------------------------
+
+    def mouseDragEvent(self, ev, axis=None) -> None:
+        """Right drag, or Shift and a left drag, bands the shared axis. Nothing else."""
+        button = ev.button()
+        shift = bool(ev.modifiers() & Qt.KeyboardModifier.ShiftModifier)
+        if button == Qt.MouseButton.RightButton or (
+            button == Qt.MouseButton.LeftButton and shift
+        ):
+            self._band_zoom(ev)
+            return
+        ev.ignore()
+
+    def mouseClickEvent(self, ev) -> None:
+        """A double-click resets this axis alone; a single click does nothing."""
+        if ev.double():
+            ev.accept()
+            self._reset(self._axis)
+            return
+        ev.ignore()
+
+    def wheelEvent(self, ev, axis=None) -> None:
+        """Inert, explicitly. The heatmap is where a wheel zooms, and a projection that
+        scrolled its own intensity axis would leave a curve that no longer describes the
+        image beside it."""
+        ev.ignore()
+
+    def _band_zoom(self, ev) -> None:
+        """The band while the button is down, and the range it means once it comes up."""
+        ev.accept()
+        start = ev.buttonDownPos(ev.button())
+        corners = self._corners(start, ev.pos())
+        if not ev.isFinish():
+            self.updateScaleBox(*corners)
+            return
+        self.rbScaleBox.hide()
+        travelled = (
+            abs(ev.pos().x() - start.x()) if self._axis == 0 else abs(ev.pos().y() - start.y())
+        )
+        if travelled <= MIN_BAND_PIXELS:
+            return  # a click that wobbled, not a band; leave the view alone
+        band = self.childGroup.mapRectFromParent(QRectF(*corners).normalized())
+        lo, hi = (band.left(), band.right()) if self._axis == 0 else (band.top(), band.bottom())
+        self._zoom(self._axis, min(lo, hi), max(lo, hi))
+
+    def _corners(self, start: QPointF, end: QPointF) -> "tuple[QPointF, QPointF]":
+        """The drag as a band: bounded by the pointer on the shared axis, and by the
+        box's own extent on the other, so what is drawn is what will be applied."""
+        rect = self.boundingRect()
+        if self._axis == 0:
+            return QPointF(start.x(), rect.top()), QPointF(end.x(), rect.bottom())
+        return QPointF(rect.left(), start.y()), QPointF(rect.right(), end.y())
+
+
 class SidePlots:
     """The mass spectrum above and the arrival-time distribution beside the heatmap.
 
@@ -73,11 +163,25 @@ class SidePlots:
         layout, y_cell, x_cell = heatmap.side_plot_slots()
         plot_item = heatmap.plot_item
 
-        self.y_plot = layout.addPlot(row=y_cell[0], col=y_cell[1])
-        self.x_plot = layout.addPlot(row=x_cell[0], col=x_cell[1])
+        # Each projection drives the heatmap axis it is linked to, and nothing else:
+        # `y_plot` beside the image shares the vertical axis (1), `x_plot` above it the
+        # horizontal (0). The heatmap owns the ranges, so the boxes are handed its two
+        # methods rather than a reference to it.
+        self.y_plot = layout.addPlot(
+            row=y_cell[0],
+            col=y_cell[1],
+            viewBox=ProjectionViewBox(1, heatmap.zoom_axis, heatmap.reset_axis),
+        )
+        self.x_plot = layout.addPlot(
+            row=x_cell[0],
+            col=x_cell[1],
+            viewBox=ProjectionViewBox(0, heatmap.zoom_axis, heatmap.reset_axis),
+        )
         for plot in (self.y_plot, self.x_plot):
             plot.setMenuEnabled(False)
-            plot.setMouseEnabled(x=False, y=False)  # the heatmap is what a gesture drives
+            # Pan and wheel off: `ProjectionViewBox` handles the two gestures it does
+            # answer before pyqtgraph's own handling is ever reached.
+            plot.setMouseEnabled(x=False, y=False)
             plot.showGrid(x=False, y=False)
             plot.hideButtons()
             for name in ("left", "right", "top", "bottom"):
@@ -103,13 +207,19 @@ class SidePlots:
 
         # Named by role, tipped by role: the swap-axes toggle changes what each one
         # projects onto, so neither tooltip may name a quantity.
+        _ZOOM = (
+            " Right-drag, or Shift and a left-drag, to zoom that axis alone, and"
+            " double-click to reset it."
+        )
         describe(
             self.x_plot,
-            "Total intensity along the horizontal axis, over the vertical range in view.",
+            "Total intensity along the horizontal axis, over the vertical range in view."
+            + _ZOOM,
         )
         describe(
             self.y_plot,
-            "Total intensity along the vertical axis, over the horizontal range in view.",
+            "Total intensity along the vertical axis, over the horizontal range in view."
+            + _ZOOM,
         )
 
         self._x_curve = self.x_plot.plot()
