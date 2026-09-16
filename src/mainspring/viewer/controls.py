@@ -35,6 +35,7 @@ from __future__ import annotations
 from weakref import WeakSet
 
 import pyqtgraph as pg
+from PySide6.QtCore import QRect
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QAbstractButton,
@@ -43,17 +44,24 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDockWidget,
+    QDoubleSpinBox,
     QGraphicsView,
     QHBoxLayout,
     QLabel,
     QMenu,
+    QSizePolicy,
+    QSpinBox,
     QStatusBar,
+    QStyle,
+    QStyleOptionSpinBox,
     QToolBar,
     QWidget,
     QWidgetAction,
 )
 
 __all__ = [
+    "DoubleSpinBox",
+    "SpinBox",
     "add_labelled",
     "add_menu_widget",
     "describe",
@@ -158,6 +166,50 @@ def make_action(
     return action
 
 
+class _KeepsRoomForItsValue:
+    """A spin box whose size hint reserves room for the value as well as the buttons.
+
+    `QAbstractSpinBox.sizeHint` adds the widest value's text to a frame, and the style
+    then carves the up and down buttons out of whatever width the widget ends up with --
+    buttons whose width follows the font while that text allowance does not. At 100 per
+    cent there is enough left for four digits; at 200 per cent the buttons take the whole
+    control and the number is not drawn at all, which is a control that has stopped
+    saying what it is set to (lab record, task 24).
+
+    Measured rather than padded by a guess: the style is asked where the edit field would
+    fall inside its own hint, and the shortfall against the widest value the range can
+    show is added. Mixed in rather than written twice, because `QSpinBox` and
+    `QDoubleSpinBox` are siblings and `textFromValue` is what makes the arithmetic the
+    same for both -- each formats its own kind of number, decimals and all.
+    """
+
+    def sizeHint(self):
+        hint = super().sizeHint()
+        option = QStyleOptionSpinBox()
+        self.initStyleOption(option)
+        option.rect = QRect(0, 0, hint.width(), hint.height())
+        field = self.style().subControlRect(
+            QStyle.ComplexControl.CC_SpinBox,
+            option,
+            QStyle.SubControl.SC_SpinBoxEditField,
+            self,
+        )
+        # Negated, so the minus sign is allowed for whichever end of the range is longer.
+        widest = -max(abs(self.minimum()), abs(self.maximum()))
+        text = f"{self.prefix()}{self.textFromValue(widest)}{self.suffix()}"
+        needed = self.fontMetrics().horizontalAdvance(text)
+        hint.setWidth(hint.width() + max(0, needed - field.width()))
+        return hint
+
+
+class SpinBox(_KeepsRoomForItsValue, QSpinBox):
+    """`QSpinBox`, keeping room for its value at any text size."""
+
+
+class DoubleSpinBox(_KeepsRoomForItsValue, QDoubleSpinBox):
+    """`QDoubleSpinBox`, keeping room for its value at any text size."""
+
+
 def add_labelled(toolbar: QToolBar, label_text: str, widget: object, *, tip: str) -> QLabel:
     """Put `label_text` and `widget` on the toolbar as one thing, sharing one tooltip.
 
@@ -168,6 +220,13 @@ def add_labelled(toolbar: QToolBar, label_text: str, widget: object, *, tip: str
     label = QLabel(label_text)
     describe(label, tip)
     describe(widget, tip)
+    # Fixed horizontally, so a crowded toolbar reaches for its own overflow arrow rather
+    # than squeezing a spin box down to its arrows. `View > Text size` is what made that
+    # reachable at an ordinary window width: at 150 per cent the frame number was gone
+    # while the control that showed it was still there (lab record, task 24).
+    widget.setSizePolicy(
+        QSizePolicy.Policy.Fixed, widget.sizePolicy().verticalPolicy()
+    )
     toolbar.addWidget(label)
     toolbar.addWidget(widget)
     return label

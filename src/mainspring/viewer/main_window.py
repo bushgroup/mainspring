@@ -84,7 +84,14 @@ from ..uimf import (
     is_local_path,
 )
 from . import fonts, labels, theme
-from .controls import add_labelled, add_menu_widget, describe, make_action
+from .controls import (
+    DoubleSpinBox,
+    SpinBox,
+    add_labelled,
+    add_menu_widget,
+    describe,
+    make_action,
+)
 from .export import ExportDialog, content_rect, export_display
 from .heatmap import HeatmapView, pixel_of
 from .info_panel import InfoPanel
@@ -448,7 +455,7 @@ class MainWindow(QMainWindow):
         self._type_actions: "dict[str, object]" = {}
         self._populate_type_filter()
 
-        self._bits_box = QSpinBox()
+        self._bits_box = SpinBox()
         self._bits_box.setRange(1, 32)
         self._bits_box.setValue(self.settings.detector_bits)
         self._bits_box.valueChanged.connect(self._on_detector_bits_changed)
@@ -500,7 +507,7 @@ class MainWindow(QMainWindow):
         )
         toolbar.addAction(self._raw_action)
 
-        self._arrival_offset_box = QDoubleSpinBox()
+        self._arrival_offset_box = DoubleSpinBox()
         self._arrival_offset_box.setRange(-100_000.0, 100_000.0)
         self._arrival_offset_box.setDecimals(3)
         self._arrival_offset_box.setSingleStep(1.0)
@@ -535,7 +542,7 @@ class MainWindow(QMainWindow):
 
         toolbar.addAction(self._info_action)  # built with the dock, above
 
-        self._frame_spin = QSpinBox()
+        self._frame_spin = SpinBox()
         self._frame_spin.setRange(0, 0)
         self._frame_spin.valueChanged.connect(self._on_frame_spin_changed)
         self._frame_label = add_labelled(
@@ -552,7 +559,7 @@ class MainWindow(QMainWindow):
         # it switches is the toolbar's own actions, not the widgets: a `QToolBar` lays
         # out by action visibility, so hiding the widget alone would leave its gap.
         self._grouping_actions: "list[object]" = []
-        self._method_spin = QSpinBox()
+        self._method_spin = SpinBox()
         self._method_spin.setRange(0, 0)
         self._method_spin.valueChanged.connect(self._on_method_spin_changed)
         self._method_label = self._add_hideable(
@@ -563,7 +570,7 @@ class MainWindow(QMainWindow):
                 " asked for, stored here as consecutive frames.",
         )
 
-        self._repetition_spin = QSpinBox()
+        self._repetition_spin = SpinBox()
         self._repetition_spin.setRange(0, 0)
         self._repetition_spin.valueChanged.connect(self._on_repetition_spin_changed)
         self._repetition_label = self._add_hideable(

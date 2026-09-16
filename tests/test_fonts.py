@@ -121,6 +121,24 @@ def test_the_axis_extents_grow_on_both_sides_at_once(window, qtbot):
     assert window.side_plots.y_plot.layout.rowMaximumHeight(3) == 2 * AXIS_HEIGHT
 
 
+@pytest.mark.parametrize("scale", TEXT_SCALES)
+def test_a_spin_box_still_shows_its_value_at_every_scale(qtbot, scale):
+    """The style carves the up and down buttons out of whatever width the control ends
+    up with, and they follow the font while Qt's own text allowance does not: at 200 per
+    cent a plain `QSpinBox` gave its edit field five pixels and drew no number at all."""
+    from mainspring.viewer.controls import SpinBox
+
+    box = SpinBox()
+    box.setRange(1, 5000)
+    box.setValue(4321)
+    qtbot.addWidget(box)
+    box.setFont(fonts.scaled_font(scale))
+    box.resize(box.sizeHint())
+    box.show()
+
+    assert box.lineEdit().width() >= box.fontMetrics().horizontalAdvance("4321")
+
+
 def test_the_info_panels_floor_follows_the_scale(window):
     from mainspring.viewer.settings import INFO_PANEL_WIDTH
 

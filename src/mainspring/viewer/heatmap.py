@@ -54,13 +54,14 @@ from .workers import DEBOUNCE_MS
 
 __all__ = [
     "AXIS_HEIGHT",
-    "AXIS_WIDTH",
-    "COLOUR_BAR_WIDTH",
-    "RIGHT_AXIS_WIDTH",
-    "SIDE_PLOT_SIZE",
     "AXIS_PEN_WIDTH",
+    "AXIS_WIDTH",
+    "COLOUR_BAR_AXIS_WIDTH",
+    "COLOUR_BAR_WIDTH",
     "LINE_WIDTH_LIMITS",
     "REFERENCE_VIEWPORT",
+    "RIGHT_AXIS_WIDTH",
+    "SIDE_PLOT_SIZE",
     "TICK_LENGTH",
     "TICK_PEN_WIDTH",
     "TOP_AXIS_HEIGHT",
@@ -137,8 +138,15 @@ def _render_svg_pixmap(path: str, size: int) -> QPixmap:
     return pixmap
 
 COLOUR_BAR_WIDTH = 80
-"""Pixels for the colour bar's column: pyqtgraph's 25 px strip, its 45 px value axis and
-the item's own margins."""
+"""Pixels for the colour bar's column **at 100 per cent text**: pyqtgraph's 25 px strip,
+its `COLOUR_BAR_AXIS_WIDTH` value axis and the item's own margins."""
+
+COLOUR_BAR_AXIS_WIDTH = 45
+"""Of that, what `pg.ColorBarItem` gives its value axis. It *fixes* that width rather
+than letting the axis expand into the space it needs, so a bigger tick font is clipped
+rather than accommodated: at 150 per cent the bar showed one value and otherwise said
+nothing about what a colour meant. `set_text_scale` sets both this and the column again,
+and only this part of the column grows, since the strip beside it is not text."""
 
 TICK_LENGTH = -8
 """Major tick length on the heatmap's axes. Negative points the ticks **into** the plot
@@ -456,7 +464,8 @@ class HeatmapView(pg.GraphicsLayoutWidget):
         self.ci.layout.setSpacing(0)
         self.ci.layout.setRowFixedHeight(0, SIDE_PLOT_SIZE)
         self.ci.layout.setColumnFixedWidth(1, SIDE_PLOT_SIZE)
-        self.ci.layout.setColumnFixedWidth(2, COLOUR_BAR_WIDTH)
+        # Column 2 is the colour bar's, and its width follows the text in it
+        # (`set_text_scale`, called at the end of this constructor).
         self.ci.layout.setColumnStretchFactor(0, 1)
         self.ci.layout.setRowStretchFactor(1, 1)
 
@@ -667,13 +676,19 @@ class HeatmapView(pg.GraphicsLayoutWidget):
           application font change, so the size travels in `label_style` and the label is
           set again. The text is read back off the axis rather than passed in: nothing
           here knows what the axes are called, and `setLabel(text=None)` would blank them.
-        * **The extents** the projections are aligned against, on this side of that
-          agreement (`side_plots.py` holds the other side).
+        * **The extents**: the two the projections are aligned against, on this side of
+          that agreement (`side_plots.py` holds the other side), and the colour bar's
+          own column, which is mostly the value axis a reader gets a level off.
         """
         font = fonts.scaled_font(scale)
         self._plot.getAxis("left").setWidth(round(AXIS_WIDTH * fonts.extent()))
         self._plot.getAxis("bottom").setHeight(round(AXIS_HEIGHT * fonts.extent()))
         self._colour_bar.getAxis("bottom").setHeight(round(AXIS_HEIGHT * fonts.extent()))
+        bar_axis = round(COLOUR_BAR_AXIS_WIDTH * fonts.extent())
+        self._colour_bar.getAxis("right").setWidth(bar_axis)
+        self.ci.layout.setColumnFixedWidth(
+            2, COLOUR_BAR_WIDTH - COLOUR_BAR_AXIS_WIDTH + bar_axis
+        )
         self._label_style = theme.label_style(theme.active())
         for axis in self._axes():
             axis.setTickFont(font)
