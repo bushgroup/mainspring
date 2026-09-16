@@ -300,7 +300,7 @@ def _render(view: object, painter: QPainter, target: QRectF, source: QRectF) -> 
 # --- the dialog -----------------------------------------------------------------------
 
 class ExportDialog(QDialog):
-    """Choose the resolution, having seen what it will cost in pixels and in inches.
+    """See what the figure will be, and for a PNG choose how finely it is drawn.
 
     A resolution is only meaningful next to the size it produces -- 600 dpi is the right
     answer for a two-column figure and the wrong one for a maximised window -- so the
@@ -311,6 +311,13 @@ class ExportDialog(QDialog):
     Fixed choices rather than a free number: 96 is the window's own pixels, 300 and 600
     are what a journal asks for, and 150 is a slide. A spin box would offer a thousand
     values that only differ from these in the file size.
+
+    **A PDF has no resolution row at all.** Its page is vector at the figure's own size
+    in inches whatever is asked for, so the only thing a number could have changed was
+    the sample count of the embedded heatmap -- and since that image is the array on
+    screen (this module's docstring), it does not change that either. A control whose
+    every setting produces the same file is worse than no control, so the dialog states
+    the page size and offers nothing (lab record, task 24).
     """
 
     def __init__(
@@ -322,12 +329,14 @@ class ExportDialog(QDialog):
         self.setWindowTitle(f"Export {fmt.upper()}")
         self.setModal(True)
 
-        self._dpi_box = QComboBox()
-        for preset in EXPORT_DPIS:
-            self._dpi_box.addItem(f"{preset} dpi", preset)
-        index = self._dpi_box.findData(dpi)
-        self._dpi_box.setCurrentIndex(index if index >= 0 else self._dpi_box.count() - 2)
-        describe(self._dpi_box, "How finely the figure is drawn, and the heatmap resampled.")
+        self._dpi_box: "QComboBox | None" = None
+        if fmt != "pdf":
+            self._dpi_box = QComboBox()
+            for preset in EXPORT_DPIS:
+                self._dpi_box.addItem(f"{preset} dpi", preset)
+            index = self._dpi_box.findData(dpi)
+            self._dpi_box.setCurrentIndex(index if index >= 0 else self._dpi_box.count() - 2)
+            describe(self._dpi_box, "How many pixels the figure is written at.")
 
         self._size_label = QLabel()
         self._size_label.setWordWrap(True)
@@ -337,10 +346,11 @@ class ExportDialog(QDialog):
         self._buttons.accepted.connect(self.accept)
         self._buttons.rejected.connect(self.reject)
 
-        form = QFormLayout()
-        form.addRow("Resolution:", self._dpi_box)
         layout = QVBoxLayout(self)
-        layout.addLayout(form)
+        if self._dpi_box is not None:
+            form = QFormLayout()
+            form.addRow("Resolution:", self._dpi_box)
+            layout.addLayout(form)
         layout.addWidget(self._size_label)
         note = QLabel("The colour bar is not part of the exported figure.")
         note.setEnabled(False)  # a footnote, not a control
@@ -351,11 +361,14 @@ class ExportDialog(QDialog):
         # this viewer is built in (`controls.make_action` says why), and then called by
         # hand so the label describes that choice rather than staying empty until the
         # user changes it.
-        self._dpi_box.currentIndexChanged.connect(lambda _: self._describe_size())
+        if self._dpi_box is not None:
+            self._dpi_box.currentIndexChanged.connect(lambda _: self._describe_size())
         self._describe_size()
 
     def dpi(self) -> int:
-        """The chosen resolution."""
+        """The resolution to write at: the chosen one, or `BASE_DPI` for a PDF."""
+        if self._dpi_box is None:
+            return int(BASE_DPI)
         return int(self._dpi_box.currentData())
 
     def _describe_size(self) -> None:
@@ -364,10 +377,7 @@ class ExportDialog(QDialog):
         inches = f"{self._rect.width() / BASE_DPI:.1f} x {self._rect.height() / BASE_DPI:.1f} in"
         too_big = width * height > MAX_PIXELS
         if self._fmt == "pdf":
-            # The page is the same size at every resolution; what the choice buys a PDF
-            # is the sample count of the heatmap it embeds, and saying so is the only
-            # way "600 dpi" means anything to someone looking at a fixed page size.
-            self._size_label.setText(f"{inches} page, heatmap at {dpi} dpi")
+            self._size_label.setText(f"{inches} page")
         else:
             self._size_label.setText(f"{width:,} x {height:,} pixels, {inches}")
         if too_big:

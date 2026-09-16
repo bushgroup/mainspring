@@ -620,7 +620,11 @@ class MainWindow(QMainWindow):
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        self.settings.export_dpi = dialog.dpi()
+        # Not for a PDF: its dialog has no resolution row, so the number it answers with
+        # is `BASE_DPI` and remembering it would quietly reset the PNG choice the user
+        # made last time (lab record, task 24).
+        if fmt != "pdf":
+            self.settings.export_dpi = dialog.dpi()
         self.statusBar().showMessage(f"Exporting {os.path.basename(path)}...")
         # A re-rasterise at 600 dpi is seconds of a frozen window on a dense frame, and
         # it is not put on the render worker: that thread's mailbox drops whatever it is

@@ -432,11 +432,14 @@ colour settings they are drawn with. The colour bar is left out. The figure take
 background of the mode it was exported in, so tick `Light mode` first for a figure going into
 a paper or onto a white slide.
 
-Both entries ask where to write the file, then at what resolution. The four choices are 96,
-150, 300 and 600 dpi. At 96 dpi the figure is the window's own pixels, one for one, and at 300
-dpi each axis carries 3.125 times as many; the dialog names the pixel size and the size in
-inches before you commit to it. A figure over 50 megapixels is refused, which a maximised
-window on a 4K display reaches at 600 dpi.
+Both entries ask where to write the file. `Export PNG` then asks at what resolution, with four
+choices: 96, 150, 300 and 600 dpi. At 96 dpi the figure is the window's own pixels, one for
+one, and at 300 dpi each axis carries 3.125 times as many; the dialog names the pixel size and
+the size in inches before you commit to it. A figure over 50 megapixels is refused, which a
+maximised window on a 4K display reaches at 600 dpi.
+
+`Export PDF` asks nothing beyond where to write it, and names the page size. A PDF page is
+vector at the figure's own size in inches, so there is no resolution to choose.
 
 The heat map is redrawn for the export rather than scaled up. The image on screen holds about
 one sample per screen pixel, so enlarging it would give a sharp frame around a blurred map.
@@ -451,9 +454,9 @@ limits that suit the screen would leave a 300 dpi figure nearly black. Limits le
 themselves come out scaled to the exported image, and limits pinned with `Keep levels` keep
 the contrast that pinning chose.
 
-A PDF carries the axes, the ticks, the labels and both projections as vector drawings, so
-they stay sharp at any magnification, and it embeds the heat map at the resolution you asked
-for. Its page is the same size in inches whichever resolution that is.
+A PDF carries the axes, the ticks, the labels and both projections as vector drawings, so they
+stay sharp at any magnification, and it embeds the heat map as an image. Its page is the
+figure's own size in inches.
 
 ## What the viewer remembers
 

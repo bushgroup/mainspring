@@ -25,7 +25,7 @@ import pyqtgraph as pg
 import pytest
 from PySide6.QtCore import QRectF
 from PySide6.QtGui import QColor, QImage
-from PySide6.QtWidgets import QDialogButtonBox, QGraphicsTextItem
+from PySide6.QtWidgets import QComboBox, QDialogButtonBox, QGraphicsTextItem
 
 from mainspring.viewer import theme
 from mainspring.viewer.export import (
@@ -314,6 +314,34 @@ def test_the_dialog_offers_the_stored_resolution_and_says_what_it_costs(viewer, 
     assert dialog.dpi() == 150
     width, height = export_pixels(rect, 150)
     assert f"{width:,} x {height:,} pixels" in dialog._size_label.text()
+
+
+def test_the_pdf_dialog_offers_no_resolution_and_names_the_page(viewer, qtbot):
+    """A PDF page is vector at the figure's own size whatever is asked for, so the only
+    thing a resolution could change is nothing."""
+    rect = content_rect(viewer.heatmap, viewer.side_plots)
+    dialog = ExportDialog(viewer, fmt="pdf", dpi=600, rect=rect)
+    qtbot.addWidget(dialog)
+
+    assert dialog._dpi_box is None
+    assert dialog.dpi() == int(BASE_DPI)
+    assert "dpi" not in dialog._size_label.text()
+    assert f"{rect.width() / BASE_DPI:.1f} x" in dialog._size_label.text()
+    assert not dialog.findChildren(QComboBox)
+
+
+def test_a_pdf_export_does_not_move_the_remembered_png_resolution(viewer, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QDialog, QFileDialog
+
+    viewer.settings.export_dpi = 600
+    path = tmp_path / "chosen.pdf"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a, **k: (str(path), ""))
+    monkeypatch.setattr(ExportDialog, "exec", lambda self: QDialog.DialogCode.Accepted)
+
+    viewer._prompt_export("pdf")
+
+    assert path.read_bytes()[:5] == b"%PDF-"
+    assert viewer.settings.export_dpi == 600
 
 
 def test_the_dialog_refuses_a_figure_it_would_not_be_able_to_write(viewer, qtbot, monkeypatch):
