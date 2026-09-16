@@ -469,14 +469,14 @@ def test_a_poll_that_keeps_failing_stops_following_instead_of_repeating(followin
 
 
 def test_following_does_not_reset_a_frame_type_filter_the_user_set(following_window, qtbot):
-    """A rebuilt combo selects its first item, so a poll that repopulated it every time
+    """A rebuilt menu ticks its first entry, so a poll that repopulated it every time
     would put an operator who had filtered to one type back on `All frames`."""
     window, acquisition, _ = following_window
-    window._type_filter.setCurrentText("MS1")
-    assert window._type_filter.currentText() == "MS1"
+    window._type_actions["MS1"].trigger()
+    assert window._type_group.checkedAction().text() == "MS1"
 
     acquisition.frame(method_frame=1, repetition=2, repetitions=3)
     qtbot.waitUntil(lambda: window._frame_spin.maximum() == 2, timeout=5000)
 
-    assert window._type_filter.currentText() == "MS1"
+    assert window._type_group.checkedAction().text() == "MS1"
     assert window._active_frame_numbers == [1, 2]

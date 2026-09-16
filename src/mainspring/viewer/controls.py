@@ -8,9 +8,9 @@ arrives explained too.
 
 Two halves, and the second is the one that matters:
 
-`make_action` and `add_labelled` **require** the sentence -- a control cannot be built
-through them without one, and `tip=None` is a waiver that has to be typed, so it shows
-up in a diff and in review rather than happening by omission.
+`make_action`, `add_labelled` and `add_menu_widget` **require** the sentence -- a control
+cannot be built through them without one, and `tip=None` is a waiver that has to be
+typed, so it shows up in a diff and in review rather than happening by omission.
 
 `unexplained` walks a live window and names what has no tooltip, **by widget type**, so
 a control built inline or by pyqtgraph is caught as surely as one built here. It is the
@@ -44,14 +44,18 @@ from PySide6.QtWidgets import (
     QDialog,
     QDockWidget,
     QGraphicsView,
+    QHBoxLayout,
     QLabel,
+    QMenu,
     QStatusBar,
     QToolBar,
+    QWidget,
     QWidgetAction,
 )
 
 __all__ = [
     "add_labelled",
+    "add_menu_widget",
     "describe",
     "is_waived",
     "make_action",
@@ -79,10 +83,10 @@ _TIPPED_ITEMS = (pg.ImageItem, pg.PlotItem, pg.AxisItem)
 """pyqtgraph items that must explain themselves. `ColorBarItem` is a `PlotItem`, so the
 colour bar is covered without naming it; a hidden axis is skipped by `unexplained`."""
 
-_LABEL_HOSTS = (QToolBar, QDockWidget, QStatusBar)
-"""A `QLabel` counts as a control when it sits in one of these: the toolbar's `Bits:`,
-the info panel's field names and the status bar's readout are all things a user points
-at. A label anywhere else is decoration."""
+_LABEL_HOSTS = (QToolBar, QDockWidget, QStatusBar, QMenu)
+"""A `QLabel` counts as a control when it sits in one of these: `Bits:` in the
+`Data settings` menu, the info panel's field names and the status bar's readouts are all
+things a user points at. A label anywhere else is decoration."""
 
 
 def waive(obj: object) -> None:
@@ -167,6 +171,41 @@ def add_labelled(toolbar: QToolBar, label_text: str, widget: object, *, tip: str
     toolbar.addWidget(label)
     toolbar.addWidget(widget)
     return label
+
+
+_MENU_TEXT_INDENT = 24
+"""Pixels from a menu's left edge to where an entry's text begins, past the column Qt
+reserves for a tick. Not readable from a style at build time without a laid-out menu, so
+it is a number here and the cost of it being a little wrong is a label a few pixels out
+of line."""
+
+
+def add_menu_widget(menu: QMenu, label_text: str, widget: object, *, tip: str) -> QLabel:
+    """`add_labelled` for a menu: `label_text` and `widget` as one entry, one tooltip.
+
+    A menu holds actions, so a control that is not a choice between fixed options -- a
+    spin box over a range -- travels in a `QWidgetAction` whose default widget lays the
+    two out side by side. All three are tipped: `unexplained` unwraps the action to the
+    host, finds the spin box by type wherever it is, and now counts a label in a menu as
+    a control the same way it counts one on the toolbar.
+
+    The left margin is the width of the check column an ordinary entry's tick sits in,
+    so the label starts where the entries above it start rather than against the frame.
+    """
+    label = QLabel(label_text)
+    describe(label, tip)
+    describe(widget, tip)
+    host = QWidget(menu)
+    describe(host, tip)
+    layout = QHBoxLayout(host)
+    layout.setContentsMargins(_MENU_TEXT_INDENT, 2, 8, 2)
+    layout.addWidget(label)
+    layout.addWidget(widget)
+    action = QWidgetAction(menu)
+    action.setDefaultWidget(host)
+    menu.addAction(action)
+    return label
+
 
 
 def _strip_mnemonic(text: str) -> str:

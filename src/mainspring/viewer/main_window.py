@@ -83,9 +83,8 @@ from ..uimf import (
     SparseFrame,
     is_local_path,
 )
-from ..uimf.raster import AGGREGATES
 from . import theme
-from .controls import add_labelled, describe, make_action
+from .controls import add_labelled, add_menu_widget, describe, make_action
 from .export import ExportDialog, content_rect, export_display
 from .heatmap import HeatmapView, pixel_of
 from .info_panel import InfoPanel
@@ -293,6 +292,7 @@ class MainWindow(QMainWindow):
         view_menu.addAction(self._light_action)
         self._build_colour_map_menu(view_menu)
         self._build_colour_scale_menu(view_menu)
+        self._build_data_menu()
 
     def _build_colour_map_menu(self, view_menu: "object") -> None:
         """A curated four-map choice, radio-style, in its own `View` submenu.
@@ -344,8 +344,70 @@ class MainWindow(QMainWindow):
             group.addAction(action)
             colour_scale_menu.addAction(action)
 
+    def _build_data_menu(self) -> None:
+        """`Data settings`: what the numbers on screen are, rather than how they look.
+
+        Three controls that were toolbar widgets until a user reading isotopically
+        resolved spectra asked what `Bits` was (lab record, task 24). None of the three
+        is touched in the ordinary course of looking at a frame -- the aggregate and the
+        bit depth are set once for a session, and the type filter once for a file -- so
+        each one was costing toolbar width that the frame navigation beside it earns
+        every minute. The mnemonic is `D`, which neither `&File` nor `&View` has taken.
+
+        `Aggregate` and `Type` are radio submenus and `Bits` is the same 1-32 spin box
+        it always was, hosted in a `QWidgetAction`: a range is not a choice between
+        fixed options, and a menu of thirty-two numbers would be a worse control than
+        the box.
+        """
+        menu = self.menuBar().addMenu("&Data settings")
+
+        aggregate_menu = menu.addMenu("Aggregate")
+        aggregate_group = QActionGroup(self)
+        aggregate_group.setExclusive(True)
+        self._aggregate_actions: "dict[str, object]" = {}
+        for name, what in (
+            ("sum", "add the intensities inside one screen pixel, which conserves the"
+                    " total"),
+            ("max", "take the largest intensity inside one screen pixel, which keeps a"
+                    " single-bin spike visible"),
+        ):
+            action = make_action(
+                self,
+                name.capitalize(),
+                tip=f"Combine by {name}: {what}.",
+                checkable=True,
+                checked=(name == self.settings.aggregate),
+                toggled=lambda checked, n=name: self._on_aggregate_changed(n, checked),
+            )
+            aggregate_group.addAction(action)
+            aggregate_menu.addAction(action)
+            self._aggregate_actions[name] = action
+
+        # Rebuilt from the file's own frame types on every open and on every follow poll
+        # (`_populate_type_filter`), so it is built empty here and filled there.
+        self._type_menu = menu.addMenu("Type")
+        self._type_group = QActionGroup(self)
+        self._type_group.setExclusive(True)
+        self._type_actions: "dict[str, object]" = {}
+        self._populate_type_filter()
+
+        self._bits_box = QSpinBox()
+        self._bits_box.setRange(1, 32)
+        self._bits_box.setValue(self.settings.detector_bits)
+        self._bits_box.valueChanged.connect(self._on_detector_bits_changed)
+        self._bits_label = add_menu_widget(
+            menu,
+            "Bits: ",
+            self._bits_box,
+            tip="Detector bit depth, 1 to 32, that the per-push readout assumes.",
+        )
+
     def _build_toolbar(self) -> None:
-        """Every toggle `ViewerSettings` carries, plus frame navigation and sum-all.
+        """The axis toggles, frame navigation, the sums and follow.
+
+        What is left after task 24 moved everything describing the *data* into
+        `Data settings` and everything describing how it is *coloured* into `View`: the
+        toolbar is now the controls a user touches while looking at a frame.
 
         Each control is fully configured -- range, items, initial value from the
         restored settings -- **before** its signal is connected, so that restoring a
@@ -360,17 +422,6 @@ class MainWindow(QMainWindow):
         # Qt makes this one itself and offers it in the window's right-click menu, which
         # is the only place it appears -- so it is the control most easily left mute.
         describe(toolbar.toggleViewAction(), "Show the toolbar.")
-
-        self._aggregate_box = QComboBox()
-        self._aggregate_box.addItems([a.capitalize() for a in AGGREGATES])
-        self._aggregate_box.setCurrentText(self.settings.aggregate.capitalize())
-        self._aggregate_box.currentTextChanged.connect(self._on_aggregate_changed)
-        self._aggregate_label = add_labelled(
-            toolbar,
-            " Aggregate: ",
-            self._aggregate_box,
-            tip="Choose how the intensities inside one screen pixel are combined.",
-        )
 
         self._swap_action = make_action(
             self,
@@ -426,27 +477,6 @@ class MainWindow(QMainWindow):
         toolbar.addAction(self._keep_levels_action)
 
         toolbar.addAction(self._info_action)  # built with the dock, above
-
-        self._bits_box = QSpinBox()
-        self._bits_box.setRange(1, 32)
-        self._bits_box.setValue(self.settings.detector_bits)
-        self._bits_box.valueChanged.connect(self._on_detector_bits_changed)
-        self._bits_label = add_labelled(
-            toolbar,
-            " Bits: ",
-            self._bits_box,
-            tip="Detector bit depth, 1 to 32, that the per-push readout assumes.",
-        )
-
-        self._type_filter = QComboBox()
-        self._type_filter.addItem("All frames")
-        self._type_filter.currentTextChanged.connect(self._on_type_filter_changed)
-        self._type_label = add_labelled(
-            toolbar,
-            " Type: ",
-            self._type_filter,
-            tip="Show only frames of one type, or all of them.",
-        )
 
         self._frame_spin = QSpinBox()
         self._frame_spin.setRange(0, 0)
@@ -975,21 +1005,42 @@ class MainWindow(QMainWindow):
         self._worker.request_frame(frame_numbers[0])
 
     def _populate_type_filter(self) -> None:
-        """Rebuild the type filter's items, and leave it alone when they are the same.
+        """Rebuild `Data settings > Type`, and leave it alone when the types are the same.
 
         The early return is what makes this safe to call from the follow poll: a
-        rebuilt combo selects its first item, so an operator who had filtered to one
-        frame type would silently be back on `All frames` the next time a frame
-        arrived. A file whose frame types genuinely change under us does reset the
-        filter, which is the honest answer to the set it was filtering having moved.
+        rebuilt menu ticks `All frames`, so an operator who had filtered to one frame
+        type would silently be back on all of them the next time a frame arrived. A file
+        whose frame types genuinely change under us does reset the filter, which is the
+        honest answer to the set it was filtering having moved.
+
+        The actions are parented to the submenu rather than to the window, so that
+        removing one and deleting it is the end of it: an action parented to the window
+        would outlive the rebuild and still answer `findChildren`, which is what
+        `controls.unexplained` walks.
         """
         wanted = ["All frames"] + sorted({_frame_type_name(t) for t in self._frame_types.values()})
-        if [self._type_filter.itemText(i) for i in range(self._type_filter.count())] == wanted:
+        if list(self._type_actions) == wanted:
             return
-        self._type_filter.blockSignals(True)
-        self._type_filter.clear()
-        self._type_filter.addItems(wanted)
-        self._type_filter.blockSignals(False)
+        for action in self._type_actions.values():
+            self._type_group.removeAction(action)
+            self._type_menu.removeAction(action)
+            action.setParent(None)
+        self._type_actions = {}
+        for text in wanted:
+            action = make_action(
+                self._type_menu,
+                text,
+                tip="Show every frame in the file, whatever its type."
+                    if text == "All frames"
+                    else f"Show only the file's {text} frames, in the frame spinner and"
+                         " in Sum all.",
+                checkable=True,
+                checked=(text == "All frames"),
+                toggled=lambda checked, t=text: self._on_type_filter_changed(t, checked),
+            )
+            self._type_group.addAction(action)
+            self._type_menu.addAction(action)
+            self._type_actions[text] = action
 
     def _on_frame_loaded(
         self, frame_number: int, sparse_frame: SparseFrame, frame_params: FrameParams
@@ -1162,10 +1213,12 @@ class MainWindow(QMainWindow):
                        f" {len(sparse_frame):,} points")
         self._show_frame(0, sparse_frame, frame_params, reset=False, message=message)
 
-    # --- toolbar callbacks --------------------------------------------------------------
+    # --- control callbacks --------------------------------------------------------------
 
-    def _on_aggregate_changed(self, text: str) -> None:
-        self.settings.aggregate = text.lower()
+    def _on_aggregate_changed(self, name: str, checked: bool) -> None:
+        if not checked:
+            return  # the exclusive group also reports the entry it is unticking
+        self.settings.aggregate = name
         self._request_render(*self.heatmap.view_range())
 
     def _on_colour_scale_changed(self, name: str, checked: bool) -> None:
@@ -1244,7 +1297,7 @@ class MainWindow(QMainWindow):
         return bool(self._global is not None and self._global.detector_bits)
 
     def _apply_detector_bits(self) -> None:
-        """Put the open file's stored bit depth in the toolbar box, and lock it there.
+        """Put the open file's stored bit depth in the menu's spin box, and lock it there.
 
         A spin box the user can turn while the number in use comes from somewhere else
         would be a control that lies. So on a file that stores a depth the box shows it
@@ -1284,7 +1337,9 @@ class MainWindow(QMainWindow):
                 from_file=self.detector_bits_from_file,
             )
 
-    def _on_type_filter_changed(self, text: str) -> None:
+    def _on_type_filter_changed(self, text: str, checked: bool) -> None:
+        if not checked:
+            return  # the exclusive group also reports the entry it is unticking
         moved = self._apply_type_filter()
         if moved is not None:
             self.show_frame(moved)
@@ -1298,7 +1353,8 @@ class MainWindow(QMainWindow):
         None to stay put, rather than moving itself -- so the follow poll can decide for
         itself whether a filter change is a reason to leave the frame on screen.
         """
-        text = self._type_filter.currentText()
+        checked = self._type_group.checkedAction()
+        text = checked.text() if checked is not None else ""
         if not text or text == "All frames":
             self._active_frame_numbers = list(self._frame_numbers)
         else:

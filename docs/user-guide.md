@@ -120,8 +120,9 @@ because a wrong zoom costs one keystroke to undo.
 | `Ctrl+I` | Show or hide the info panel |
 
 All three are on the menu bar as well: `Open` under `File`, and `Reset view`, `Info`,
-`Light mode`, `Colour map` and `Colour scale` under `View`. There is no context menu on the heat
-map, because the right button is a zoom gesture.
+`Light mode`, `Colour map` and `Colour scale` under `View`. `Aggregate`, `Type` and `Bits` are
+under `Data settings`. There is no context menu on the heat map, because the right button is a
+zoom gesture.
 
 Zooming and panning are both clamped to the frame, so a gesture cannot leave it, and zooming in
 stops when the visible range is two source elements across. On a SLIMPHONY frame that floor is
@@ -156,7 +157,11 @@ the frame flat. All three are display transforms only. The cursor readout and th
 always quote the untransformed intensity, so switching the colour scale changes the picture and
 no number.
 
-## The toolbar
+## The Data settings menu
+
+Three controls that say what the numbers on screen are, rather than how they are drawn.
+None of them is touched in the ordinary course of looking at a frame: the aggregate and the
+bit depth are set once for a session and the type filter once for a file.
 
 ### Aggregate
 
@@ -169,6 +174,26 @@ broad neighbour.
 The cursor readout in the status bar names the aggregate beside every intensity it quotes, for
 the same reason: a summed pixel is a total over however many bins and scans it covers, and it
 is not a stored intensity.
+
+### Bits
+
+The digitizer's bit depth, from 1 to 32, which the per-push readout uses to work out what
+fraction of full scale a count is. PNNL's parameter set has no name for bit depth, so on a file
+their acquisition software wrote this is a setting rather than something the viewer can read.
+SLIMPHONY's current digitizer is 8-bit and clockwork will use 14-bit. Set it before you read
+anything off the per-push line.
+
+A file clockwork wrote stores the bit depth of the digitizer that produced it. On such a file
+the control shows the stored value and cannot be changed, because the number in use is the
+file's. The per-push readout says which of the two it is using.
+
+### Type
+
+Restricts the frame spinner and `Sum all` to frames of one type: `MS1`, `MS2`, `Calibration`,
+`Prescan`, or `All frames`. A file whose writer used a code this list has no name for shows it
+as `Type N` rather than hiding those frames.
+
+## The toolbar
 
 ### Swap X/Y
 
@@ -209,24 +234,6 @@ scaled to its own maximum cannot.
 ### Info
 
 Shows and hides the info panel, on `Ctrl+I`. The panel's own close button is the same switch.
-
-### Bits
-
-The digitizer's bit depth, from 1 to 32, which the per-push readout uses to work out what
-fraction of full scale a count is. PNNL's parameter set has no name for bit depth, so on a file
-their acquisition software wrote this is a setting rather than something the viewer can read.
-SLIMPHONY's current digitizer is 8-bit and clockwork will use 14-bit. Set it before you read
-anything off the per-push line.
-
-A file clockwork wrote stores the bit depth of the digitizer that produced it. On such a file
-the control shows the stored value and cannot be changed, because the number in use is the
-file's. The per-push readout says which of the two it is using.
-
-### Type
-
-Restricts the frame spinner and `Sum all` to frames of one type: `MS1`, `MS2`, `Calibration`,
-`Prescan`, or `All frames`. A file whose writer used a code this list has no name for shows it
-as `Type N` rather than hiding those frames.
 
 ### Frame
 
@@ -430,10 +437,10 @@ for. Its page is the same size in inches whichever resolution that is.
 
 ## What the viewer remembers
 
-Every toolbar toggle, the aggregate and colour choices, light mode, the detector bit depth,
-whether the info panel is showing, the export resolution, the window's size and position, and
-the directory you last opened from are all saved when the viewer closes and restored when it
-starts. On Windows they live under
+Every toolbar toggle, the colour map and the colour scale, light mode, the aggregate, the
+detector bit depth, whether the info panel is showing, the export resolution, the window's size
+and position, and the directory you last opened from are all saved when the viewer closes and
+restored when it starts. On Windows they live under
 `HKEY_CURRENT_USER\Software\University of Washington\mainspring`. Deleting that key returns
 every setting to its default.
 

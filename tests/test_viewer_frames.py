@@ -301,7 +301,7 @@ def test_aggregate_toggle_rerenders_with_the_new_aggregate(opened_window, qtbot)
     assert window.last_render.result.aggregate == "sum"
 
     with qtbot.waitSignal(window.frame_shown, timeout=5000):
-        window._aggregate_box.setCurrentText("Max")
+        window._aggregate_actions["max"].trigger()
 
     assert window.settings.aggregate == "max"
     assert window.last_render.result.aggregate == "max"
@@ -361,15 +361,14 @@ def test_frame_type_filter_narrows_the_active_frames(qtbot):
     qtbot.addWidget(window)
     window._on_opened(GlobalParams(), [1, 2, 3], {1: 0, 2: 1, 3: 2}, FrameGrouping())
 
-    items = [window._type_filter.itemText(i) for i in range(window._type_filter.count())]
-    assert items == ["All frames", "MS1", "MS2"]
+    assert list(window._type_actions) == ["All frames", "MS1", "MS2"]
     assert window._active_frame_numbers == [1, 2, 3]
 
-    window._type_filter.setCurrentText("MS2")
+    window._type_actions["MS2"].trigger()
     assert window._active_frame_numbers == [3]
     assert (window._frame_spin.minimum(), window._frame_spin.maximum()) == (3, 3)
 
-    window._type_filter.setCurrentText("All frames")
+    window._type_actions["All frames"].trigger()
     assert window._active_frame_numbers == [1, 2, 3]
 
 
@@ -526,6 +525,48 @@ def test_the_colour_scale_is_no_longer_on_the_toolbar(qtbot):
     toolbar = window.findChild(QToolBar, "view_toolbar")
     labels = [w.text() for w in toolbar.findChildren(QLabel)]
     assert not any("Colour" in text for text in labels)
+
+
+# --- the Data settings menu -----------------------------------------------------------
+
+def _data_menu(window):
+    return next(a.menu() for a in window.menuBar().actions() if a.text() == "&Data settings")
+
+
+def test_the_menu_bar_carries_file_view_and_data_settings(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    texts = [a.text() for a in window.menuBar().actions()]
+    assert texts == ["&File", "&View", "&Data settings"]
+    # Three menus, three different mnemonics.
+    assert len({t[t.index("&") + 1].lower() for t in texts}) == 3
+
+
+def test_aggregate_and_bits_are_in_the_data_menu_and_not_on_the_toolbar(qtbot):
+    from PySide6.QtWidgets import QLabel, QSpinBox, QToolBar
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    menu = _data_menu(window)
+    assert [a.text() for a in menu.actions()][:2] == ["Aggregate", "Type"]
+    # The spin box travels in the menu's QWidgetAction, laid out beside its label.
+    assert window._bits_box in menu.findChildren(QSpinBox)
+    assert window._bits_label.text().strip() == "Bits:"
+
+    toolbar = window.findChild(QToolBar, "view_toolbar")
+    labels = [w.text() for w in toolbar.findChildren(QLabel)]
+    assert not any(word in text for text in labels for word in ("Aggregate", "Bits", "Type"))
+    assert window._bits_box not in toolbar.findChildren(QSpinBox)
+
+
+def test_the_aggregate_menu_ticks_the_stored_choice(qtbot):
+    from mainspring.viewer.settings import ViewerSettings
+
+    window = MainWindow(ViewerSettings(aggregate="max"))
+    qtbot.addWidget(window)
+    assert window._aggregate_actions["max"].isChecked()
+    assert not window._aggregate_actions["sum"].isChecked()
 
 
 # --- navigation by method frame and repetition (task 17) ------------------------------

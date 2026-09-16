@@ -126,7 +126,7 @@ class InfoPanel(QDockWidget):
                 self._per_push_label,
                 "The largest stored intensity divided by Accumulations, as a fraction of"
                 " full scale at the detector bit depth, which is either stored in the"
-                " file or set on the toolbar.",
+                " file or set in the Data settings menu.",
             ),
             (self._tic_label, "The total stored intensity inside the view."),
             (self._points_label, "How many stored, non-zero points are inside the view."),
