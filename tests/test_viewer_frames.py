@@ -472,6 +472,62 @@ def test_picking_a_colour_map_ticks_it_alone_and_is_remembered(qtbot):
     assert window.heatmap._colour_bar.colorMap().name == "plasma"
 
 
+# --- the View > Colour scale menu -----------------------------------------------------
+
+def _colour_scale_menu(window):
+    view_menu = next(a.menu() for a in window.menuBar().actions() if a.text() == "&View")
+    return next(a.menu() for a in view_menu.actions() if a.text() == "Colour scale")
+
+
+def test_every_colour_scale_has_a_display_name():
+    """The menu is built by looking each code word up, so a scale added to
+    `COLOUR_SCALES` without a name here would raise rather than go unlabelled."""
+    from mainspring.viewer.main_window import COLOUR_SCALE_NAMES
+    from mainspring.viewer.settings import COLOUR_SCALES
+
+    assert set(COLOUR_SCALE_NAMES) == set(COLOUR_SCALES)
+
+
+def test_colour_scale_menu_offers_the_three_scales_with_the_stored_one_ticked(qtbot):
+    from mainspring.viewer.main_window import COLOUR_SCALE_NAMES
+    from mainspring.viewer.settings import COLOUR_SCALES, ViewerSettings
+
+    window = MainWindow(ViewerSettings(colour_scale="sqrt"))
+    qtbot.addWidget(window)
+    window.show()
+
+    actions = _colour_scale_menu(window).actions()
+    assert [a.text() for a in actions] == [COLOUR_SCALE_NAMES[n] for n in COLOUR_SCALES]
+    assert [a.text() for a in actions if a.isChecked()] == ["Square root"]
+
+
+def test_picking_a_colour_scale_ticks_it_alone_and_redraws_the_image(opened_window, qtbot):
+    window = opened_window
+    high = window.heatmap.levels()[1]
+
+    log = next(a for a in _colour_scale_menu(window).actions() if a.text() == "Log")
+    log.trigger()
+
+    assert log.isChecked()
+    assert [a.isChecked() for a in _colour_scale_menu(window).actions()].count(True) == 1
+    assert window.settings.colour_scale == "log"
+    # The levels are in display space, so a log scale compresses them without the
+    # render worker being asked for anything.
+    assert window.heatmap.levels()[1] == pytest.approx(np.log1p(high))
+
+
+def test_the_colour_scale_is_no_longer_on_the_toolbar(qtbot):
+    """Items 1 and 2 of task 24: everything describing how the data are drawn is in a
+    menu, and the toolbar is what a user touches every minute."""
+    from PySide6.QtWidgets import QLabel, QToolBar
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    toolbar = window.findChild(QToolBar, "view_toolbar")
+    labels = [w.text() for w in toolbar.findChildren(QLabel)]
+    assert not any("Colour" in text for text in labels)
+
+
 # --- navigation by method frame and repetition (task 17) ------------------------------
 
 @pytest.fixture

@@ -69,8 +69,8 @@ axis of its own, because the heat map's axes already read for the axis they shar
 intensity axis rescales with every gesture.
 
 **The colour bar** is the strip in the far right column of the plot area. It reads in the units
-the `Colour` control selects, so on the `Linear` setting its numbers are stored intensities and
-on `Log` or `Sqrt` they are the transformed values. Drag either handle to set the limits by
+`View > Colour scale` selects, so on the `Linear` setting its numbers are stored intensities and
+on `Log` or `Square root` they are the transformed values. Drag either handle to set the limits by
 hand. Its gradient is one of four perceptually uniform colour maps (`Viridis`, `Plasma`,
 `Inferno`, `Magma`), chosen from `View > Colour map`.
 
@@ -119,9 +119,9 @@ because a wrong zoom costs one keystroke to undo.
 | `Home` | Reset the view to the frame's full range |
 | `Ctrl+I` | Show or hide the info panel |
 
-All three are on the menu bar as well: `Open` under `File`, `Reset view`, `Info`,
-`Light mode` and `Colour map` under `View`. There is no context menu on the heat map, because the right button
-is a zoom gesture.
+All three are on the menu bar as well: `Open` under `File`, and `Reset view`, `Info`,
+`Light mode`, `Colour map` and `Colour scale` under `View`. There is no context menu on the heat
+map, because the right button is a zoom gesture.
 
 Zooming and panning are both clamped to the frame, so a gesture cannot leave it, and zooming in
 stops when the visible range is two source elements across. On a SLIMPHONY frame that floor is
@@ -140,6 +140,22 @@ view` has fallen from 126,118,062 to 51,225,603.
 
 ![The same window zoomed to a narrow m/z and arrival-time range](images/window-zoomed.png)
 
+## The View menu
+
+### Colour map
+
+The gradient the heat map and the colour bar are drawn with, one of `Viridis`, `Plasma`,
+`Inferno` and `Magma`. All four are perceptually uniform, so a step in colour is a step in
+intensity and never an artefact of the map. The viewer offers no rainbow map for that reason.
+
+### Colour scale
+
+How intensity maps onto colour. `Linear` is proportional. `Log` and `Square root` compress the
+dynamic range, which is what to reach for when one peak is bright enough to leave the rest of
+the frame flat. All three are display transforms only. The cursor readout and the info panel
+always quote the untransformed intensity, so switching the colour scale changes the picture and
+no number.
+
 ## The toolbar
 
 ### Aggregate
@@ -153,13 +169,6 @@ broad neighbour.
 The cursor readout in the status bar names the aggregate beside every intensity it quotes, for
 the same reason: a summed pixel is a total over however many bins and scans it covers, and it
 is not a stored intensity.
-
-### Colour
-
-`Linear` maps intensity onto colour proportionally. `Log` and `Sqrt` compress the dynamic
-range, which is what to reach for when one peak is bright enough to leave the rest of the frame
-flat. Both are display transforms only. The cursor readout and the info panel always quote the
-untransformed intensity, so switching the colour scale changes the picture and no number.
 
 ### Swap X/Y
 

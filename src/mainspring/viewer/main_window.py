@@ -107,6 +107,12 @@ can be told apart by what they show rather than by what they are."""
 # choice worth filtering on, whether or not this table has a name for it yet.
 _FRAME_TYPE_NAMES = {0: "MS1", 1: "MS1", 2: "MS2", 3: "Calibration", 4: "Prescan"}
 
+COLOUR_SCALE_NAMES = {"linear": "Linear", "log": "Log", "sqrt": "Square root"}
+"""What each of `settings.COLOUR_SCALES` is called in `View > Colour scale`. Here and not
+there because these are display strings and `settings.py` is the module that must not
+know about the menu; `"sqrt"` is the one that needs it, since the capitalised code word
+is not what a reader of a menu is looking for."""
+
 FOLLOW_FIXED = "Fixed frame"
 FOLLOW_NEWEST = "Newest frame"
 FOLLOW_METHOD_SUM = "Method frame sum"
@@ -286,6 +292,7 @@ class MainWindow(QMainWindow):
         view_menu.addAction(self._info_action)
         view_menu.addAction(self._light_action)
         self._build_colour_map_menu(view_menu)
+        self._build_colour_scale_menu(view_menu)
 
     def _build_colour_map_menu(self, view_menu: "object") -> None:
         """A curated four-map choice, radio-style, in its own `View` submenu.
@@ -309,6 +316,33 @@ class MainWindow(QMainWindow):
             )
             group.addAction(action)
             colour_map_menu.addAction(action)
+
+    def _build_colour_scale_menu(self, view_menu: "object") -> None:
+        """How intensity maps onto colour, radio-style, beside the colour map.
+
+        Built exactly like `_build_colour_map_menu` and placed next to it because the
+        two are one question asked twice -- which colours, and how the numbers are
+        spread across them. It was a toolbar combo until a user reading isotopically
+        resolved spectra pointed out that everything describing how the *data* are drawn
+        should be in a menu and the toolbar should be the things touched every minute
+        (lab record, task 24).
+        """
+        colour_scale_menu = view_menu.addMenu("Colour scale")
+        group = QActionGroup(self)
+        group.setExclusive(True)
+        for name in COLOUR_SCALES:
+            label = COLOUR_SCALE_NAMES[name]
+            action = make_action(
+                self,
+                label,
+                tip=f"Map intensity onto colour on a {label.lower()} scale."
+                    " The readouts still quote the untransformed intensity.",
+                checkable=True,
+                checked=(name == self.settings.colour_scale),
+                toggled=lambda checked, n=name: self._on_colour_scale_changed(n, checked),
+            )
+            group.addAction(action)
+            colour_scale_menu.addAction(action)
 
     def _build_toolbar(self) -> None:
         """Every toggle `ViewerSettings` carries, plus frame navigation and sum-all.
@@ -336,17 +370,6 @@ class MainWindow(QMainWindow):
             " Aggregate: ",
             self._aggregate_box,
             tip="Choose how the intensities inside one screen pixel are combined.",
-        )
-
-        self._colour_box = QComboBox()
-        self._colour_box.addItems([c.capitalize() for c in COLOUR_SCALES])
-        self._colour_box.setCurrentText(self.settings.colour_scale.capitalize())
-        self._colour_box.currentTextChanged.connect(self._on_colour_scale_changed)
-        self._colour_label = add_labelled(
-            toolbar,
-            " Colour: ",
-            self._colour_box,
-            tip="Choose how intensity maps onto colour: linear, log or square root.",
         )
 
         self._swap_action = make_action(
@@ -1145,8 +1168,12 @@ class MainWindow(QMainWindow):
         self.settings.aggregate = text.lower()
         self._request_render(*self.heatmap.view_range())
 
-    def _on_colour_scale_changed(self, text: str) -> None:
-        self.settings.colour_scale = text.lower()
+    def _on_colour_scale_changed(self, name: str, checked: bool) -> None:
+        # Same as `_on_colour_map_changed`: the exclusive group also fires this for the
+        # entry it is unchecking, and only the newly-checked one is the change.
+        if not checked:
+            return
+        self.settings.colour_scale = name
         if self._last_render is not None:
             self.heatmap.set_image(self._last_render.result, colour_scale=self.settings.colour_scale)
 
