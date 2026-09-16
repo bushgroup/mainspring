@@ -23,6 +23,14 @@ def test_validate_clamps_an_unrecognised_aggregate_or_colour_scale():
     assert fixed.colour_scale == "linear"
 
 
+def test_validate_keeps_the_info_panel_at_least_its_minimum_width():
+    """A hand-edited width of nothing would hide the panel behind its own splitter."""
+    from mainspring.viewer.settings import INFO_PANEL_WIDTH
+
+    assert ViewerSettings(info_panel_width=0).validate().info_panel_width == INFO_PANEL_WIDTH
+    assert ViewerSettings(info_panel_width=900).validate().info_panel_width == 900
+
+
 def test_validate_clamps_an_unrecognised_colour_map():
     assert ViewerSettings(colour_map="bogus").validate().colour_map == "viridis"
     assert ViewerSettings(colour_map="plasma").validate().colour_map == "plasma"
@@ -68,6 +76,7 @@ def test_settings_round_trip_through_qsettings():
         keep_ranges=True,
         keep_levels=True,
         show_info_panel=False,
+        info_panel_width=480,
         detector_bits=14,
         colour_map="plasma",
         export_dpi=600,

@@ -188,6 +188,13 @@ class MainWindow(QMainWindow):
 
         self.info_panel = InfoPanel(self)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.info_panel)
+        # After `addDockWidget` and not before: `resizeDocks` acts on the dock's position
+        # in the main window's layout, which it does not have until it has been added.
+        # The panel is no longer a fixed width (`info_panel.py`), so the width a user
+        # drags it to is theirs to keep.
+        self.resizeDocks(
+            [self.info_panel], [self.settings.info_panel_width], Qt.Orientation.Horizontal
+        )
         self.info_panel.setVisible(self.settings.show_info_panel)
         # The dock's own action rather than a hand-rolled one: Qt keeps it in step with
         # the dock's visibility in both directions, so the X button on the dock, the
@@ -1473,6 +1480,11 @@ class MainWindow(QMainWindow):
         # Read off the dock itself, in case a visibility change reached it by a route
         # the action's `toggled` did not report.
         self.settings.show_info_panel = not self.info_panel.isHidden()
+        # Likewise the width: a dock is resized by dragging its edge, which emits
+        # nothing worth connecting to, so it is read once here. A hidden dock's width is
+        # whatever it was when it was hidden, so this is right either way.
+        if self.info_panel.width() > 0:
+            self.settings.info_panel_width = int(self.info_panel.width())
         save_settings(self.settings)
         self._mailbox.close()
         self._render_worker.wait(2000)

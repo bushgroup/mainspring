@@ -375,10 +375,12 @@ def test_frame_type_filter_narrows_the_active_frames(qtbot):
 # --- the info panel's size, and its toggle --------------------------------------------
 
 def test_the_info_panel_keeps_its_width_whatever_it_is_told(qtbot):
-    """A live readout must never resize the dock: the width is fixed, and the one long
-    line wraps inside it. (The cursor readout, which changed on every mouse move, is
-    the status bar's alone for the same reason.)"""
-    from mainspring.viewer.info_panel import INFO_PANEL_WIDTH
+    """A live readout must never resize the dock. Since task 24 the width is a floor
+    rather than a fixed size, so what holds the invariant is the readout labels'
+    horizontal `Ignored` size policy: their text has no say in how wide anything is.
+    (The cursor readout, which changed on every mouse move, is the status bar's alone
+    for the same reason.)"""
+    from mainspring.viewer.settings import INFO_PANEL_WIDTH
 
     panel = InfoPanel()
     qtbot.addWidget(panel)
@@ -393,6 +395,55 @@ def test_the_info_panel_keeps_its_width_whatever_it_is_told(qtbot):
     assert panel.widget().width() == before
     assert panel.widget().minimumSizeHint().width() <= INFO_PANEL_WIDTH
     assert not hasattr(panel, "set_cursor")
+
+
+def test_the_info_panel_can_be_made_wider_than_its_minimum(qtbot):
+    from mainspring.viewer.settings import INFO_PANEL_WIDTH
+
+    panel = InfoPanel()
+    qtbot.addWidget(panel)
+    panel.show()
+
+    panel.widget().resize(INFO_PANEL_WIDTH + 200, panel.widget().height())
+
+    assert panel.widget().width() == INFO_PANEL_WIDTH + 200
+    assert panel.widget().minimumWidth() == INFO_PANEL_WIDTH
+
+
+def test_a_stored_info_panel_width_is_restored_and_saved(qtbot, tmp_path):
+    from mainspring.viewer.settings import ViewerSettings, load_settings
+
+    window = MainWindow(ViewerSettings(info_panel_width=520))
+    qtbot.addWidget(window)
+    window.resize(1400, 800)
+    window.show()
+    qtbot.waitExposed(window)
+    qtbot.waitUntil(lambda: window.info_panel.width() > 0, timeout=2000)
+    restored = window.info_panel.width()
+    # Qt honours a `resizeDocks` width approximately, against the central widget's own
+    # minimum; what matters is that it is the stored width and not the default.
+    assert restored == pytest.approx(520, abs=40)
+
+    window.close()
+
+    assert load_settings().info_panel_width == restored
+
+
+def test_every_parameter_row_carries_its_whole_value_as_a_tooltip(qtbot):
+    """The value column elides at whatever width the panel is, and a calibration
+    coefficient read to fourteen characters and an ellipsis is worse than not shown."""
+    from mainspring.uimf import FrameParams
+
+    panel = InfoPanel()
+    qtbot.addWidget(panel)
+    panel.set_file(
+        GlobalParams(extra={"CalibrationSlope": "0.73812345678901234567890"}),
+        FrameParams(extra={"FrameType": "0"}),
+    )
+
+    item = panel._global_root.child(0)
+    assert item.toolTip(1) == "0.73812345678901234567890"
+    assert item.toolTip(0).startswith("CalibrationSlope: ")
 
 
 def test_the_info_toggle_hides_the_dock_and_is_remembered(opened_window):

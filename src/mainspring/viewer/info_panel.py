@@ -30,24 +30,37 @@ the status bar's -- because a label whose text changes on every mouse move was w
 the dock, and the heatmap beside it, change width under the pointer (lab record, task
 11).
 
-**The panel has a fixed width.** A dock's width follows its content's minimum size hint,
-and a `QLabel`'s follows its text, so any live readout could otherwise resize the whole
-window. The one long readout, per push, wraps inside that width instead.
+**The panel has a floor, not a fixed width.** A dock's width follows its content's
+minimum size hint and a `QLabel`'s follows its text, so a live readout that grew by a
+digit could otherwise resize the whole window -- which is the bug task 11 fixed by
+fixing the width outright. What holds that invariant now is narrower and lets the panel
+be dragged wider: every readout label is `QSizePolicy.Policy.Ignored` horizontally and
+wraps, so its text has no say in how wide anything is, and `INFO_PANEL_WIDTH` is a
+minimum rather than a fixed size. The width the user drags to is a persisted setting
+(`ViewerSettings.info_panel_width`), because the file whose parameters do not fit in 320
+pixels is every file, and re-widening the panel on every launch is exactly the kind of
+thing this viewer exists not to make people do (lab record, task 24).
 """
 
 from __future__ import annotations
 
 from typing import Mapping
 
-from PySide6.QtWidgets import QDockWidget, QFormLayout, QLabel, QTreeWidget, QTreeWidgetItem, QWidget
+from PySide6.QtWidgets import (
+    QDockWidget,
+    QFormLayout,
+    QHeaderView,
+    QLabel,
+    QSizePolicy,
+    QTreeWidget,
+    QTreeWidgetItem,
+    QWidget,
+)
 
 from .controls import describe
+from .settings import INFO_PANEL_WIDTH
 
-__all__ = ["INFO_PANEL_WIDTH", "InfoPanel", "per_push"]
-
-INFO_PANEL_WIDTH = 320
-"""Pixels across the dock's content, docked or floating. Wide enough for the parameter
-tree's two columns and the per-push line on two rows."""
+__all__ = ["InfoPanel", "per_push"]
 
 
 def per_push(max_intensity: float, accumulations: int, detector_bits: int) -> tuple[float, float]:
@@ -62,6 +75,14 @@ def per_push(max_intensity: float, accumulations: int, detector_bits: int) -> tu
     full_scale = float(2 ** max(1, int(detector_bits)) - 1)
     percent = 100.0 * counts_per_push / full_scale
     return counts_per_push, percent
+
+
+def _tree_row(parent: QTreeWidgetItem, name: str, value: str) -> QTreeWidgetItem:
+    """One parameter row, with its name and its full value on both columns' tooltips."""
+    item = QTreeWidgetItem(parent, [name, value])
+    item.setToolTip(0, f"{name}: {value}")
+    item.setToolTip(1, value)
+    return item
 
 
 def _rows(params: object) -> list[tuple[str, str]]:
@@ -84,11 +105,16 @@ class InfoPanel(QDockWidget):
         super().__init__("Info", parent)
         self.setObjectName("info_panel")
 
-        container = QWidget(self)
-        container.setFixedWidth(INFO_PANEL_WIDTH)
+        self._container = QWidget(self)
+        container = self._container
+        container.setMinimumWidth(INFO_PANEL_WIDTH)
         self._tree = QTreeWidget(container)
         self._tree.setColumnCount(2)
         self._tree.setHeaderLabels(["Parameter", "Value"])
+        # The value column takes whatever width the panel is dragged to, so widening the
+        # dock is what shows a long parameter value rather than a wider panel with the
+        # same elided text in it. `set_file` still sizes the name column to its contents.
+        self._tree.header().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         describe(
             self._tree,
             "The file's global parameters and the open frame's, as the file stores them.",
@@ -99,12 +125,25 @@ class InfoPanel(QDockWidget):
         self._state_label = QLabel("-", container)
         self._max_label = QLabel("-", container)
         self._per_push_label = QLabel("-", container)
-        self._per_push_label.setWordWrap(True)  # the one readout longer than the panel
         self._tic_label = QLabel("-", container)
         self._points_label = QLabel("-", container)
+        # What keeps a live readout from resizing the window, now that the container's
+        # width is no longer fixed: a label whose horizontal policy is `Ignored`
+        # contributes nothing to the layout's width, whatever its text says, and wraps
+        # into whatever width it is given. Both halves are needed -- `Ignored` alone
+        # would elide, and word wrap alone would still report a wide size hint.
+        for label in (
+            self._state_label,
+            self._max_label,
+            self._per_push_label,
+            self._tic_label,
+            self._points_label,
+        ):
+            label.setWordWrap(True)
+            label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         live = QFormLayout()
         # A field too wide for the space beside its label drops to the next line rather
-        # than squeezing into a sliver -- the per-push line, at the fixed panel width.
+        # than squeezing into a sliver -- the per-push line, at the narrowest width.
         live.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         live.addRow("Frame:", self._state_label)
         live.addRow("Max intensity in view:", self._max_label)
@@ -140,16 +179,21 @@ class InfoPanel(QDockWidget):
         self.setWidget(container)
 
     def set_file(self, global_params: object, frame_params: object) -> None:
-        """Replace the parameter tree with one file's global and frame parameters."""
+        """Replace the parameter tree with one file's global and frame parameters.
+
+        Every row carries its own value as a tooltip. The value column stretches to the
+        panel's width and elides what does not fit, and a calibration coefficient or a
+        method path read to fourteen characters and an ellipsis is worse than not shown
+        at all -- so the whole value is one hover away at any panel width.
+        """
         self._global_root.takeChildren()
         for name, value in _rows(global_params):
-            QTreeWidgetItem(self._global_root, [name, value])
+            _tree_row(self._global_root, name, value)
         self._frame_root.takeChildren()
         for name, value in _rows(frame_params):
-            QTreeWidgetItem(self._frame_root, [name, value])
+            _tree_row(self._frame_root, name, value)
         self._tree.expandAll()
-        for column in range(2):
-            self._tree.resizeColumnToContents(column)
+        self._tree.resizeColumnToContents(0)
 
     def set_frame_state(self, provisional: "bool | None") -> None:
         """Say whether the frame on screen is finished, in the panel's own words.

@@ -35,6 +35,7 @@ __all__ = [
     "COLOUR_MAPS",
     "COLOUR_SCALES",
     "EXPORT_DPIS",
+    "INFO_PANEL_WIDTH",
     "ORGANISATION",
     "THEMES",
     "ViewerSettings",
@@ -73,6 +74,13 @@ Here rather than in `export.py` so that `validate` can clamp a hand-edited value
 the settings module having to import a module that pulls in Qt's widgets."""
 
 
+INFO_PANEL_WIDTH = 320
+"""The narrowest the info panel's content goes, in pixels, and the width a first run
+gets. Wide enough for the parameter tree's two columns and the per-push line on two rows;
+a user who wants more drags the dock's edge and `info_panel_width` remembers where they
+left it. Here rather than in `info_panel.py` for the reason `EXPORT_DPIS` is here."""
+
+
 @dataclass
 class ViewerSettings:
     """The persisted viewer state. Defaults are what a first run gets.
@@ -87,6 +95,7 @@ class ViewerSettings:
     keep_ranges: bool = False
     keep_levels: bool = False
     show_info_panel: bool = True
+    info_panel_width: int = INFO_PANEL_WIDTH
     detector_bits: int = 8
     colour_map: str = "viridis"
     theme: str = "dark"
@@ -105,12 +114,14 @@ class ViewerSettings:
         the bad value can be seen and swapped for the default.
         """
         detector_bits = self.detector_bits if 1 <= self.detector_bits <= 32 else 8
+        info_panel_width = max(INFO_PANEL_WIDTH, int(self.info_panel_width))
         cache_budget_mb = self.cache_budget_mb if self.cache_budget_mb > 0 else 512
         return replace(
             self,
             aggregate=self.aggregate if self.aggregate in AGGREGATES else "sum",
             colour_scale=self.colour_scale if self.colour_scale in COLOUR_SCALES else "linear",
             detector_bits=detector_bits,
+            info_panel_width=info_panel_width,
             colour_map=self.colour_map if self.colour_map in COLOUR_MAPS else "viridis",
             theme=self.theme if self.theme in THEMES else "dark",
             export_dpi=self.export_dpi if self.export_dpi in EXPORT_DPIS else 300,
@@ -153,6 +164,8 @@ def load_settings() -> ViewerSettings:
         keep_ranges=_as_bool(store.value("keep_ranges", defaults.keep_ranges)),
         keep_levels=_as_bool(store.value("keep_levels", defaults.keep_levels)),
         show_info_panel=_as_bool(store.value("show_info_panel", defaults.show_info_panel)),
+        info_panel_width=_as_int(store.value("info_panel_width", defaults.info_panel_width),
+                                  defaults.info_panel_width),
         detector_bits=_as_int(store.value("detector_bits", defaults.detector_bits),
                                defaults.detector_bits),
         colour_map=str(store.value("colour_map", defaults.colour_map)),
@@ -183,6 +196,7 @@ def save_settings(settings: ViewerSettings) -> None:
     store.setValue("keep_ranges", settings.keep_ranges)
     store.setValue("keep_levels", settings.keep_levels)
     store.setValue("show_info_panel", settings.show_info_panel)
+    store.setValue("info_panel_width", settings.info_panel_width)
     store.setValue("detector_bits", settings.detector_bits)
     store.setValue("colour_map", settings.colour_map)
     store.setValue("theme", settings.theme)

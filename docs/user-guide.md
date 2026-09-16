@@ -378,6 +378,10 @@ frame's, exactly as the file stores them. It is not a fixed list. Whatever keys 
 parameter tables carry are what the tree shows, so a writer's optics voltages and its own
 private keys appear alongside the handful the viewer itself parses.
 
+Drag the panel's left edge to make it wider, and the value column widens with it. The viewer
+remembers the width. A value still too long for the column is shown whole on hover, so a
+calibration coefficient cut off at an ellipsis is one pointer away from being readable.
+
 The lower half is one statement about the frame and four readouts, all of them describing the
 image on screen rather than the whole frame, and all of them recomputed on every view change.
 
@@ -454,9 +458,9 @@ for. Its page is the same size in inches whichever resolution that is.
 ## What the viewer remembers
 
 Every toolbar toggle, the colour map and the colour scale, light mode, the aggregate, the
-detector bit depth, whether the info panel is showing, the export resolution, the window's size
-and position, and the directory you last opened from are all saved when the viewer closes and
-restored when it starts. On Windows they live under
+detector bit depth, whether the info panel is showing and how wide it is, the export
+resolution, the window's size and position, and the directory you last opened from are all
+saved when the viewer closes and restored when it starts. On Windows they live under
 `HKEY_CURRENT_USER\Software\University of Washington\mainspring`. Deleting that key returns
 every setting to its default.
 
