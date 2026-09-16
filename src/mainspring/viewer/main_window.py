@@ -83,12 +83,19 @@ from ..uimf import (
     SparseFrame,
     is_local_path,
 )
-from . import theme
+from . import fonts, theme
 from .controls import add_labelled, add_menu_widget, describe, make_action
 from .export import ExportDialog, content_rect, export_display
 from .heatmap import HeatmapView, pixel_of
 from .info_panel import InfoPanel
-from .settings import COLOUR_MAPS, COLOUR_SCALES, ViewerSettings, load_settings, save_settings
+from .settings import (
+    COLOUR_MAPS,
+    COLOUR_SCALES,
+    TEXT_SCALES,
+    ViewerSettings,
+    load_settings,
+    save_settings,
+)
 from .side_plots import SidePlots
 from .workers import LoadWorker, RenderMailbox, RenderRequest, RenderWorker, SumRequest
 
@@ -221,6 +228,10 @@ class MainWindow(QMainWindow):
         )
         self.statusBar().addPermanentWidget(self._readout)
         self.statusBar().addPermanentWidget(self._busy)
+        # After all three owners exist and before the menus are built: the application
+        # font reaches a widget made afterwards as surely as one made already, so this
+        # is simply the first moment `fonts.apply` has everything it needs.
+        fonts.apply(self, self.settings.text_scale)
         self._build_menu()
         self._build_toolbar()
 
@@ -299,6 +310,7 @@ class MainWindow(QMainWindow):
         view_menu.addAction(self._light_action)
         self._build_colour_map_menu(view_menu)
         self._build_colour_scale_menu(view_menu)
+        self._build_text_size_menu(view_menu)
         self._build_data_menu()
 
     def _build_colour_map_menu(self, view_menu: "object") -> None:
@@ -350,6 +362,31 @@ class MainWindow(QMainWindow):
             )
             group.addAction(action)
             colour_scale_menu.addAction(action)
+
+    def _build_text_size_menu(self, view_menu: "object") -> None:
+        """One scale over every piece of text in the application, radio-style.
+
+        In `View` rather than anywhere else because it is a statement about how the
+        window is read, like the palette beside it. The four steps are
+        `settings.TEXT_SCALES`; what each one reaches, and why an application font change
+        is not enough on its own, is `viewer/fonts.py`.
+        """
+        text_size_menu = view_menu.addMenu("Text size")
+        group = QActionGroup(self)
+        group.setExclusive(True)
+        for scale in TEXT_SCALES:
+            label = f"{round(scale * 100)}%"
+            action = make_action(
+                self,
+                label,
+                tip=f"Draw every piece of text in the window at {label} of its"
+                    " normal size.",
+                checkable=True,
+                checked=(scale == self.settings.text_scale),
+                toggled=lambda checked, s=scale: self._on_text_scale_changed(s, checked),
+            )
+            group.addAction(action)
+            text_size_menu.addAction(action)
 
     def _build_data_menu(self) -> None:
         """`Data settings`: what the numbers on screen are, rather than how they look.
@@ -1280,6 +1317,18 @@ class MainWindow(QMainWindow):
         """
         self.settings.theme = "light" if checked else "dark"
         theme.apply(self, self.settings.theme)
+
+    def _on_text_scale_changed(self, scale: float, checked: bool) -> None:
+        """Resize every piece of text, and nothing else.
+
+        The counterpart of `_on_light_mode_toggled`, and the same promise: no re-render
+        and no reload, so the open file, the frame, the view ranges and the colour levels
+        are all still where the user left them (`fonts.py`).
+        """
+        if not checked:
+            return
+        self.settings.text_scale = float(scale)
+        fonts.apply(self, self.settings.text_scale)
 
     def _on_info_toggled(self, checked: bool) -> None:
         self.settings.show_info_panel = checked

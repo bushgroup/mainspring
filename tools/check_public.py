@@ -113,8 +113,8 @@ def declared_versions() -> dict[str, str]:
 
 UIMF_MODULES = ("cache", "calib", "cli", "decode", "frame", "raster", "reader", "writer")
 VIEWER_MODULES = (
-    "app", "controls", "export", "heatmap", "info_panel", "main_window", "settings",
-    "side_plots", "theme", "workers",
+    "app", "controls", "export", "fonts", "heatmap", "info_panel", "main_window",
+    "settings", "side_plots", "theme", "workers",
 )
 
 
@@ -566,7 +566,7 @@ def main() -> int:
 
     from PySide6.QtWidgets import QApplication
 
-    from mainspring.viewer import theme
+    from mainspring.viewer import fonts, theme
     from mainspring.viewer.controls import unexplained
     from mainspring.viewer.main_window import MainWindow
     from mainspring.viewer.settings import THEMES
@@ -652,6 +652,20 @@ def main() -> int:
                 not stray,
             )
         theme.apply(window, window.settings.theme)
+
+        # And every piece of text in the plot scene is drawn at the scale in force.
+        # Under a non-default scale above all, for the same reason `themed` is run under
+        # the light palette: at 100 per cent this passes for anything that simply never
+        # asked (`viewer/fonts.py`). The scale is put back afterwards, since it is an
+        # application-wide font and the export checks below measure a laid-out window.
+        for scale in (1.5, window.settings.text_scale):
+            fonts.apply(window, scale)
+            mis_sized = fonts.sized(window)
+            check_true(
+                f"every piece of text on the canvas is drawn at {round(scale * 100)}%"
+                + (f" (wrong: {', '.join(mis_sized)})" if mis_sized else ""),
+                not mis_sized,
+            )
         if painted:
             result = painted[0]
             check_true("the painted image's extent matches the calibrated full range",

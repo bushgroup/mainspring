@@ -37,6 +37,7 @@ __all__ = [
     "EXPORT_DPIS",
     "INFO_PANEL_WIDTH",
     "ORGANISATION",
+    "TEXT_SCALES",
     "THEMES",
     "ViewerSettings",
     "load_settings",
@@ -74,6 +75,16 @@ Here rather than in `export.py` so that `validate` can clamp a hand-edited value
 the settings module having to import a module that pulls in Qt's widgets."""
 
 
+TEXT_SCALES = (1.0, 1.25, 1.5, 2.0)
+"""The `View > Text size` steps, as multipliers of the platform's own font. Four rather
+than a slider: the viewer's type was sized for a 1000x700 window at 96 dpi and the
+complaint is that nothing followed when the window or the panel got bigger, which four
+steps answer and a hundred would not. 200 per cent is the top because past it the axis
+values stop fitting beside a plot worth looking at. Here rather than in `viewer/fonts.py`
+for the reason `EXPORT_DPIS` is here: `validate` has to clamp a hand-edited value without
+this module importing one that pulls in Qt's widgets."""
+
+
 INFO_PANEL_WIDTH = 320
 """The narrowest the info panel's content goes, in pixels, and the width a first run
 gets. Wide enough for the parameter tree's two columns and the per-push line on two rows;
@@ -95,6 +106,7 @@ class ViewerSettings:
     keep_ranges: bool = False
     keep_levels: bool = False
     show_info_panel: bool = True
+    text_scale: float = 1.0
     info_panel_width: int = INFO_PANEL_WIDTH
     detector_bits: int = 8
     colour_map: str = "viridis"
@@ -121,6 +133,7 @@ class ViewerSettings:
             aggregate=self.aggregate if self.aggregate in AGGREGATES else "sum",
             colour_scale=self.colour_scale if self.colour_scale in COLOUR_SCALES else "linear",
             detector_bits=detector_bits,
+            text_scale=self.text_scale if self.text_scale in TEXT_SCALES else 1.0,
             info_panel_width=info_panel_width,
             colour_map=self.colour_map if self.colour_map in COLOUR_MAPS else "viridis",
             theme=self.theme if self.theme in THEMES else "dark",
@@ -164,6 +177,8 @@ def load_settings() -> ViewerSettings:
         keep_ranges=_as_bool(store.value("keep_ranges", defaults.keep_ranges)),
         keep_levels=_as_bool(store.value("keep_levels", defaults.keep_levels)),
         show_info_panel=_as_bool(store.value("show_info_panel", defaults.show_info_panel)),
+        text_scale=_as_float(store.value("text_scale", defaults.text_scale),
+                             defaults.text_scale),
         info_panel_width=_as_int(store.value("info_panel_width", defaults.info_panel_width),
                                   defaults.info_panel_width),
         detector_bits=_as_int(store.value("detector_bits", defaults.detector_bits),
@@ -196,6 +211,7 @@ def save_settings(settings: ViewerSettings) -> None:
     store.setValue("keep_ranges", settings.keep_ranges)
     store.setValue("keep_levels", settings.keep_levels)
     store.setValue("show_info_panel", settings.show_info_panel)
+    store.setValue("text_scale", settings.text_scale)
     store.setValue("info_panel_width", settings.info_panel_width)
     store.setValue("detector_bits", settings.detector_bits)
     store.setValue("colour_map", settings.colour_map)

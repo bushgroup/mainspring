@@ -23,6 +23,12 @@ def test_validate_clamps_an_unrecognised_aggregate_or_colour_scale():
     assert fixed.colour_scale == "linear"
 
 
+def test_validate_clamps_an_unrecognised_text_scale():
+    """Four steps, and a hand-edited store cannot ask for a fifth."""
+    assert ViewerSettings(text_scale=3.0).validate().text_scale == 1.0
+    assert ViewerSettings(text_scale=1.25).validate().text_scale == 1.25
+
+
 def test_validate_keeps_the_info_panel_at_least_its_minimum_width():
     """A hand-edited width of nothing would hide the panel behind its own splitter."""
     from mainspring.viewer.settings import INFO_PANEL_WIDTH
@@ -77,6 +83,7 @@ def test_settings_round_trip_through_qsettings():
         keep_levels=True,
         show_info_panel=False,
         info_panel_width=480,
+        text_scale=1.5,
         detector_bits=14,
         colour_map="plasma",
         export_dpi=600,

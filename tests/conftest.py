@@ -73,6 +73,30 @@ def _restore_the_default_palette():
     theme._ACTIVE = theme.DARK
 
 
+@pytest.fixture(autouse=True)
+def _restore_the_default_text_size():
+    """No test leaves a text scale on the process.
+
+    `fonts.apply` writes `QApplication.setFont`, which is process-wide and reaches every
+    widget that has not been given a font of its own -- so a test that ends at 200 per
+    cent hands the next one a window whose menus, panel and axes are all half again too
+    big, and whose layout assertions then measure the wrong thing.
+
+    Guarded like the palette fixture above, and for the same reason: a data-layer test
+    should not pull Qt in through a fixture that runs for every test in the suite.
+    """
+    yield
+    if "mainspring.viewer.fonts" not in sys.modules:
+        return
+    from PySide6.QtWidgets import QApplication
+
+    from mainspring.viewer import fonts
+
+    fonts._ACTIVE = 1.0
+    if QApplication.instance() is not None and fonts._BASE is not None:
+        QApplication.setFont(fonts._BASE)
+
+
 def real_uimf_paths() -> list[str]:
     """Every `.uimf` this clone can see: PNNL's excerpts, plus `MAINSPRING_SMOKE_UIMF`.
 

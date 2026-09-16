@@ -48,7 +48,7 @@ from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import QGraphicsPixmapItem
 
 from ..uimf import DisplayAxes
-from . import theme
+from . import fonts, theme
 from .controls import describe
 from .workers import DEBOUNCE_MS
 
@@ -81,11 +81,12 @@ def scaled(image: np.ndarray, colour_scale: str) -> np.ndarray:
     return image
 
 AXIS_WIDTH = 68
-"""Pixels reserved for the heatmap's left axis. Fixed rather than fitted so that the
-heatmap and the mass-spectrum plot above it, which are linked in x, also line up in x on
-screen -- their plot areas start where their left margins end, and pyqtgraph does not
-equalise those. The side plots mirror this number in their own layout grids
-(`side_plots.py`)."""
+"""Pixels reserved for the heatmap's left axis **at 100 per cent text**. Fixed rather
+than fitted so that the heatmap and the mass-spectrum plot above it, which are linked in
+x, also line up in x on screen -- their plot areas start where their left margins end, and
+pyqtgraph does not equalise those. The side plots mirror this number in their own layout
+grids (`side_plots.py`), and both sides multiply it by `fonts.extent()` when they apply
+it: a scale applied to one side alone would pull the two out of alignment."""
 
 AXIS_HEIGHT = 46
 """The same for the heatmap's bottom axis, so the heatmap and the arrival-time plot to
@@ -342,8 +343,8 @@ class HeatmapView(pg.GraphicsLayoutWidget):
         # is also a white pixmap that no palette can reach, so a light canvas would show
         # an invisible control that breaks the view if found.
         self._plot.hideButtons()
-        self._plot.getAxis("left").setWidth(AXIS_WIDTH)
-        self._plot.getAxis("bottom").setHeight(AXIS_HEIGHT)
+        # Extents, tick fonts and the label style all come from `set_text_scale` at the
+        # end of this constructor, the one path they change by.
         # Every axis is created and linked to the box when the PlotItem is; the top and
         # right ones only need showing. They carry ticks and nothing else, and at zero
         # size, so that the projections meet the image edge they share.
@@ -396,7 +397,6 @@ class HeatmapView(pg.GraphicsLayoutWidget):
         # reach `ViewerSettings` -- `set_colour_map` below is the one path that does both.
         self._colour_bar = pg.ColorBarItem(colorMap=colour_map, colorMapMenu=False)
         self._colour_bar.setImageItem(self._image_item)
-        self._colour_bar.getAxis("bottom").setHeight(AXIS_HEIGHT)
         self._colour_bar.getAxis("top").setHeight(TOP_AXIS_HEIGHT)
         _BAR_TIP = (
             "The intensity each colour stands for. Drag an end to set the limits by hand,"
@@ -446,6 +446,7 @@ class HeatmapView(pg.GraphicsLayoutWidget):
         self._levels_held = False
         self._label_style: "dict[str, str]" = {}
         self.set_palette(theme.active())
+        self.set_text_scale(fonts.active())
         # Both ink variants render at the same size, so the logo's bounding rect never
         # changes between them -- one fit, not one per theme toggle.
         self._logo_box.autoRange(padding=0.08)
@@ -616,6 +617,35 @@ class HeatmapView(pg.GraphicsLayoutWidget):
             axis.setTickPen(pg.mkPen(palette.foreground, width=TICK_PEN_WIDTH))
             axis.setTextPen(pg.mkPen(palette.foreground))
         self._debug.setColor(palette.debug)
+
+    def set_text_scale(self, scale: float) -> None:
+        """Redraw every piece of text on this widget at `scale`, and reserve room for it.
+
+        Called once at construction and again on every `View > Text size` change
+        (`fonts.apply`, the one path). Nothing here touches the image, the colour map or
+        the levels, so a change costs the user nothing they had set up.
+
+        Three separate things, because Qt treats them as three:
+
+        * **Tick values** go through `setTickFont`, which also drops the axis's cached
+          `QPicture`. Without that the axis would keep drawing the old size from the
+          cache, and an export would replay it.
+        * **Axis labels** are HTML in a `QGraphicsTextItem`, which does not follow an
+          application font change, so the size travels in `label_style` and the label is
+          set again. The text is read back off the axis rather than passed in: nothing
+          here knows what the axes are called, and `setLabel(text=None)` would blank them.
+        * **The extents** the projections are aligned against, on this side of that
+          agreement (`side_plots.py` holds the other side).
+        """
+        font = fonts.scaled_font(scale)
+        self._plot.getAxis("left").setWidth(round(AXIS_WIDTH * fonts.extent()))
+        self._plot.getAxis("bottom").setHeight(round(AXIS_HEIGHT * fonts.extent()))
+        self._colour_bar.getAxis("bottom").setHeight(round(AXIS_HEIGHT * fonts.extent()))
+        self._label_style = theme.label_style(theme.active())
+        for axis in self._axes():
+            axis.setTickFont(font)
+            axis.setLabel(axis.labelText, **self._label_style)
+        self._debug.setFont(font)
 
     def _axes(self) -> "list[pg.AxisItem]":
         """The heatmap's four axes and the colour bar's four.

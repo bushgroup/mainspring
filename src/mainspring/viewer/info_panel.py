@@ -57,6 +57,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from . import fonts
 from .controls import describe
 from .settings import INFO_PANEL_WIDTH
 
@@ -177,6 +178,18 @@ class InfoPanel(QDockWidget):
         layout.addRow(self._tree)
         layout.addRow(live)
         self.setWidget(container)
+        self.set_text_scale(fonts.active())
+
+    def set_text_scale(self, scale: float) -> None:
+        """Follow `View > Text size`: grow the floor the panel cannot go below.
+
+        Every widget in here takes its font from `QApplication.setFont`, so there is no
+        text to set (`fonts.py`). What does not follow on its own is the width: 320
+        pixels holds two columns and a wrapped per-push line at 100 per cent and holds
+        neither at 200, so the minimum moves with the type. A panel the user has already
+        dragged wider than the new floor keeps the width they chose.
+        """
+        self._container.setMinimumWidth(round(INFO_PANEL_WIDTH * fonts.extent()))
 
     def set_file(self, global_params: object, frame_params: object) -> None:
         """Replace the parameter tree with one file's global and frame parameters.

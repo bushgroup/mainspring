@@ -44,6 +44,7 @@ import pyqtgraph as pg
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 
+from . import fonts
 from .controls import name_of, numbered
 
 __all__ = [
@@ -155,15 +156,25 @@ def active() -> Palette:
 
 
 def label_style(palette: Palette) -> "dict[str, str]":
-    """The style dict for a bold axis label under `palette`.
+    """The style dict for a bold axis label under `palette`, at the active text size.
 
     A function and not a constant, for the reason in this module's docstring: the colour
     has to be in the dict, because `AxisItem.setLabel(**style)` replaces `labelStyle`
     rather than merging into it, and a colour computed at import time cannot answer a
     toggle. `HeatmapView` re-reads this on every `set_palette` and every `set_image`,
     so a label is repainted whichever of the two happens next.
+
+    The size is here for exactly the same reason, and being in the same dict is what
+    makes the two follow each other: a palette change re-reads the scale and a scale
+    change re-reads the palette, so neither can put the other's old value back. `theme`
+    imports `fonts` and never the reverse -- the scale is something an axis label is
+    drawn at, not something the palette decides.
     """
-    return {"color": QColor(palette.foreground).name(), "font-weight": "bold"}
+    return {
+        "color": QColor(palette.foreground).name(),
+        "font-weight": "bold",
+        "font-size": fonts.css_size(),
+    }
 
 
 def apply(window: object, theme: str) -> Palette:

@@ -40,7 +40,7 @@ import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import QPointF, QRectF, Qt
 
-from . import theme
+from . import fonts, theme
 from .controls import describe
 from .heatmap import AXIS_HEIGHT, AXIS_WIDTH, RIGHT_AXIS_WIDTH, TOP_AXIS_HEIGHT
 
@@ -200,10 +200,10 @@ class SidePlots:
         # `x_plot` shares the heatmap's column, so its left and right margins mirror
         # the heatmap's left and right axes; `y_plot` shares its row, so its top and
         # bottom margins mirror the heatmap's top and bottom axes.
-        self.x_plot.layout.setColumnFixedWidth(_LEFT_AXIS_COLUMN, AXIS_WIDTH)
         self.x_plot.layout.setColumnFixedWidth(_RIGHT_AXIS_COLUMN, RIGHT_AXIS_WIDTH)
         self.y_plot.layout.setRowFixedHeight(_TOP_AXIS_ROW, TOP_AXIS_HEIGHT)
-        self.y_plot.layout.setRowFixedHeight(_BOTTOM_AXIS_ROW, AXIS_HEIGHT)
+        # The two that are not zero follow the text size, on both sides of the agreement
+        # (`set_text_scale`, called at the end of this constructor).
 
         # Named by role, tipped by role: the swap-axes toggle changes what each one
         # projects onto, so neither tooltip may name a quantity.
@@ -232,6 +232,32 @@ class SidePlots:
         self._x_curve.setClipToView(True)
         self._y_curve = self.y_plot.plot()
         self.set_palette(theme.active())
+        self.set_text_scale(fonts.active())
+
+    def set_text_scale(self, scale: float) -> None:
+        """Follow `View > Text size`: the reserved margins, and the hidden axes' fonts.
+
+        The projections carry no text of their own, so what a scale changes here is the
+        space they reserve to stay aligned with the heatmap, which does. The two numbers
+        are the heatmap's, multiplied by the same `fonts.extent()` the heatmap applies,
+        because alignment is an agreement between the two and half of an agreement is a
+        layout bug (`heatmap.AXIS_WIDTH`).
+
+        The eight hidden axes are given the font as well, for the reason `set_palette`
+        gives them the palette: each was born with whatever was active when its plot was
+        built, and a size that is only wrong while it cannot be seen is the kind
+        `fonts.sized` exists to refuse to let through.
+        """
+        self.x_plot.layout.setColumnFixedWidth(
+            _LEFT_AXIS_COLUMN, round(AXIS_WIDTH * fonts.extent())
+        )
+        self.y_plot.layout.setRowFixedHeight(
+            _BOTTOM_AXIS_ROW, round(AXIS_HEIGHT * fonts.extent())
+        )
+        font = fonts.scaled_font(scale)
+        for plot in (self.x_plot, self.y_plot):
+            for name in ("left", "right", "top", "bottom"):
+                plot.getAxis(name).setTickFont(font)
 
     def set_palette(self, palette: "theme.Palette") -> None:
         """Repaint both curves in `palette`, live.

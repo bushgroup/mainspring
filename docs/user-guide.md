@@ -136,8 +136,8 @@ image it belongs to would no longer describe it.
 | `Ctrl+I` | Show or hide the info panel |
 
 All three are on the menu bar as well: `Open` under `File`, and `Reset view`, `Info`,
-`Light mode`, `Colour map` and `Colour scale` under `View`. `Aggregate`, `Type` and `Bits` are
-under `Data settings`. There is no context menu on the heat map, because the right button is a
+`Light mode`, `Colour map`, `Colour scale` and `Text size` under `View`. `Aggregate`, `Type`
+and `Bits` are under `Data settings`. There is no context menu on the heat map, because the right button is a
 zoom gesture.
 
 Zooming and panning are both clamped to the frame, so a gesture cannot leave it, and zooming in
@@ -172,6 +172,19 @@ dynamic range, which is what to reach for when one peak is bright enough to leav
 the frame flat. All three are display transforms only. The cursor readout and the info panel
 always quote the untransformed intensity, so switching the colour scale changes the picture and
 no number.
+
+### Text size
+
+Scales every piece of text in the window together, from 100 to 200 per cent in four steps: the
+menus, the toolbar, the info panel, the status bar, the axis labels and the tick values. The
+axes widen to keep their values readable, and the projections widen with them so that
+everything stays lined up. Nothing else moves: the open file, the frame, the ranges you have
+zoomed to and any pinned levels are all where you left them, and the viewer remembers the
+choice.
+
+Reach for it on a large monitor, or on an instrument PC you read from across the bench. The
+viewer's type was sized for a 1000 by 700 window at 96 dpi and does not follow the window on
+its own.
 
 ## The Data settings menu
 
@@ -459,10 +472,10 @@ figure's own size in inches.
 
 ## What the viewer remembers
 
-Every toolbar toggle, the colour map and the colour scale, light mode, the aggregate, the
-detector bit depth, whether the info panel is showing and how wide it is, the export
-resolution, the window's size and position, and the directory you last opened from are all
-saved when the viewer closes and restored when it starts. On Windows they live under
+Every toolbar toggle, the colour map, the colour scale, light mode, the text size, the
+aggregate, the detector bit depth, whether the info panel is showing and how wide it is, the
+export resolution, the window's size and position, and the directory you last opened from are
+all saved when the viewer closes and restored when it starts. On Windows they live under
 `HKEY_CURRENT_USER\Software\University of Washington\mainspring`. Deleting that key returns
 every setting to its default.
 
