@@ -441,18 +441,17 @@ maximised window on a 4K display reaches at 600 dpi.
 `Export PDF` asks nothing beyond where to write it, and names the page size. A PDF page is
 vector at the figure's own size in inches, so there is no resolution to choose.
 
-The heat map is redrawn for the export rather than scaled up. The image on screen holds about
-one sample per screen pixel, so enlarging it would give a sharp frame around a blurred map.
-The frame is rasterised again at the export's own resolution instead, and a 300 dpi figure
-therefore separates peaks that ran together on screen. Note that this stops where the data do:
-zoomed in far enough that each bin and scan already covers more than one pixel, every
-resolution returns the same image.
+What the resolution buys is the type and the lines. The axes, the ticks, the labels and both
+projections are drawn again at the higher density, so a 300 dpi figure carries crisp type at
+print size rather than a magnified screenshot of 96 dpi type. The heat map itself is the image
+already on screen, enlarged with square pixels, so a figure is exactly the picture you looked
+at and chose to export: the same colours in the same places, the same colour limits, the same
+peaks resolved and the same ones not.
 
-Colour limits are carried across as the fraction of the range they sit at rather than as
-numbers. A pixel of a finer image covers less of the frame and holds less intensity, so the
-limits that suit the screen would leave a 300 dpi figure nearly black. Limits left to scale
-themselves come out scaled to the exported image, and limits pinned with `Keep levels` keep
-the contrast that pinning chose.
+That is deliberate, and it is a change from 1.0.0, which re-rasterised the frame at the
+export's own resolution. A heat map pixel is an aggregate over the bins and scans inside it,
+so a finer image is a different picture: the colour map shifts, blobs separate into peaks and
+faint features appear that were not on screen. To see more detail, zoom in and export that.
 
 A PDF carries the axes, the ticks, the labels and both projections as vector drawings, so they
 stay sharp at any magnification, and it embeds the heat map as an image. Its page is the

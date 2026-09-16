@@ -626,16 +626,15 @@ class MainWindow(QMainWindow):
         if fmt != "pdf":
             self.settings.export_dpi = dialog.dpi()
         self.statusBar().showMessage(f"Exporting {os.path.basename(path)}...")
-        # A re-rasterise at 600 dpi is seconds of a frozen window on a dense frame, and
-        # it is not put on the render worker: that thread's mailbox drops whatever it is
-        # holding when a newer request arrives, which is right for a gesture and would
-        # silently lose an export. A wait cursor is the honest way to say so.
+        # A 600 dpi render of a maximised window is still a second or two of a frozen
+        # window, and it happens on this thread: the render worker's mailbox drops
+        # whatever it is holding when a newer request arrives, which is right for a
+        # gesture and would silently lose an export. A wait cursor is the honest way to
+        # say so.
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
             width, height = export_display(
-                self.heatmap, self.side_plots, self._current_frame,
-                self._last_render.result, self.settings.colour_scale,
-                path, fmt, dialog.dpi(),
+                self.heatmap, self.side_plots, path, fmt, dialog.dpi()
             )
         except Exception as exc:  # noqa: BLE001 -- shown in the status bar, as a failed render is
             self._on_failed(f"could not export {os.path.basename(path)}: {exc}")

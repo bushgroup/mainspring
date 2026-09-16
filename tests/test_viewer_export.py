@@ -5,11 +5,10 @@ is what is tested: not only that the bar is outside it, but that nothing else is
 `m/z` and `Arrival time (ms)` hang a few pixels outside the plot item that owns them,
 and a crop to the plots alone shaved the outer edge off both.
 
-The image is re-rasterised at the export's own resolution, so the levels it is shown
-under have to be recomputed: a `sum` pixel covering a quarter of the area holds about a
-quarter of the intensity, and reusing the screen's levels would write a nearly black
-figure. `export_levels` is tested directly, because a level is a number no assertion
-about a PNG could name.
+The figure is the scene as it stands, so what is tested about the heatmap is that the
+export does not touch it: the same array, under the same levels, before and after. Task 24
+deleted the re-rasterise that used to stand a finer image in for the screen's, which moved
+the colour levels and made the figure a different picture from the one the user exported.
 
 Everything here runs on the synthetic fixture, offscreen, with no data file. The window
 paints boxes for glyphs under the offscreen platform, which is why nothing below looks
@@ -33,7 +32,6 @@ from mainspring.viewer.export import (
     ExportDialog,
     content_rect,
     export_display,
-    export_levels,
     export_pixels,
 )
 from mainspring.viewer.main_window import MainWindow
@@ -116,43 +114,10 @@ def test_the_pixel_size_scales_with_the_resolution():
     assert export_pixels(QRectF(0.0, 0.0, 0.0, 0.0), 300) == (1, 1)
 
 
-# --- the levels ---------------------------------------------------------------------------
-
-def test_auto_scaled_levels_come_out_auto_scaled_again():
-    """The screen's levels at its own full range are the fractions 0 and 1, so the
-    export's are its own full range -- no special case in `export_levels` for it."""
-    on_screen = np.array([[0.0, 10.0]])
-    exported = np.array([[0.0, 2.5]])
-
-    assert export_levels(on_screen, exported, (0.0, 10.0)) == (0.0, 2.5)
-
-
-def test_pinned_levels_keep_the_contrast_they_were_pinned_at():
-    """Levels held at the bottom half of the screen image's range come out at the bottom
-    half of the export's, which is the point: a user pins levels to bring up a faint
-    feature, and a figure that lost that has lost what they were looking at."""
-    on_screen = np.array([[0.0, 100.0]])
-    exported = np.array([[0.0, 25.0]])
-
-    assert export_levels(on_screen, exported, (0.0, 50.0)) == (0.0, 12.5)
-    assert export_levels(on_screen, exported, (25.0, 75.0)) == (6.25, 18.75)
-
-
-def test_a_degenerate_range_falls_back_to_the_exports_own():
-    flat = np.zeros((4, 4))
-
-    assert export_levels(flat, np.array([[0.0, 8.0]]), (0.0, 1.0)) == (0.0, 8.0)
-    assert export_levels(np.array([[0.0, 8.0]]), flat, (0.0, 8.0)) == (0.0, 1.0)
-    assert export_levels(np.empty(0), np.empty(0), (0.0, 1.0)) == (0.0, 1.0)
-
-
 # --- what is written ---------------------------------------------------------------------
 
 def _export(window: MainWindow, path: str, fmt: str, dpi: int) -> "tuple[int, int]":
-    return export_display(
-        window.heatmap, window.side_plots, window._current_frame,
-        window.last_render.result, window.settings.colour_scale, str(path), fmt, dpi,
-    )
+    return export_display(window.heatmap, window.side_plots, str(path), fmt, dpi)
 
 
 @pytest.mark.parametrize("dpi", [96, 300])
@@ -216,9 +181,8 @@ def test_a_pdf_is_written(viewer, tmp_path):
 
 
 def test_the_pdf_page_is_the_same_size_at_every_resolution(viewer, tmp_path):
-    """The resolution buys a PDF the sample count of the heatmap it embeds and nothing
-    else: the page is the figure's own size in inches either way, so text and rules come
-    out identical and only the image gets finer (`export.py`)."""
+    """The page is the figure's own size in inches whatever it is asked for, which is why
+    the PDF dialog offers no resolution at all (`export.py`)."""
     small = tmp_path / "small.pdf"
     large = tmp_path / "large.pdf"
 
@@ -232,61 +196,73 @@ def test_the_pdf_page_is_the_same_size_at_every_resolution(viewer, tmp_path):
         return raw[start:raw.index(b"]", start) + 1]
 
     assert media_box(small) == media_box(large)
-    assert large.stat().st_size > small.stat().st_size  # the image, and only the image
 
 
-# --- the re-rasterise ----------------------------------------------------------------------
+# --- what the export leaves behind -------------------------------------------------------
 
-def test_the_image_is_re_rasterised_finer_than_the_screens(viewer, tmp_path, monkeypatch):
-    """The reason this module exists rather than a two-line `scene.render`.
-
-    Caught at the seam it happens through, because the exported PNG cannot be asked how
-    many samples went into it -- and along the horizontal axis only, since the synthetic
-    frame has fewer scans than the viewport has pixels and `rasterise` will not invent
-    rows it has no elements for.
-    """
-    shown: list[tuple] = []
-    substituted = viewer.heatmap.substituted
-    monkeypatch.setattr(
-        viewer.heatmap, "substituted",
-        lambda image, rect, levels: shown.append(image.shape) or substituted(image, rect, levels),
-    )
-    on_screen = viewer.heatmap.image_item.image.shape
-
-    _export(viewer, tmp_path / "figure.png", "png", 3 * int(BASE_DPI))
-
-    assert len(shown) == 1
-    assert shown[0][1] == pytest.approx(3 * on_screen[1], rel=0.02)
-
-
-def test_the_screen_image_is_put_back_afterwards(viewer, tmp_path):
+def test_the_export_is_the_picture_on_screen(viewer, tmp_path):
+    """The reason task 24 deleted the re-rasterise. A heatmap pixel is an aggregate over
+    the bins and scans inside it, so a finer image is a different picture: the colour map
+    moves, blobs separate, faint features appear. An export must be the figure the user
+    looked at and decided to export."""
     # Copied, and compared by value: `ImageItem.setImage` keeps a `view()` of what it is
     # given rather than the array itself, so identity says nothing about either end.
     before = np.array(viewer.heatmap.image_item.image, copy=True)
     levels = viewer.heatmap.levels()
 
-    _export(viewer, tmp_path / "figure.png", "png", 300)
+    _export(viewer, tmp_path / "figure.png", "png", 3 * int(BASE_DPI))
 
     assert np.array_equal(viewer.heatmap.image_item.image, before)
     assert viewer.heatmap.levels() == levels
 
 
-def test_the_screen_image_is_put_back_even_if_the_render_raises(viewer):
-    """A context manager and not two calls, for this: a window left showing a
-    substitute after a failed export is a viewer whose readouts no longer describe what
-    is on screen."""
-    before = np.array(viewer.heatmap.image_item.image, copy=True)
-    levels = viewer.heatmap.levels()
-    finer = np.full((before.shape[0], before.shape[1] * 2), 7.0, dtype=np.float32)
+def test_the_upscaled_heatmap_is_not_interpolated(viewer):
+    """`ImageItem.paint` ends in `drawImage`, which honours `SmoothPixmapTransform`, so
+    the hint's absence from `_render` is what makes an enlarged sample a square block.
+    A gradient invented between two aggregates would read as data, so this is asserted
+    on the painter rather than left to whoever edits the two lines next to it."""
+    from PySide6.QtGui import QPainter
+
+    from mainspring.viewer import export
+
+    canvas = QImage(64, 64, QImage.Format.Format_RGB32)
+    painter = QPainter(canvas)
+    try:
+        export._render(
+            viewer.heatmap,
+            painter,
+            QRectF(0, 0, 64, 64),
+            content_rect(viewer.heatmap, viewer.side_plots),
+        )
+        assert not painter.testRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        assert painter.testRenderHint(QPainter.RenderHint.Antialiasing)
+    finally:
+        painter.end()
+
+
+def test_nothing_is_left_of_the_re_rasterise(viewer):
+    """The deletion itself. `export_levels` existed only to follow the levels a finer
+    image moved, and `HeatmapView.substituted` only to stand that image in; both are
+    gone, and `hidden_debug` is the part of the second that an export still needs."""
+    from mainspring.viewer import export
+
+    assert not hasattr(export, "export_levels")
+    assert not hasattr(export, "rasterise")
+    assert not hasattr(viewer.heatmap, "substituted")
+    assert hasattr(viewer.heatmap, "hidden_debug")
+
+
+def test_the_debug_overlay_is_not_part_of_a_figure(viewer):
+    """A developer's render time is not something to write into a paper, and a raise
+    part way through must not leave it off for the rest of the session."""
+    viewer.heatmap._debug.setVisible(True)
 
     with pytest.raises(RuntimeError):
-        with viewer.heatmap.substituted(finer, (0.0, 0.0, 1.0, 1.0), (0.0, 5.0)):
-            assert viewer.heatmap.image_item.image.shape == finer.shape
-            assert viewer.heatmap.levels() == (0.0, 5.0)
+        with viewer.heatmap.hidden_debug():
+            assert not viewer.heatmap._debug.isVisible()
             raise RuntimeError("the painter fell over")
 
-    assert np.array_equal(viewer.heatmap.image_item.image, before)
-    assert viewer.heatmap.levels() == levels
+    assert viewer.heatmap._debug.isVisible()
 
 
 # --- what is refused -----------------------------------------------------------------------

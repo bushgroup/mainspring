@@ -550,46 +550,24 @@ class HeatmapView(pg.GraphicsLayoutWidget):
             self._colour_bar.setLevels((low, high if high > low else low + 1.0))
 
     @contextmanager
-    def substituted(
-        self,
-        image: np.ndarray,
-        rect: "tuple[float, float, float, float]",
-        levels: "tuple[float, float]",
-    ):
-        """Show `image` at `rect` under `levels` for the duration, then put back what
-        was on screen.
+    def hidden_debug(self):
+        """Hide the render-time overlay for the duration, then put it back.
 
-        What an export renders through: the same scene, the same layout and the same
-        gestures' worth of state, with a finer image standing in for the viewport-sized
-        one for as long as the painter needs it (`export.py` says why a finer one is
-        needed at all). A context manager and not two calls, because the window is left
-        showing the substitute if the render between them raises.
+        What an export renders through (`export.py`). A developer's number is not part
+        of a figure, and `MAINSPRING_DEBUG_RENDER` being set is not a reason to write it
+        into one. A context manager and not two calls, because a render that raises
+        between them would leave the overlay off for the rest of the session.
 
-        `rect` is passed rather than read back because `ImageItem` does not keep one:
-        `setRect` bakes a transform out of the image's *current* shape, so a substitute
-        of a different shape has to be given the rect again, and so does the original on
-        the way back (`ImageItem.setRect`, which says as much).
-
-        The levels go through the colour bar, as every other level change does, but not
-        through `set_levels` -- that pins them against the next `set_image`, which is a
-        user's choice to make and not an export's side effect.
+        The only thing left of the `substituted` this replaced. Until task 24 an export
+        also stood a finer image in for the viewport-sized one, which is what moved the
+        colour levels and made a figure a different picture from the one on screen.
         """
-        previous_image = self._image_item.image
-        previous_levels = self.levels()
-        previous_debug = self._debug.isVisible()
-        x, y, width, height = rect
+        previous = self._debug.isVisible()
         try:
-            self._debug.setVisible(False)  # a developer's number is not part of a figure
-            self._image_item.setImage(image, autoLevels=False)
-            self._image_item.setRect(x, y, width, height)
-            self._colour_bar.setLevels((float(levels[0]), float(levels[1])))
+            self._debug.setVisible(False)
             yield
         finally:
-            self._debug.setVisible(previous_debug)
-            if previous_image is not None:
-                self._image_item.setImage(previous_image, autoLevels=False)
-                self._image_item.setRect(x, y, width, height)
-            self._colour_bar.setLevels(previous_levels)
+            self._debug.setVisible(previous)
 
     def levels(self) -> "tuple[float, float]":
         """The colour bar's current `(low, high)`, whatever last set them."""

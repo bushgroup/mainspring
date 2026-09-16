@@ -12,26 +12,26 @@ left of it; `content_rect` unites their three scene rects and the render is clip
 that. Detaching and re-attaching the bar around a render would disturb the levels wiring
 it owns, for a rectangle we can simply not draw.
 
-**The image is re-rasterised for the export, and that is the whole of the work here.**
-The `ImageItem` holds an array the size of the *viewport* -- that is the point of the
-sparse frame, and it is why a gesture repaints at all (`uimf/raster.py`,
-`workers.RenderRequest`). Rendering that scene at 3x would give crisp vector axes around
-a heatmap upscaled 3x, which is the one artefact a reader of the figure would notice. So
-the export asks `rasterise` for the same window at the export's pixel size, shows it
-through `HeatmapView.substituted` for as long as the painter needs it, and puts the
-screen's array back.
+**Resolution buys crisper text and vector axes, and nothing else.** The heatmap in the
+figure is the array already on screen, enlarged with square pixels. Until task 24 the
+export re-rasterised the frame at its own pixel size, on the reasoning that a 3x figure
+deserves 3x the samples -- which is true of a picture and wrong of this one. A heatmap
+pixel is an aggregate over the bins and scans inside it, so re-rasterising finer changes
+what every pixel *means*: the colour map moves, peaks that were one blob separate, faint
+features appear, and the figure is a different picture from the one the user looked at
+and decided to export. That is the opposite of what an export is for. It also had to
+rescale the colour levels to follow the new numbers, which was a second approximation
+stacked on the first.
 
-Past one output pixel per source element there is nothing more to get: `rasterise` caps
-its cell count at the number of elements in view, so a zoomed-in export returns the same
-image at every resolution and stretches it, correctly, rather than inventing detail.
-
-**Re-rasterising moves the numbers the colour levels are expressed in**, which is why
-`export_levels` exists. A `sum` pixel covering a quarter of the area holds about a
-quarter of the intensity, so the screen's levels would render the export nearly black.
-The rule is one line and has no special cases: the levels sit at some fraction of the
-screen image's own range, and the export puts them at the same fraction of *its* range.
-Levels left to auto-scale are the fractions 0 and 1, so they come out auto-scaled again;
-levels the user pinned to bring up a faint feature keep the contrast that pinning chose.
+So the export renders the scene as it stands. The `ImageItem` holds an array the size of
+the *viewport* -- that is the point of the sparse frame, and it is why a gesture repaints
+at all (`uimf/raster.py`, `workers.RenderRequest`) -- and at 3x each of its samples
+becomes a 3x3 block of one colour. `_render` deliberately does not set
+`SmoothPixmapTransform`, so that block is a block: an interpolated upscale would invent a
+gradient between two aggregates and read as data. What the resolution does buy is real
+and is the whole reason to ask for one: the axes, the ticks, the labels and both
+projections are drawn again at the higher density, so the type is crisp at print size
+instead of being a magnified screenshot of 96 dpi type.
 
 **`BASE_DPI` is the resolution the on-screen layout is taken to be actual size at.** A
 figure exported at 96 dpi is the window's own pixels; at 300 it is the same figure with
@@ -52,7 +52,6 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 
-import numpy as np
 from PySide6.QtCore import QMarginsF, QRectF, QSizeF, Qt
 from PySide6.QtGui import QImage, QPageLayout, QPageSize, QPainter, QPdfWriter
 from PySide6.QtWidgets import (
@@ -64,9 +63,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from ..uimf.raster import RasterResult, rasterise
 from .controls import describe
-from .heatmap import scaled
 from .settings import EXPORT_DPIS
 
 __all__ = [
@@ -76,7 +73,6 @@ __all__ = [
     "ExportDialog",
     "content_rect",
     "export_display",
-    "export_levels",
     "export_pixels",
 ]
 
@@ -133,54 +129,21 @@ def export_pixels(rect: QRectF, dpi: int) -> "tuple[int, int]":
     return max(1, round(rect.width() * scale)), max(1, round(rect.height() * scale))
 
 
-# --- the levels -----------------------------------------------------------------------
-
-def export_levels(
-    on_screen: np.ndarray, exported: np.ndarray, levels: "tuple[float, float]"
-) -> "tuple[float, float]":
-    """Where `levels` fall on `exported`'s range, given where they fall on `on_screen`'s.
-
-    Both images are already in display space (`heatmap.scaled`), which is where a level
-    lives; interpolating in the intensities' own space would be wrong under the log and
-    sqrt colour scales, where the transform is not linear and a fraction of the range is
-    not a fraction of the intensity.
-
-    A degenerate range at either end falls back to the export's own full range, which is
-    what `HeatmapView.set_image` does with an image that is all one value.
-    """
-    if exported.size == 0:
-        return 0.0, 1.0
-    export_low, export_high = float(exported.min()), float(exported.max())
-    if not export_high > export_low:
-        export_high = export_low + 1.0
-    if on_screen.size == 0:
-        return export_low, export_high
-    screen_low, screen_high = float(on_screen.min()), float(on_screen.max())
-    if not screen_high > screen_low:
-        return export_low, export_high
-    span = (export_high - export_low) / (screen_high - screen_low)
-    low = export_low + (float(levels[0]) - screen_low) * span
-    high = export_low + (float(levels[1]) - screen_low) * span
-    return low, (high if high > low else low + 1.0)
-
-
 # --- writing it out -------------------------------------------------------------------
 
 def export_display(
     heatmap: object,
     side_plots: object,
-    frame: object,
-    result: RasterResult,
-    colour_scale: str,
     path: str,
     fmt: str,
     dpi: int,
 ) -> "tuple[int, int]":
     """Write the display to `path` at `dpi`, and answer with its pixel size.
 
-    `result` is what is on screen -- it carries the window, the axes and the aggregate
-    the export has to reproduce, so nothing about "which picture is this" has to be
-    passed separately or could disagree with what the user is looking at.
+    What is written is the scene as it stands: the window, the axes, the aggregate, the
+    colour scale and the levels are all already on it, so there is nothing about "which
+    picture is this" to pass in and nothing that could disagree with what the user is
+    looking at.
 
     Raises `ValueError` for an unknown format or a figure over `MAX_PIXELS`, and `OSError`
     if the file cannot be written. Nothing is allocated before those checks.
@@ -196,26 +159,7 @@ def export_display(
             "window smaller"
         )
 
-    # The viewport's size scaled, not the figure's: that is what the on-screen render is
-    # asked for (`HeatmapView.pixel_size`), so scaling it is what makes the export's
-    # sample density exactly `scale` times the screen's rather than approximately.
-    scale = float(dpi) / BASE_DPI
-    viewport_width, viewport_height = heatmap.pixel_size()
-    exported = rasterise(
-        frame,
-        result.axes,
-        result.x_range,
-        result.y_range,
-        max(1, round(viewport_width * scale)),
-        max(1, round(viewport_height * scale)),
-        aggregate=result.aggregate,
-    )
-    displayed = scaled(exported.image, colour_scale)
-    levels = export_levels(scaled(result.image, colour_scale), displayed, heatmap.levels())
-
-    x0, x1 = result.x_range
-    y0, y1 = result.y_range
-    with heatmap.substituted(displayed, (x0, y0, x1 - x0, y1 - y0), levels):
+    with heatmap.hidden_debug():
         if fmt == "pdf":
             _write_pdf(heatmap, rect, path)
         else:
@@ -286,6 +230,12 @@ def _render(view: object, painter: QPainter, target: QRectF, source: QRectF) -> 
     Antialiasing through render hints rather than through `pg.setConfigOptions`: the
     interactive path turns it off for a heatmap redrawn on every wheel tick (`app.py`),
     and the items that read that option read it once, when they are constructed.
+
+    **`SmoothPixmapTransform` is absent on purpose.** `ImageItem.paint` ends in
+    `painter.drawImage`, which honours that hint, so setting it would interpolate the
+    heatmap's upscale. A heatmap pixel is an aggregate over the bins and scans inside it
+    and a gradient invented between two of them would read as data; without the hint each
+    sample comes out as a square block of one colour, which is what it is.
 
     `IgnoreAspectRatio` with a target computed from the source: the two agree to within
     the pixel that rounding to whole pixels costs, and letting Qt letterbox that pixel

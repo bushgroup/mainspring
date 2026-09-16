@@ -672,7 +672,8 @@ def main() -> int:
             # File > Export: the figure a user actually takes away. Data-free, so it
             # runs in a bare clone -- and it checks the two things a screenshot would
             # not, that the colour bar's column is outside the rectangle rendered and
-            # that the heatmap was resampled for the export rather than upscaled.
+            # that the export is the picture on screen, the same array under the same
+            # levels, rather than a finer one the user never saw (lab record, task 24).
             from mainspring.viewer.export import (
                 BASE_DPI, content_rect, export_display, export_pixels,
             )
@@ -685,22 +686,20 @@ def main() -> int:
                 bool(colour_bar)
                 and not rect.intersects(colour_bar[0].mapRectToScene(colour_bar[0].boundingRect())),
             )
-            screen_columns = window.heatmap.image_item.image.shape[1]
+            screen_image = window.heatmap.image_item.image.copy()
+            screen_levels = window.heatmap.levels()
             figure = os.path.join(tmp, "figure.png")
             dpi = 3 * int(BASE_DPI)
-            size = export_display(
-                window.heatmap, window.side_plots, window._current_frame,
-                window.last_render.result, window.settings.colour_scale,
-                figure, "png", dpi,
-            )
+            size = export_display(window.heatmap, window.side_plots, figure, "png", dpi)
             written = QImage(figure)
             check_true(
                 f"File > Export writes a PNG at the size it promised ({size[0]}x{size[1]})",
                 size == export_pixels(rect, dpi) == (written.width(), written.height()),
             )
             check_true(
-                "the export resamples the heatmap rather than upscaling the screen's",
-                window.heatmap.image_item.image.shape[1] == screen_columns,
+                "the export is the picture on screen, at the same levels",
+                np.array_equal(window.heatmap.image_item.image, screen_image)
+                and window.heatmap.levels() == screen_levels,
             )
 
             # And a gesture must reach the render worker and come back with a narrower
