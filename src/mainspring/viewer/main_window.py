@@ -83,7 +83,7 @@ from ..uimf import (
     SparseFrame,
     is_local_path,
 )
-from . import fonts, theme
+from . import fonts, labels, theme
 from .controls import add_labelled, add_menu_widget, describe, make_action
 from .export import ExportDialog, content_rect, export_display
 from .heatmap import HeatmapView, pixel_of
@@ -1512,7 +1512,12 @@ class MainWindow(QMainWindow):
         if axes is None or self._last_render is None:
             return
         result = self._last_render.result
-        parts = [f"{axes.x_label} {x:,.4g}", f"{axes.y_label} {y:,.4g}"]
+        # The plain spelling: this is a line of numbers, and the italic `m` an axis
+        # label is set in would read here as an error rather than as typesetting.
+        parts = [
+            f"{labels.plain(axes.x_label)} {x:,.4g}",
+            f"{labels.plain(axes.y_label)} {y:,.4g}",
+        ]
         bin_value, scan_value = (y, x) if axes.swapped else (x, y)
         bin_index = _element_of(axes.bin_edges, bin_value)
         scan_index = _element_of(axes.scan_edges, scan_value)

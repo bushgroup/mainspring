@@ -48,7 +48,7 @@ from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import QGraphicsPixmapItem
 
 from ..uimf import DisplayAxes
-from . import fonts, theme
+from . import fonts, labels, theme
 from .controls import describe
 from .workers import DEBOUNCE_MS
 
@@ -544,8 +544,10 @@ class HeatmapView(pg.GraphicsLayoutWidget):
         displayed = scaled(result.image, colour_scale)
         self._image_item.setImage(displayed, autoLevels=False)
         self._image_item.setRect(x0, y0, x1 - x0, y1 - y0)
-        self._plot.setLabel("bottom", axes.x_label, **self._label_style)
-        self._plot.setLabel("left", axes.y_label, **self._label_style)
+        # The display spelling, not the rasteriser's own (`labels.py`): an axis label is
+        # HTML, and `m/z` is italic in a figure and plain in the status bar.
+        self._plot.setLabel("bottom", labels.html(axes.x_label), **self._label_style)
+        self._plot.setLabel("left", labels.html(axes.y_label), **self._label_style)
         if not self._levels_held:
             low, high = float(displayed.min()), float(displayed.max())
             self._colour_bar.setLevels((low, high if high > low else low + 1.0))

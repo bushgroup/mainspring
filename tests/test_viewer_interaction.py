@@ -29,6 +29,7 @@ import pytest
 from PySide6.QtCore import Qt
 
 from mainspring.uimf import UimfFile
+from mainspring.viewer import labels
 from mainspring.viewer.heatmap import HeatmapView, UimfViewBox, pixel_of
 from mainspring.viewer.main_window import MainWindow
 from mainspring.viewer.workers import RenderMailbox, RenderRequest
@@ -504,7 +505,9 @@ def test_the_cursor_readout_names_every_unit_and_the_aggregation(loaded_window):
     window._on_cursor_moved(x, y)
     text = window._readout.text()
 
-    assert axes.x_label in text and axes.y_label in text
+    # The plain spelling of each axis name, not the rasteriser's own (`viewer/labels.py`).
+    assert labels.plain(axes.x_label) in text and labels.plain(axes.y_label) in text
+    assert "<i>" not in text  # the italic m/z is for a figure, not for a line of numbers
     assert "bin " in text and "scan " in text
     # The number is the drawn pixel's, and it is labelled with what made it.
     row, column = pixel_of(result, x, y)
