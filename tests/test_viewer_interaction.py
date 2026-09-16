@@ -678,3 +678,78 @@ def test_the_heatmap_ticks_inward_on_all_four_axes_with_values_on_two(view):
     # Ticks only, no room taken: the projections meet the image edge.
     assert plot.getAxis("top").height() == 0
     assert plot.getAxis("right").width() == 0
+
+
+# --- line weight follows the window (task 24) -----------------------------------------
+
+def _tick_widths(widget) -> set:
+    return {round(axis.tickPen().widthF(), 1) for axis in widget._axes()}
+
+
+def test_the_lines_are_their_reference_widths_at_the_reference_viewport(view, qtbot):
+    from mainspring.viewer.heatmap import (
+        AXIS_PEN_WIDTH, REFERENCE_VIEWPORT, TICK_PEN_WIDTH,
+    )
+
+    view.resize(1000, REFERENCE_VIEWPORT)
+    qtbot.waitUntil(lambda: view.pixel_size()[1] == REFERENCE_VIEWPORT, timeout=2000)
+
+    assert view._line_width == pytest.approx(TICK_PEN_WIDTH)
+    assert view._axis_width == pytest.approx(AXIS_PEN_WIDTH)
+    assert _tick_widths(view) == {round(TICK_PEN_WIDTH, 1)}
+
+
+def test_a_bigger_window_draws_heavier_lines_and_a_smaller_one_lighter(view, qtbot):
+    from mainspring.viewer.heatmap import LINE_WIDTH_LIMITS, TICK_PEN_WIDTH
+
+    view.resize(1000, 700)
+    qtbot.waitUntil(lambda: view.pixel_size()[1] == 700, timeout=2000)
+    at_reference = view._line_width
+
+    view.resize(1600, 1120)  # 1.6x the reference height
+    qtbot.waitUntil(lambda: view._line_width > at_reference, timeout=2000)
+    assert view._line_width == pytest.approx(1.6 * TICK_PEN_WIDTH)
+    assert _tick_widths(view) == {round(view._line_width, 1)}
+
+    view.resize(1600, 300)  # wide and short: the smaller dimension is what counts
+    qtbot.waitUntil(lambda: view._line_width < at_reference, timeout=2000)
+    assert view._line_width == pytest.approx(LINE_WIDTH_LIMITS[0])
+
+
+def test_the_line_width_is_clamped_at_both_ends(view, qtbot):
+    from mainspring.viewer.heatmap import LINE_WIDTH_LIMITS
+
+    low, high = LINE_WIDTH_LIMITS
+    for width, height in ((200, 150), (4000, 3000)):
+        view.resize(width, height)
+        qtbot.waitUntil(lambda: view.pixel_size()[0] == width, timeout=2000)
+        assert low <= view._line_width <= high
+        assert low <= view._axis_width <= high
+
+
+def test_a_theme_toggle_keeps_the_thickness_and_a_resize_keeps_the_colour(qtbot):
+    """The two are independent because both go through `set_palette`: it reads
+    `_line_width` for the widths and is handed the active palette for the colours, so
+    neither change can put the other's old value back. Driven through a window because
+    `theme.apply` is the one path a palette change takes (`theme.py`)."""
+    from mainspring.viewer import theme
+    from mainspring.viewer.main_window import MainWindow
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.resize(1800, 1300)
+    window.show()
+    qtbot.waitExposed(window)
+    view = window.heatmap
+    qtbot.waitUntil(lambda: view._line_width > 2.0, timeout=2000)
+    heavier = view._line_width
+
+    theme.apply(window, "light")
+
+    assert view._line_width == pytest.approx(heavier)
+    assert _tick_widths(view) == {round(heavier, 1)}
+    assert view.plot_item.getAxis("left").tickPen().color().name() == theme.LIGHT.foreground
+
+    window.resize(900, 620)
+    qtbot.waitUntil(lambda: view._line_width < heavier, timeout=2000)
+    assert view.plot_item.getAxis("left").tickPen().color().name() == theme.LIGHT.foreground

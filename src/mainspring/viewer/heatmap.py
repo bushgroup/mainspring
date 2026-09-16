@@ -58,6 +58,9 @@ __all__ = [
     "COLOUR_BAR_WIDTH",
     "RIGHT_AXIS_WIDTH",
     "SIDE_PLOT_SIZE",
+    "AXIS_PEN_WIDTH",
+    "LINE_WIDTH_LIMITS",
+    "REFERENCE_VIEWPORT",
     "TICK_LENGTH",
     "TICK_PEN_WIDTH",
     "TOP_AXIS_HEIGHT",
@@ -145,10 +148,28 @@ against the axis values -- and on the top and right edges, which carry no values
 ticks are the whole axis."""
 
 TICK_PEN_WIDTH = 1.5
-"""How thick a tick is drawn, in the same "prominent enough to read against the image"
-judgement as `TICK_LENGTH` (lab record, task 11). The width is here and the colour is
-`theme.py`'s: how much a tick asserts itself is this module's decision, and what colour
-it asserts itself in is the palette's."""
+"""How thick a tick is drawn **at `REFERENCE_VIEWPORT`**, in the same "prominent enough
+to read against the image" judgement as `TICK_LENGTH` (lab record, task 11). The width is
+here and the colour is `theme.py`'s: how much a tick asserts itself is this module's
+decision, and what colour it asserts itself in is the palette's."""
+
+AXIS_PEN_WIDTH = 1.0
+"""The same for the axis line itself, which is furniture rather than a reading aid and is
+drawn lighter than the ticks that sit on it. The ratio between the two is what a resize
+preserves; neither is scaled on its own."""
+
+REFERENCE_VIEWPORT = 700
+"""The viewport's smaller dimension, in pixels, that the two widths above are the widths
+at. 700 is the height of the 1000x700 window the viewer was designed against, which is
+what makes this a change of nothing at that size and a change of something on the 4K
+panel where a 1.5 px tick is a hairline (lab record, task 24)."""
+
+LINE_WIDTH_LIMITS = (1.0, 3.0)
+"""The narrowest and widest either line is ever drawn, whatever the viewport. Below one
+pixel a line stops being drawn reliably at all, and above three the furniture starts
+competing with the data it is there to measure. Both widths are clamped to this, so on a
+small window they meet at one pixel and the axis line stops being lighter than the ticks
+on it -- which is what a floor means."""
 
 
 class UimfViewBox(pg.ViewBox):
@@ -331,6 +352,14 @@ class HeatmapView(pg.GraphicsLayoutWidget):
     """The pointer left the image; the readout should say nothing rather than something
     stale."""
 
+    _line_width = TICK_PEN_WIDTH
+    _axis_width = AXIS_PEN_WIDTH
+    _built = False
+    """Class-level defaults, because `pg.GraphicsView.__init__` calls `resizeEvent`
+    before this class's own constructor has run a line. `_built` is what stops that
+    first resize from repainting axes that do not exist yet; the widths are there so
+    that `_fit_lines` has something to compare against when it does."""
+
     def __init__(self, colour_map: str = "viridis", parent: "object | None" = None) -> None:
         super().__init__(parent=parent)
         self._view_box = UimfViewBox()
@@ -445,11 +474,13 @@ class HeatmapView(pg.GraphicsLayoutWidget):
         self._cursor_inside = False
         self._levels_held = False
         self._label_style: "dict[str, str]" = {}
+        self._fit_lines()
         self.set_palette(theme.active())
         self.set_text_scale(fonts.active())
         # Both ink variants render at the same size, so the logo's bounding rect never
         # changes between them -- one fit, not one per theme toggle.
         self._logo_box.autoRange(padding=0.08)
+        self._built = True
 
     # --- accessors --------------------------------------------------------------------
 
@@ -615,8 +646,8 @@ class HeatmapView(pg.GraphicsLayoutWidget):
         self.setBackground(palette.background)
         self._label_style = theme.label_style(palette)
         for axis in self._axes():
-            axis.setPen(pg.mkPen(palette.foreground))
-            axis.setTickPen(pg.mkPen(palette.foreground, width=TICK_PEN_WIDTH))
+            axis.setPen(pg.mkPen(palette.foreground, width=self._axis_width))
+            axis.setTickPen(pg.mkPen(palette.foreground, width=self._line_width))
             axis.setTextPen(pg.mkPen(palette.foreground))
         self._debug.setColor(palette.debug)
 
@@ -696,8 +727,36 @@ class HeatmapView(pg.GraphicsLayoutWidget):
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
+        # Widths first, and only when they have actually moved: `set_palette` rebuilds
+        # eight axes' worth of pens, and a drag of the window edge is a hundred resize
+        # events. Going through `set_palette` rather than setting the pens here is what
+        # keeps the two independent -- a theme toggle cannot reset the thickness, because
+        # it reads `_line_width`, and a resize cannot reset the colour, because it asks
+        # for the active palette.
+        if self._built and self._fit_lines():
+            self.set_palette(theme.active())
         width, height = self.pixel_size()
         self.view_resized.emit(width, height)
+
+    def _fit_lines(self) -> bool:
+        """Recompute the line widths for this viewport, and say whether they moved.
+
+        The viewport's **smaller** dimension: a window dragged wide and short is not a
+        window whose furniture should get heavier, and the smaller dimension is what
+        limits how much of the plot a reader is taking in at once. Both widths are
+        clamped by `LINE_WIDTH_LIMITS`, and the tick is what the comparison is made on,
+        at one decimal place -- that is the resolution a painter draws at, and every
+        finer difference would be a rebuild nobody could see.
+        """
+        width, height = self.pixel_size()
+        scale = min(width, height) / REFERENCE_VIEWPORT
+        low, high = LINE_WIDTH_LIMITS
+        fitted = min(high, max(low, TICK_PEN_WIDTH * scale))
+        if round(fitted, 1) == round(self._line_width, 1):
+            return False
+        self._line_width = fitted
+        self._axis_width = min(high, max(low, AXIS_PEN_WIDTH * scale))
+        return True
 
 
 def pixel_of(result: object, x: float, y: float) -> "tuple[int, int] | None":
