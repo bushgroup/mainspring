@@ -663,11 +663,13 @@ class UimfWriter:
         upper bound on the number of points rather than a count of them.
 
         `BPI_MZ` is the m/z UIMF-Library's calibration puts the base peak's bin at, which
-        is what the column is for and what our own files hold. PNNL's SA220P console
-        stores the base peak's **bin index** in it instead -- read off its source, not
-        yet seen on a file -- so a raw acquisition and the summed companion this writes
-        will disagree about what that column means. Neither the reader nor the viewer
-        uses it; `uimf-info --verify` does (lab record, task 16).
+        is what the column is for and what our own files hold. A stock PNNL SA220P console
+        stores the base peak's **bin index** in it instead; the lab's console fork stores
+        an m/z when the frame carries a usable calibration and the bin index when it does
+        not, which is what this does, so a raw acquisition and the summed companion agree
+        about the column. Measured on the console's own files rather than read off its
+        source: every frame that stored rows passes `uimf-info --verify`'s `bpi_mz_ok`
+        (lab record, task 16). Neither the reader nor the viewer uses the column.
 
         Nothing here is on the acquisition path: during a real run it is the console that
         fills this table. This is what the fold writes the summed companion with, and
