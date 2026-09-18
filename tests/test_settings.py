@@ -61,6 +61,19 @@ def test_validate_clamps_an_unrecognised_export_dpi():
     assert ViewerSettings(export_dpi=600).validate().export_dpi == 600
 
 
+def test_validate_clamps_the_rolling_sum_window_to_a_length_it_can_keep_up_with():
+    """A total recomputed every time a frame finishes has about a second to do it in, so
+    the top of the range is what fits in one (`ROLLING_SUM_MAX`); a whole run added up is
+    what `Sum all` is for."""
+    from mainspring.viewer.settings import ROLLING_SUM_MAX
+
+    assert ViewerSettings(rolling_sum_frames=0).validate().rolling_sum_frames == 5
+    assert ViewerSettings(rolling_sum_frames=-4).validate().rolling_sum_frames == 5
+    assert (ViewerSettings(rolling_sum_frames=ROLLING_SUM_MAX + 1)
+            .validate().rolling_sum_frames == 5)
+    assert ViewerSettings(rolling_sum_frames=25).validate().rolling_sum_frames == 25
+
+
 def test_validate_clamps_a_non_positive_cache_budget():
     assert ViewerSettings(cache_budget_mb=0).validate().cache_budget_mb == 512
     assert ViewerSettings(cache_budget_mb=-100).validate().cache_budget_mb == 512
@@ -89,6 +102,7 @@ def test_settings_round_trip_through_qsettings():
         export_dpi=600,
         cache_budget_mb=256,
         arrival_offset_ms=-42.5,
+        rolling_sum_frames=25,
         last_directory="F:/data/acquisitions",
         window_geometry=b"\x00binary-ish\x01geometry\x02bytes\x03",
     )

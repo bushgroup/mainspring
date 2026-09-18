@@ -57,7 +57,16 @@ checkout the viewer starts with `uv run mainspring`, and takes an optional file 
 ```
 uv run mainspring
 uv run mainspring FILE.uimf
+uv run mainspring FILE.uimf --follow --show newest
 ```
+
+To open a file already following it, which is how another program starts the viewer on a
+run it is writing, pass `--follow` and `--show`. `--show` chooses what following does with
+each new frame and takes `fixed`, `newest`, `method-sum` or `rolling-sum`, the four entries
+of the viewer's own `Show` box. A file that cannot be followed, one on a network drive,
+opens anyway and the status bar says why it is not being followed. An option the viewer
+does not offer is an error rather than a file by that name, and the process exits 2 without
+opening a window.
 
 ## Reading a file from Python
 

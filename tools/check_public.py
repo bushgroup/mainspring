@@ -15,7 +15,8 @@ through the whole reader, rasterised, and put through `uimf-info --verify`; the 
 that produces that file, including the two phases of a frame and what a run cut short
 by a power failure leaves behind; and, since
 task 04, the same synthetic file opened and painted by the viewer's own window,
-offscreen, alongside the window icon that ships with it. Where a real file is present, `--verify` runs on that too, which is the
+offscreen, alongside the window icon that ships with it; and the window following a file
+as it is written, in the rolling sum, started the way another program starts it. Where a real file is present, `--verify` runs on that too, which is the
 acceptance test the milestone is written in terms of (lab record, task 03).
 
 Run:  uv run tools/check_public.py
@@ -424,6 +425,9 @@ def main() -> int:
 
     # --------------------------------------------------------------------------------
     section("following a file that is still being written")
+    # The reader's half of it. The window's half -- the two controls, the rolling sum
+    # and the launch route -- is a section of its own further down, after Qt is allowed
+    # to be imported at all.
     # The writer creating the file and the console stand-in appending to it are the two
     # parties a real acquisition has, so this is the live path end to end with no
     # instrument: a frame appears, grows, and becomes final, and the reader says so
@@ -735,6 +739,147 @@ def main() -> int:
                     and painted[0].tic_in_view < result.tic_in_view,
                 )
         window.close()
+
+    # --------------------------------------------------------------------------------
+    section("the viewer following a run, and the command line that starts one")
+    # The window half of the live path, which could not go in the reader section above
+    # because it needs Qt and that section runs before Qt may be imported at all. Same
+    # two parties as there -- the writer creating the file, the console stand-in
+    # appending scans -- with a real `MainWindow` watching them (lab record, task 26).
+    from mainspring.viewer import workers as viewer_workers
+    from mainspring.viewer.app import Launch, parse_arguments
+    from mainspring.viewer.main_window import (
+        FOLLOW_METHOD_SUM,
+        FOLLOW_MODE_WORDS,
+        FOLLOW_MODES,
+        FOLLOW_ROLLING_SUM,
+    )
+
+    # The words another program holds, against the modes this window offers. A mode
+    # added without a word is one the acquisition software cannot ask for, and a word
+    # naming a label that has since been reworded is a launch that silently does
+    # nothing.
+    check_true("every Show mode has a command-line word and every word a mode",
+               sorted(FOLLOW_MODE_WORDS.values()) == sorted(FOLLOW_MODES))
+    check_true("the command line reads a path and how to look at it",
+               parse_arguments(["run.uimf", "--follow", "--show", "rolling-sum"])
+               == Launch(path="run.uimf", follow=True, show=FOLLOW_ROLLING_SUM))
+    check_raises("an unrecognised option is an error, not a file by that name",
+                 ValueError, lambda: parse_arguments(["--folow"]))
+    check_raises("and so is a --show word this viewer does not offer",
+                 ValueError, lambda: parse_arguments(["--show", "sideways"]))
+
+    # A fiftieth of the real interval: what is checked below is what a poll does, not
+    # how often an instrument has something new to say, and at one second these checks
+    # would be the slowest thing in this file.
+    real_interval = viewer_workers.POLL_INTERVAL_S
+    viewer_workers.POLL_INTERVAL_S = 0.02
+
+    def settled(predicate, seconds: float = 5.0) -> bool:
+        """Pump the event loop until `predicate` holds or the deadline passes."""
+        deadline = time.time() + seconds
+        while time.time() < deadline:
+            if predicate():
+                return True
+            qt_app.processEvents()
+            time.sleep(0.005)
+        return predicate()
+
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "run.uimf")
+            with uimf_writer.UimfWriter(path, uimf_writer.GlobalSpec(bins=4096)) as handle:
+                console = ConsoleStub(path)
+
+                def written(finish: bool = True) -> int:
+                    """One more frame of the acquisition, finished unless asked otherwise.
+
+                    Its intensities scale with its number, so that a total names which
+                    frames went into it and not merely how many. No grouping parameters:
+                    this file is the ungrouped kind, which is what the rolling sum is
+                    for.
+                    """
+                    number = handle.add_frame(uimf_writer.FrameSpec(scans=8))
+                    console.acquire_frame(number, [
+                        (s, np.array([100 + s, 900, 3000]), np.array([4, 7, 2]) * number)
+                        for s in range(6)
+                    ])
+                    if finish:
+                        handle.finalise_frame(number, duration_s=0.5)
+                    return number
+
+                def total_of(*frames: int) -> float:
+                    """What those frames' own TIC columns say the sum should be."""
+                    return sum(float(UimfFile(path).scan_summary(n)[3].sum()) for n in frames)
+
+                def showing(expected: float) -> bool:
+                    """Whether the sum on screen is that total. The frames are read and
+                    added on the load worker, so this is also how the check waits for
+                    the answer rather than for the ask."""
+                    frame = window._current_frame
+                    return (frame is not None and window._current_frame_number == 0
+                            and abs(float(frame.intensity.sum()) - expected)
+                            <= 1e-6 * max(1.0, expected))
+
+                written()
+                window = MainWindow()
+                sums = []
+                window._worker.summed.connect(lambda *_: sums.append(1))
+                # The launch route: told before the open, applied when the file is on
+                # screen, through the same two widgets a user would have clicked.
+                window.follow_when_opened(show=FOLLOW_ROLLING_SUM)
+                window.open_file(path, from_command_line=True)
+                check_true("a launch asking to follow lands following, in the mode it asked for",
+                           settled(lambda: window.following)
+                           and window._follow_mode.currentText() == FOLLOW_ROLLING_SUM)
+                check_true("and the rolling sum is offered on a file that does not group its frames",
+                           [window._follow_mode.itemText(i)
+                            for i in range(window._follow_mode.count())]
+                           == [m for m in FOLLOW_MODES if m != FOLLOW_METHOD_SUM])
+
+                window._rolling_sum_spin.setValue(2)
+                written()
+                written()
+                check_true("the rolling sum is a window that slides over the finished frames",
+                           settled(lambda: window._live_sum_frames == (2, 3)))
+                check_true("and totals what those frames' own TIC columns say",
+                           settled(lambda: showing(total_of(2, 3))))
+
+                # A frame the client has not finished is left out, for the reason a
+                # total that changed every time it was recomputed would be a number
+                # nobody could quote.
+                written(finish=False)
+                check_true("a frame still being written is not added to the total",
+                           settled(lambda: window._frame_spin.maximum() == 4)
+                           and window._live_sum_frames == (2, 3))
+                handle.finalise_frame(4, duration_s=0.5)
+                check_true("and is added as soon as it is finished",
+                           settled(lambda: window._live_sum_frames == (3, 4))
+                           and settled(lambda: showing(total_of(3, 4))))
+
+                # And nothing is re-added while nothing changes: a 100-frame total is
+                # 0.2 s of reading, and re-adding the same frames once a second would
+                # keep the load worker from noticing the frame it is waiting for.
+                polls = []
+                already = len(sums)
+                real_refresh = UimfFile.refresh
+                UimfFile.refresh = lambda self: (polls.append(1), real_refresh(self))[1]
+                try:
+                    settled(lambda: len(polls) >= 3)
+                    settled(lambda: False, seconds=0.1)  # a sum asked for would land here
+                finally:
+                    UimfFile.refresh = real_refresh
+                check_true(f"a poll that finds nothing new re-totals nothing (polls: {len(polls)})",
+                           len(polls) >= 3 and len(sums) == already
+                           and window._live_sum_frames == (3, 4))
+
+                window.stop_following()
+                check_true("stopping the follow greys the two controls that answer to it",
+                           not window._follow_mode.isEnabled()
+                           and not window._rolling_sum_spin.isEnabled())
+                window.close()
+    finally:
+        viewer_workers.POLL_INTERVAL_S = real_interval
 
     # --------------------------------------------------------------------------------
     section("real files, if this clone has any")

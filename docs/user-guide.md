@@ -313,8 +313,15 @@ acquired](#following-a-file-being-acquired).
 
 ### Show
 
-`Fixed frame`, `Newest frame`, or `Method frame sum`. Available while `Follow` is on, and
-described with it below.
+`Fixed frame`, `Newest frame`, `Method frame sum`, or `Sum newest frames`. Available while
+`Follow` is on, and described with it below.
+
+### Frames
+
+How many of the newest finished frames `Sum newest frames` adds up, from 1 to 200. Five is the
+default, which is about five seconds of acquisition on SLIMPHONY. A change takes effect on the
+frames already in the file rather than at the next one, so the picture answers as you step the
+number, and the number you set is remembered between sessions.
 
 ## Following a file being acquired
 
@@ -341,9 +348,40 @@ between polls is the whole of the delay you see.
   that records how its frames group, which today means a file clockwork wrote. The total is
   recomputed when a repetition finishes and not while one is being written, so it only ever
   grows.
+- **`Sum newest frames`** totals the newest finished frames instead, as many of them as the
+  `Frames` box beside it asks for. The window of frames moves as the run continues, so the
+  integration time stays the same however long the run is, and it is offered on every file
+  rather than only on one that records how its frames group. A run that has not yet written
+  that many frames is summed as far as it goes, and the status bar says how many frames went
+  in.
+
+The two sums leave out the frame being written, for the same reason: a total that included it
+would change every time it was recomputed and would settle on wherever you happened to stop.
+Each is recomputed only when the set of frames it covers has changed, so a poll that finds
+nothing new costs one query and no reading.
 
 The zoom, the colour levels and every other setting are untouched by any of this. Following
 changes which frame is on screen, never how it is drawn.
+
+### Starting the viewer on a run in progress
+
+To open a file already following it, pass `--follow` on the command line, with `--show` to
+choose what following does:
+
+```
+mainspring FILE.uimf --follow --show newest
+```
+
+`--show` takes `fixed`, `newest`, `method-sum` or `rolling-sum`, which are the four entries of
+the `Show` box in the order they appear in it. The window comes up watching the file, in the
+mode that was asked for, with nothing to find on the toolbar first. This is how another program
+opens a run it is writing, and the lab's own acquisition software uses it for the run in
+progress. An option this viewer does not offer is an error rather than a file by that name, and
+the process exits 2 without opening a window.
+
+A file that cannot be followed, one on a network drive, opens anyway. The status bar says why
+it is not being followed and the viewer runs as it always does, because the file is what you
+were trying to look at.
 
 ### Frames that are not finished yet
 
@@ -480,9 +518,10 @@ figure's own size in inches.
 ## What the viewer remembers
 
 Every toolbar toggle, the colour map, the colour scale, light mode, the text size, the
-aggregate, the detector bit depth, whether the info panel is showing and how wide it is, the
-export resolution, the window's size and position, and the directory you last opened from are
-all saved when the viewer closes and restored when it starts. On Windows they live under
+aggregate, the detector bit depth, how many frames `Sum newest frames` adds up, whether the
+info panel is showing and how wide it is, the export resolution, the window's size and
+position, and the directory you last opened from are all saved when the viewer closes and
+restored when it starts. On Windows they live under
 `HKEY_CURRENT_USER\Software\University of Washington\mainspring`. Deleting that key returns
 every setting to its default.
 

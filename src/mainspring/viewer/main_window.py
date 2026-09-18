@@ -48,6 +48,14 @@ while the operator stays on the frame they were studying -- so it cannot be fold
 either one does arrives through `LoadWorker.live_update` and goes out again through
 `show_frame` and `sum_frames`, so a followed acquisition reaches the screen by exactly
 the path a keypress does (lab record, task 08).
+
+**A launch can ask for both of them, and asks for them late.** Another program starts
+the viewer on a run in progress (`--follow`, `--show`), and `open_file` is
+asynchronous -- the frame list and the grouping arrive with the `opened` signal, so
+there is nothing to follow and no `Method frame sum` to offer at the moment the command
+line is read. `follow_when_opened` therefore remembers the ask and
+`_apply_launch_options` performs it once the file is on screen, by setting the same two
+widgets a user would (lab record, task 26).
 """
 
 from __future__ import annotations
@@ -98,6 +106,7 @@ from .info_panel import InfoPanel
 from .settings import (
     COLOUR_MAPS,
     COLOUR_SCALES,
+    ROLLING_SUM_MAX,
     TEXT_SCALES,
     ViewerSettings,
     load_settings,
@@ -106,7 +115,7 @@ from .settings import (
 from .side_plots import SidePlots, peak_of
 from .workers import LoadWorker, RenderMailbox, RenderRequest, RenderWorker, SumRequest
 
-__all__ = ["APP_TITLE", "FOLLOW_MODES", "MainWindow"]
+__all__ = ["APP_TITLE", "FOLLOW_MODES", "FOLLOW_MODE_WORDS", "MainWindow"]
 
 APP_TITLE = "mainspring"
 """The window title with no file open. With one open it is `"<file name> -- mainspring"`,
@@ -129,7 +138,8 @@ is not what a reader of a menu is looking for."""
 FOLLOW_FIXED = "Fixed frame"
 FOLLOW_NEWEST = "Newest frame"
 FOLLOW_METHOD_SUM = "Method frame sum"
-FOLLOW_MODES = (FOLLOW_FIXED, FOLLOW_NEWEST, FOLLOW_METHOD_SUM)
+FOLLOW_ROLLING_SUM = "Sum newest frames"
+FOLLOW_MODES = (FOLLOW_FIXED, FOLLOW_NEWEST, FOLLOW_METHOD_SUM, FOLLOW_ROLLING_SUM)
 """What the `Show` box does with what the follow poll finds.
 
 `Fixed frame` watches and does not move: the frame spinner's range, the type filter and
@@ -139,12 +149,42 @@ as it arrives, the one still being written included and labelled as such -- a fr
 about a second of acquisition and its scans land in batches, so it fills in front of
 the operator rather than appearing whole. `Method frame sum` keeps a running total of
 the finished repetitions of the method frame being acquired, which is the summed
-heatmap today's files hold, arriving as it is earned. The third is offered only on a
-file that carries the grouping (lab record, task 08)."""
+heatmap today's files hold, arriving as it is earned; it is the one entry offered only
+on a file that carries the grouping (lab record, task 08). `Sum newest frames` totals
+the last `rolling_sum_frames` finished frames instead, a window of fixed length that
+moves through the run rather than restarting at each method-frame boundary -- a fixed
+integration time on any file, grouped or not, traded against latency by one number (lab
+record, task 26)."""
+
+FOLLOW_MODE_WORDS = {
+    "fixed": FOLLOW_FIXED,
+    "newest": FOLLOW_NEWEST,
+    "method-sum": FOLLOW_METHOD_SUM,
+    "rolling-sum": FOLLOW_ROLLING_SUM,
+}
+"""`--show <word>` on the command line, and the `Show` entry each word asks for.
+
+Another program starts the viewer on a run in progress (`viewer/app.py`, lab record,
+task 26), and what it passes has to outlive a label being reworded: the words are the
+interface and the labels are what this window happens to say today. One table, here
+rather than in `app.py`, so that a mode added to `FOLLOW_MODES` without a word for it is
+a missing entry in one dict rather than a second list that quietly disagrees."""
 
 
 def _frame_type_name(frame_type: int) -> str:
     return _FRAME_TYPE_NAMES.get(int(frame_type), f"Type {frame_type}")
+
+
+def _follow_modes_for(*, grouped: bool) -> "list[str]":
+    """The `Show` entries a file can be followed in.
+
+    All of them on a file that says how its frames group, and all but the method-frame
+    sum on one that does not -- which is every file PNNL's writers produce, and a
+    clockwork raw file before the first frame of it has been read. The rolling sum is
+    deliberately in both lists: a window of the newest finished frames needs nothing of
+    the file but its frame list, which is the whole point of having it.
+    """
+    return [m for m in FOLLOW_MODES if grouped or m != FOLLOW_METHOD_SUM]
 
 
 class MainWindow(QMainWindow):
@@ -187,6 +227,14 @@ class MainWindow(QMainWindow):
         self._sum_dialog: QProgressDialog | None = None
         self._live: LiveState | None = None
         self._live_sum_frames: tuple[int, ...] = ()
+        self._launch_follow = False
+        self._launch_show: str | None = None
+        # Whether anything has been drawn at all, and whether anything of *this* file
+        # has. Both are about the same question -- is there a view worth keeping -- and
+        # they differ on a file that was opened before it had a frame in it, which is
+        # what a launch that follows a run just started opens (`_show_frame`).
+        self._ever_shown = False
+        self._shown_this_file = False
 
         self.heatmap = HeatmapView(colour_map=self.settings.colour_map)
         self.setCentralWidget(self.heatmap)
@@ -624,7 +672,7 @@ class MainWindow(QMainWindow):
         toolbar.addAction(self._follow_action)
 
         self._follow_mode = QComboBox()
-        self._follow_mode.addItems([FOLLOW_FIXED, FOLLOW_NEWEST])
+        self._follow_mode.addItems(_follow_modes_for(grouped=False))
         self._follow_mode.setEnabled(False)
         self._follow_mode.currentTextChanged.connect(self._on_follow_mode_changed)
         self._follow_label = add_labelled(
@@ -632,8 +680,21 @@ class MainWindow(QMainWindow):
             " Show: ",
             self._follow_mode,
             tip="Choose what following does with each new frame: stay where you are,"
-                " show the newest frame, or keep a running sum of the method frame"
-                " being acquired.",
+                " show the newest frame, keep a running sum of the method frame being"
+                " acquired, or total the newest finished frames.",
+        )
+
+        self._rolling_sum_spin = SpinBox()
+        self._rolling_sum_spin.setRange(1, ROLLING_SUM_MAX)
+        self._rolling_sum_spin.setValue(self.settings.rolling_sum_frames)
+        self._rolling_sum_spin.setEnabled(False)
+        self._rolling_sum_spin.valueChanged.connect(self._on_rolling_sum_frames_changed)
+        self._rolling_sum_label = add_labelled(
+            toolbar,
+            " Frames: ",
+            self._rolling_sum_spin,
+            tip="How many of the newest finished frames Sum newest frames adds up, 1"
+                f" to {ROLLING_SUM_MAX}.",
         )
 
     def _add_hideable(self, toolbar: QToolBar, text: str, widget: object, *, tip: str) -> QLabel:
@@ -731,6 +792,7 @@ class MainWindow(QMainWindow):
         # poll left running on it would be lock traffic against nothing.
         self.stop_following()
         self._path = path
+        self._shown_this_file = False
         self._opened_from_command_line = from_command_line
         self._show_status(f"Opening {os.path.basename(path)}...")
         self._busy.show()
@@ -876,7 +938,7 @@ class MainWindow(QMainWindow):
         only the poll that is refused, and the status bar says which of the two it was.
         """
         if not checked:
-            self._follow_mode.setEnabled(False)
+            self._enable_follow_controls(False)
             self._live = None
             self._live_sum_frames = ()
             self._worker.set_follow(False)
@@ -897,10 +959,78 @@ class MainWindow(QMainWindow):
             self._follow_action.blockSignals(False)
             self._show_status(refusal)
             return
-        self._follow_mode.setEnabled(True)
+        self._enable_follow_controls(True)
         self._live_sum_frames = ()
         self._worker.set_follow(True)
         self._show_status(f"Following {os.path.basename(self._path)}")
+
+    def _enable_follow_controls(self, enabled: bool) -> None:
+        """`Show` and the frame count beside it live and die with the poll.
+
+        Both say what to do with what a poll finds, so neither is anything to answer
+        with nothing being watched. The number is a persisted setting all the same, so
+        it keeps its value while it is greyed and is there at the value the operator
+        chose the next time Follow goes on.
+        """
+        self._follow_mode.setEnabled(enabled)
+        self._rolling_sum_spin.setEnabled(enabled)
+
+    def follow_when_opened(self, *, show: "str | None" = None) -> None:
+        """Ask for `Follow`, in `show`, as soon as the open in flight has finished.
+
+        The launch route another program starts the viewer by (`viewer/app.py`, lab
+        record, task 26): the clockwork window opens a run that is in progress, and a
+        trainee watching it should not have to find two toolbar controls on a window
+        that has just appeared.
+
+        Remembered rather than done, because `open_file` is asynchronous. The frame list
+        arrives with the `opened` signal and the grouping with it, so `Follow` has
+        nothing to watch and `Method frame sum` is not yet offered at the moment this is
+        called. `_apply_launch_options` is where it happens, once the file is on screen.
+        """
+        self._launch_follow = True
+        self._launch_show = show
+
+    def _apply_launch_options(self) -> None:
+        """Turn on what the command line asked for, once, through the toolbar's own path.
+
+        `setCurrentText` and `setChecked` rather than anything private, so that a
+        launched follow is the same act as a clicked one: the refusals, the status line
+        and the rule that Follow is never persisted all come from `_on_follow_toggled`
+        without being restated here.
+
+        A mode the file cannot offer -- `method-sum` on a file that does not record how
+        its frames group -- says so and leaves the box where it is, the way a refused
+        Follow leaves the tick where it is. A launch that asks for something this file
+        cannot do still opens the file: that is what the person was trying to look at,
+        and a modal in front of a running instrument is the wrong shape.
+        """
+        if not self._launch_follow:
+            return
+        show, self._launch_show = self._launch_show, None
+        self._launch_follow = False
+        # Follow first, so that its own message is the one a refusal leaves on screen,
+        # and the mode after it. Nothing can happen in between: a poll's findings reach
+        # this thread through a queued signal, which cannot be delivered inside a slot
+        # that has not returned.
+        self._follow_action.setChecked(True)  # its `toggled` does the rest
+        if show is None:
+            return
+        offered = [self._follow_mode.itemText(i) for i in range(self._follow_mode.count())]
+        if show in offered:
+            self._follow_mode.setCurrentText(show)
+        elif self.following:
+            self._show_status(f"{show} is not offered on this file")
+
+    def _forget_launch_options(self) -> None:
+        """Drop what the command line asked for, an open having failed.
+
+        A window whose first file did not open is a window with `File > Open` in front
+        of it, and the file the user chooses there is their own choice rather than the
+        one a program asked to follow.
+        """
+        self._launch_follow = False
+        self._launch_show = None
 
     def stop_following(self) -> None:
         """Turn Follow off, if it is on, by the same route the user would. Idempotent."""
@@ -920,7 +1050,7 @@ class MainWindow(QMainWindow):
         a choice. The current selection survives if it is still offered and falls back
         to `Fixed frame` if it is not.
         """
-        wanted = list(FOLLOW_MODES) if self._grouping.grouped else [FOLLOW_FIXED, FOLLOW_NEWEST]
+        wanted = _follow_modes_for(grouped=self._grouping.grouped)
         if [self._follow_mode.itemText(i) for i in range(self._follow_mode.count())] == wanted:
             return
         chosen = self._follow_mode.currentText()
@@ -939,6 +1069,21 @@ class MainWindow(QMainWindow):
         """
         self._live_sum_frames = ()
         if self.following and self._live is not None:
+            self._act_on_live_state(self._live)
+
+    def _on_rolling_sum_frames_changed(self, value: int) -> None:
+        """Re-total at the new length straight away, rather than at the next frame.
+
+        The spinner is how an operator trades signal against latency while watching a
+        run, and a number that only took effect when the next frame happened to finish
+        would read as a control that does nothing. Forgetting the last window is what
+        makes the recompute happen: the set of frames has not changed, only how many of
+        them are wanted.
+        """
+        self.settings.rolling_sum_frames = int(value)
+        self._live_sum_frames = ()
+        if (self.following and self._live is not None
+                and self._follow_mode.currentText() == FOLLOW_ROLLING_SUM):
             self._act_on_live_state(self._live)
 
     def _on_live_update(
@@ -987,7 +1132,7 @@ class MainWindow(QMainWindow):
         self._follow_action.blockSignals(True)
         self._follow_action.setChecked(False)
         self._follow_action.blockSignals(False)
-        self._follow_mode.setEnabled(False)
+        self._enable_follow_controls(False)
         self._live = None
         self._live_sum_frames = ()
         self._show_status(f"Stopped following: {message}")
@@ -1006,6 +1151,8 @@ class MainWindow(QMainWindow):
             self.show_frame(state.frames[-1])
         elif mode == FOLLOW_METHOD_SUM:
             self._sum_live_method_frame(state)
+        elif mode == FOLLOW_ROLLING_SUM:
+            self._sum_live_newest_frames(state)
 
     def _sum_live_method_frame(self, state: LiveState) -> None:
         """Re-total the method frame being acquired, but only when it has gained one.
@@ -1029,7 +1176,37 @@ class MainWindow(QMainWindow):
         # says how many repetitions of it are in yet. `_sync_grouping_controls` reads
         # that off a real frame of the file; the sum itself is frame 0 and cannot.
         self._sync_grouping_controls(members[-1])
-        self._worker.sum_all(list(members), f"method frame {method_frame}", live=True)
+        self._worker.sum_all(list(members), f"method frame {method_frame}",
+                             live=FOLLOW_METHOD_SUM)
+
+    def _sum_live_newest_frames(self, state: LiveState) -> None:
+        """Re-total the newest finished frames, but only when that set has moved.
+
+        The method-frame sum's two rules, on a set chosen by length instead of by
+        membership: **finished frames only**, for the reason a total that changed under
+        the operator every time it was recomputed is a number nobody can quote; and
+        **only when the set has changed**, which here means either a frame finishing or
+        the spinner moving, because re-adding the same frames once a second would keep
+        the load worker too busy to notice the frame it is waiting for.
+
+        What it does not inherit is the method frame: the window is the last N of
+        `state.final` whatever the file says about grouping, so it keeps moving across a
+        method-frame boundary and works on a file that has no grouping at all. Fewer
+        than N finished frames in the file is not a special case -- it sums what there
+        is, and `_on_summed` says how many that was.
+
+        The type filter is not consulted, as it is not by `Newest frame` either: what a
+        followed run writes next is what this is a window on, and a filter narrows what
+        the frame spinner may reach rather than what the instrument is doing.
+        """
+        members = tuple(state.final[-int(self.settings.rolling_sum_frames):])
+        if not members or members == self._live_sum_frames:
+            return
+        self._live_sum_frames = members
+        # The spinners name the newest frame in the window, the way they name the method
+        # frame a running total belongs to: the sum itself is frame 0 and names nothing.
+        self._sync_grouping_controls(members[-1])
+        self._worker.sum_all(list(members), live=FOLLOW_ROLLING_SUM)
 
     # --- worker callbacks -------------------------------------------------------------
 
@@ -1068,6 +1245,11 @@ class MainWindow(QMainWindow):
             self._busy.hide()
             self._opening = False
             self._show_status("This file has no frames")
+            # Nothing will be painted, so this is where a launched follow starts -- and
+            # a file with no frames yet is exactly the file another program launches the
+            # viewer on: created by the acquisition software, opened before the first
+            # experiment has finished. Everything the poll then finds is new.
+            self._apply_launch_options()
             return
         self._worker.request_frame(frame_numbers[0])
 
@@ -1112,10 +1294,14 @@ class MainWindow(QMainWindow):
     def _on_frame_loaded(
         self, frame_number: int, sparse_frame: SparseFrame, frame_params: FrameParams
     ) -> None:
-        # `_opening` is true only for the very first frame after `open_file` -- every
-        # later arrival of this same signal is a frame-navigation or filter-driven
-        # request, which must keep the view regardless of keep-ranges.
-        reset = (not self.settings.keep_ranges) if self._opening else False
+        # The first frame of a file either takes its range or keeps what is on screen,
+        # by the keep-ranges setting; every later arrival of this same signal is a
+        # frame-navigation or filter-driven request, which keeps the view regardless of
+        # it. `_opening` is the usual way to be the first -- and `_shown_this_file` is
+        # the other one, a file that had no frames when it was opened and whose first
+        # frame arrives from the follow poll instead (lab record, task 26).
+        first = self._opening or not self._shown_this_file
+        reset = (not self.settings.keep_ranges) if first else False
         self._show_frame(frame_number, sparse_frame, frame_params, reset=reset)
 
     def _show_frame(
@@ -1127,6 +1313,13 @@ class MainWindow(QMainWindow):
         message: "str | None" = None,
     ) -> None:
         assert self._global is not None  # a frame cannot load before opened() fires
+        # Keeping the view is only possible when there is one. Nothing has been drawn in
+        # this window yet on the very first frame of a session, and on a first frame that
+        # arrives from the follow poll rather than from the open (a file opened before
+        # the instrument had written a frame to it), so the range comes from the frame
+        # whatever the caller asked for -- the alternative is the box's own default
+        # window, clamped into a corner of a frame nobody chose.
+        reset = reset or not self._ever_shown
         calibration = frame_params.calibration(self._global.bin_width_ns)
         axes = DisplayAxes.build(
             sparse_frame, calibration, frame_params.average_tof_length_ns,
@@ -1137,6 +1330,8 @@ class MainWindow(QMainWindow):
         self._current_axes = axes
         self._current_frame_number = frame_number
         self._frame_params = frame_params
+        self._ever_shown = True
+        self._shown_this_file = True
         self._serial += 1
         self.info_panel.set_file(self._global, frame_params)
         # A frame the instrument may still be adding scans to is drawn, and said to be
@@ -1160,6 +1355,7 @@ class MainWindow(QMainWindow):
 
     def _on_failed(self, message: str) -> None:
         self._busy.hide()
+        self._forget_launch_options()
         if self._opening:
             # The open itself failed: nothing is on screen for the title to name.
             failed_path = self._path
@@ -1245,6 +1441,10 @@ class MainWindow(QMainWindow):
             self._show_status(
                 f"{self._frame_message} -- opened in {elapsed_ms:.0f} ms"
             )
+            # After the open line and not before it: a launched follow says either
+            # "Following <file>" or why it cannot, and that is the sentence worth
+            # leaving on screen. Here rather than in `_on_opened` for that reason alone.
+            self._apply_launch_options()
         self.frame_shown.emit(result)
 
     def _on_summing_progress(self, done: int, total: int) -> None:
@@ -1272,12 +1472,19 @@ class MainWindow(QMainWindow):
         if request.live and not self._follow_action.isChecked():
             return  # following was switched off while this was being added up
         named = f" of {request.what}" if request.what else ""
-        if request.live:
-            count = len(request.frames)
+        count = len(request.frames)
+        if request.live == FOLLOW_ROLLING_SUM:
+            # No "so far": this total is a window of fixed length that moves rather than
+            # one that grows. The count is in it because a run that has not reached the
+            # length asked for yet is summing fewer frames than the spinner says.
+            summed = ("the newest finished frame" if count == 1
+                      else f"the {count} newest finished frames")
+            message = f"Rolling sum of {summed}: {len(sparse_frame):,} points"
+        elif request.live:
             message = (f"Running sum{named}: {count} repetition{'' if count == 1 else 's'}"
                        f" so far, {len(sparse_frame):,} points")
         else:
-            message = (f"Sum of {len(request.frames)} frames{named}:"
+            message = (f"Sum of {count} frames{named}:"
                        f" {len(sparse_frame):,} points")
         self._show_frame(0, sparse_frame, frame_params, reset=False, message=message)
 

@@ -1,4 +1,4 @@
-"""Task 08: following a file while something else is writing it.
+"""Tasks 08 and 26: following a file while something else is writing it.
 
 Two parties, no instrument. `mainspring.uimf.writer` creates the file and owns its
 parameters, `tests/console_stub.py` appends `Frame_Scans` the way PNNL's console does,
@@ -10,6 +10,10 @@ The reader half needs no Qt. The viewer half drives a real `MainWindow` offscree
 waits on the signals the poll travels through, rather than calling the poll itself --
 the thing worth testing is that a frame written by another process reaches the screen,
 not that a method returns.
+
+The last two sections are task 26's: the rolling sum over the newest finished frames,
+and the launch route another program starts the viewer by. Both are the same acquisition
+stand-in and the same window, since both are ways of asking for what task 08 built.
 """
 
 from __future__ import annotations
@@ -27,10 +31,15 @@ from mainspring.uimf import (
     UimfWriter,
     is_local_path,
 )
+from mainspring.viewer.app import Launch, parse_arguments
+from mainspring.viewer.app import main as viewer_main
 from mainspring.viewer.main_window import (
     FOLLOW_FIXED,
     FOLLOW_METHOD_SUM,
+    FOLLOW_MODE_WORDS,
+    FOLLOW_MODES,
     FOLLOW_NEWEST,
+    FOLLOW_ROLLING_SUM,
     MainWindow,
 )
 
@@ -418,7 +427,11 @@ def test_the_method_frame_sum_is_offered_only_on_a_file_that_groups_its_frames(
     qtbot, tmp_path
 ):
     """Removed rather than greyed, for the reason the method-frame spinners are hidden:
-    an entry that can never be chosen on this file is not a choice."""
+    an entry that can never be chosen on this file is not a choice.
+
+    `Sum newest frames` is the other half of the same assertion: it is offered here,
+    because a window of the newest finished frames needs nothing of the file but its
+    frame list, which is why it exists (lab record, task 26)."""
     ungrouped = Acquisition(tmp_path / "ungrouped.uimf")
     ungrouped.frame()
     ungrouped.close()
@@ -431,7 +444,7 @@ def test_the_method_frame_sum_is_offered_only_on_a_file_that_groups_its_frames(
     qtbot.waitUntil(lambda: bool(painted), timeout=5000)
 
     offered = [window._follow_mode.itemText(i) for i in range(window._follow_mode.count())]
-    assert offered == [FOLLOW_FIXED, FOLLOW_NEWEST]
+    assert offered == [FOLLOW_FIXED, FOLLOW_NEWEST, FOLLOW_ROLLING_SUM]
 
 
 def test_opening_another_file_stops_following_the_first(following_window, qtbot, tmp_path):
@@ -480,3 +493,292 @@ def test_following_does_not_reset_a_frame_type_filter_the_user_set(following_win
 
     assert window._type_group.checkedAction().text() == "MS1"
     assert window._active_frame_numbers == [1, 2]
+
+
+# --- the rolling sum ------------------------------------------------------------------
+
+@pytest.fixture
+def rolling_window(qtbot, tmp_path, quick_poll):
+    """A window following a file that says nothing about how its frames group, in
+    `Sum newest frames` over a window of two.
+
+    Ungrouped on purpose: the rolling sum is the mode that works on a file the
+    method-frame sum cannot be offered on. Two frames rather than the default five, so
+    that a handful of frames is enough to watch the window slide.
+    """
+    running = Acquisition(tmp_path / "rolling.uimf")
+    running.frame()
+    window = MainWindow()
+    qtbot.addWidget(window)
+    painted: list = []
+    window.frame_shown.connect(painted.append)
+    window.open_file(running.path)
+    qtbot.waitUntil(lambda: bool(painted), timeout=5000)
+    window._rolling_sum_spin.setValue(2)
+    window._follow_action.setChecked(True)
+    window._follow_mode.setCurrentText(FOLLOW_ROLLING_SUM)
+    assert window.following
+    yield window, running
+    running.close()
+
+
+def test_the_rolling_sum_is_a_window_that_slides_over_the_finished_frames(rolling_window,
+                                                                         qtbot):
+    """The whole mode in one sequence: it fills to the length asked for, then moves.
+
+    A fixed integration time that keeps moving through a run is what distinguishes it
+    from the method-frame sum, which restarts at every method-frame boundary and only
+    ever grows.
+    """
+    window, running = rolling_window
+    qtbot.waitUntil(lambda: window._live_sum_frames == (1,), timeout=5000)
+
+    running.frame()
+    qtbot.waitUntil(lambda: window._live_sum_frames == (1, 2), timeout=5000)
+    running.frame()
+    qtbot.waitUntil(lambda: window._live_sum_frames == (2, 3), timeout=5000)
+
+
+def test_the_rolling_sum_leaves_out_a_frame_that_is_still_being_written(rolling_window,
+                                                                       qtbot):
+    """The rule it inherits from the method-frame sum. A total that included a frame
+    still being written would change every time it was recomputed and would settle on
+    wherever the operator happened to stop."""
+    window, running = rolling_window
+    qtbot.waitUntil(lambda: window._live_sum_frames == (1,), timeout=5000)
+
+    running.start()  # frame 2, declared and partly written, not finalised
+    qtbot.waitUntil(lambda: window._frame_spin.maximum() == 2, timeout=5000)
+    assert window._live_sum_frames == (1,)
+
+    running.finish()
+    qtbot.waitUntil(lambda: window._live_sum_frames == (1, 2), timeout=5000)
+
+
+def test_the_rolling_sum_totals_what_the_frames_own_tic_columns_say(rolling_window, qtbot):
+    """Against the file's own summary columns, which are ground truth for a decode (lab
+    record, task 01) -- so this checks the total and not just that one arrived. The
+    status line names the window by the frames it added rather than by the frames it was
+    asked for."""
+    window, running = rolling_window
+    running.frame()
+    qtbot.waitUntil(
+        lambda: "Rolling sum of the 2 newest finished frames" in window.status_text(),
+        timeout=5000,
+    )
+    assert window._current_frame_number == 0
+
+    file = UimfFile(running.path)
+    expected = sum(float(file.scan_summary(n)[3].sum()) for n in (1, 2))
+    assert float(window._current_frame.intensity.sum()) == pytest.approx(expected)
+
+
+def test_the_rolling_sum_says_how_many_frames_it_found_when_it_is_short(qtbot, tmp_path,
+                                                                       quick_poll):
+    """A run that has just started has fewer finished frames than the spinner asks for.
+    It sums what there is and says so, rather than waiting for a window it may never
+    get."""
+    running = Acquisition(tmp_path / "short.uimf")
+    running.frame()
+    window = MainWindow()
+    qtbot.addWidget(window)
+    painted: list = []
+    window.frame_shown.connect(painted.append)
+    window.open_file(running.path)
+    qtbot.waitUntil(lambda: bool(painted), timeout=5000)
+    try:
+        window._rolling_sum_spin.setValue(10)
+        window._follow_action.setChecked(True)
+        window._follow_mode.setCurrentText(FOLLOW_ROLLING_SUM)
+        qtbot.waitUntil(
+            lambda: "Rolling sum of the newest finished frame:" in window.status_text(),
+            timeout=5000,
+        )
+        assert window._live_sum_frames == (1,)
+    finally:
+        running.close()
+
+
+def test_a_poll_that_finds_nothing_new_does_not_re_total_the_same_frames(rolling_window,
+                                                                        qtbot, monkeypatch):
+    """The other rule the method-frame sum set: recomputed only when the set of frames
+    has actually changed.
+
+    Counted on the sum itself rather than on the frames it would read, because the load
+    worker caches a finished frame -- so a re-added window would be cheap enough to hide
+    in a timing, and would still be the load worker doing work once a second on a thread
+    that is waiting for a frame (lab record, task 17).
+    """
+    window, running = rolling_window
+    running.frame()
+    qtbot.waitUntil(lambda: window._live_sum_frames == (1, 2), timeout=5000)
+    qtbot.waitUntil(
+        lambda: "Rolling sum of the 2 newest finished frames" in window.status_text(),
+        timeout=5000,
+    )
+
+    polls: list = []
+    sums: list = []
+    window._worker.summed.connect(lambda *_: sums.append(1))
+    real_refresh = UimfFile.refresh
+
+    def counting_refresh(self):
+        polls.append(1)
+        return real_refresh(self)
+
+    monkeypatch.setattr(UimfFile, "refresh", counting_refresh)
+    qtbot.waitUntil(lambda: len(polls) >= 3, timeout=5000)
+    qtbot.wait(50)  # a sum any of those polls had asked for would have landed by now
+    assert sums == []
+    assert window._live_sum_frames == (1, 2)
+
+
+def test_changing_how_many_frames_to_sum_re_totals_at_once(rolling_window, qtbot):
+    """The spinner is how an operator trades signal against latency while a run is going
+    on, so it acts on the poll that has already happened rather than on the next one."""
+    window, running = rolling_window
+    running.frame()
+    running.frame()
+    qtbot.waitUntil(lambda: window._live_sum_frames == (2, 3), timeout=5000)
+
+    window._rolling_sum_spin.setValue(3)
+    assert window._live_sum_frames == (1, 2, 3)  # no wait: the change is what recomputes
+    assert window.settings.rolling_sum_frames == 3
+
+
+# --- starting the viewer on a run in progress -----------------------------------------
+
+def test_a_launch_lands_following_in_the_mode_it_asked_for(qtbot, acquisition, quick_poll):
+    """What the clockwork window's button asks for: a file open, `Follow` on and `Show`
+    where it was told, on a window the trainee has not had to touch."""
+    acquisition.frame()
+    window = MainWindow()
+    qtbot.addWidget(window)
+    painted: list = []
+    window.frame_shown.connect(painted.append)
+
+    window.follow_when_opened(show=FOLLOW_NEWEST)
+    window.open_file(acquisition.path, from_command_line=True)
+    qtbot.waitUntil(lambda: window.following, timeout=5000)
+
+    assert window._follow_mode.currentText() == FOLLOW_NEWEST
+    assert window._follow_mode.isEnabled() and window._rolling_sum_spin.isEnabled()
+    acquisition.frame()
+    qtbot.waitUntil(lambda: window._current_frame_number == 2, timeout=5000)
+
+
+def test_a_launch_can_follow_a_file_that_has_no_frames_in_it_yet(qtbot, tmp_path,
+                                                                quick_poll):
+    """The case the launch route exists for: the acquisition software creates the file
+    and starts the viewer on it before the first experiment has finished.
+
+    The first frame then arrives from the poll rather than from the open, and it is
+    still the first sight of this file -- so the view is that frame's own full range
+    rather than the empty window it would otherwise have been kept at.
+    """
+    running = Acquisition(tmp_path / "notyet.uimf")
+    window = MainWindow()
+    qtbot.addWidget(window)
+    painted: list = []
+    window.frame_shown.connect(painted.append)
+    try:
+        window.follow_when_opened(show=FOLLOW_NEWEST)
+        window.open_file(running.path, from_command_line=True)
+        qtbot.waitUntil(lambda: window.following, timeout=5000)
+
+        running.frame()
+        qtbot.waitUntil(lambda: bool(painted), timeout=5000)
+        assert window._current_frame_number == 1
+        result = painted[-1]
+        assert (result.x_range, result.y_range) == result.axes.full_range
+    finally:
+        running.close()
+
+
+def test_a_launch_on_a_file_that_cannot_be_followed_still_opens_it(qtbot, monkeypatch,
+                                                                  acquisition):
+    """The file is what the person was trying to look at. The refusal is the toolbar's
+    own, in the status bar rather than in a modal in front of a running instrument."""
+    acquisition.frame()
+    window = MainWindow()
+    qtbot.addWidget(window)
+    painted: list = []
+    window.frame_shown.connect(painted.append)
+
+    monkeypatch.setattr("mainspring.viewer.main_window.is_local_path", lambda _p: False)
+    window.follow_when_opened(show=FOLLOW_NEWEST)
+    window.open_file(acquisition.path, from_command_line=True)
+    qtbot.waitUntil(lambda: "local drive" in window.status_text(), timeout=5000)
+
+    assert not window.following
+    assert window._current_frame_number == 1
+    assert bool(painted)
+
+
+def test_a_launch_asking_for_a_mode_this_file_cannot_offer_says_so_and_follows(
+    qtbot, tmp_path, quick_poll
+):
+    """`--show method-sum` on a file that does not record how its frames group. The mode
+    is not there to be chosen, which is worth a line in the status bar; the run is still
+    worth watching, so following goes on regardless."""
+    running = Acquisition(tmp_path / "ungrouped-launch.uimf")
+    running.frame()
+    window = MainWindow()
+    qtbot.addWidget(window)
+    painted: list = []
+    window.frame_shown.connect(painted.append)
+    try:
+        window.follow_when_opened(show=FOLLOW_METHOD_SUM)
+        window.open_file(running.path, from_command_line=True)
+        qtbot.waitUntil(lambda: window.following, timeout=5000)
+
+        assert "not offered" in window.status_text()
+        assert window._follow_mode.currentText() == FOLLOW_FIXED
+    finally:
+        running.close()
+
+
+def test_an_open_that_fails_does_not_leave_a_launch_waiting(qtbot, tmp_path):
+    """A window whose first file did not open is a window with File > Open in front of
+    it, and the file chosen there is the user's own rather than the one a program asked
+    to follow."""
+    bad = tmp_path / "not-a-uimf.uimf"
+    bad.write_bytes(b"this is not a database")
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    window.follow_when_opened(show=FOLLOW_NEWEST)
+    window.open_file(os.fspath(bad), from_command_line=False)
+    qtbot.waitUntil(lambda: window.status_text().startswith("Error:"), timeout=5000)
+    assert not window._launch_follow
+
+
+def test_every_show_mode_has_a_command_line_word_and_every_word_a_mode():
+    """The words are the interface another program holds; the labels are what the window
+    happens to say today. A mode added without a word would be a mode the clockwork
+    window cannot ask for."""
+    assert sorted(FOLLOW_MODE_WORDS.values()) == sorted(FOLLOW_MODES)
+    assert all(word == word.lower() and " " not in word for word in FOLLOW_MODE_WORDS)
+
+
+def test_the_command_line_reads_a_path_and_how_to_look_at_it():
+    parsed = parse_arguments(["run.uimf", "--follow", "--show", "rolling-sum"])
+    assert parsed.path == "run.uimf"
+    assert parsed.follow and parsed.show == FOLLOW_ROLLING_SUM
+    assert parse_arguments([]) == Launch()
+    assert parse_arguments(["--show=method-sum"]).show == FOLLOW_METHOD_SUM
+
+
+def test_an_option_the_viewer_does_not_offer_is_an_error_and_never_a_file(monkeypatch,
+                                                                         tmp_path, capsys):
+    """A mistyped `--folow` taken as a positional argument would be a file by that name,
+    and the viewer would complain about a file nobody asked for instead of failing where
+    the mistake is. Exit 2, the message on stderr, and no window."""
+    monkeypatch.setenv("NUMBA_CACHE_DIR", os.fspath(tmp_path))
+
+    assert viewer_main(["--folow"]) == 2
+    assert "--folow" in capsys.readouterr().err
+    assert viewer_main(["run.uimf", "--show", "sideways"]) == 2
+    assert "rolling-sum" in capsys.readouterr().err  # what it does take
+    assert viewer_main(["--help"]) == 0
+    assert "--show" in capsys.readouterr().out

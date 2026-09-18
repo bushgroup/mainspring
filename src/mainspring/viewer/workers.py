@@ -102,9 +102,14 @@ class SumRequest:
 
     frames: tuple[int, ...] = ()
     what: str = ""
-    live: bool = False
-    """A total the follow poll asked for rather than the user: no progress dialog, and
-    the view must not move if a newer one is already on screen."""
+    live: str = ""
+    """Which `Show` mode asked for this total, empty when the user did.
+
+    Truthy exactly when the follow poll asked: no progress dialog, and the view must not
+    move if a newer one is already on screen. The mode's own name rather than a flag
+    because there are two of them and they are worded differently when they land -- one
+    grows repetition by repetition until the method frame ends, the other is a window of
+    fixed length that moves. Nothing here reads the string; it is carried."""
 
 
 @dataclass(frozen=True)
@@ -319,7 +324,7 @@ class LoadWorker(QThread):
         """Ask for a frame; the `frame_loaded` signal carries it."""
         self._queue.put(("frame", int(frame)))
 
-    def sum_all(self, frames: "list[int]", what: str = "", *, live: bool = False) -> None:
+    def sum_all(self, frames: "list[int]", what: str = "", *, live: str = "") -> None:
         """Sum several frames into one; the `summed` signal carries the result.
 
         Progress is one `summing_progress` tick per frame *read*, not per frame added --
@@ -331,7 +336,7 @@ class LoadWorker(QThread):
         `summed` signal in a `SumRequest`, so that the window knows which of its several
         reasons for asking this answer belongs to.
         """
-        self._queue.put(("sum", SumRequest(tuple(int(f) for f in frames), what, live)))
+        self._queue.put(("sum", SumRequest(tuple(int(f) for f in frames), what, str(live))))
 
     def set_follow(self, following: bool) -> None:
         """Start or stop polling the open file for what the instrument has written.

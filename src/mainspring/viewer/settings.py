@@ -14,6 +14,11 @@ that matters more than it looks:
   the per-push readout is only as right as this setting -- which is why the info panel
   states it alongside the number rather than quoting counts on their own (lab record,
   task 01).
+* **`rolling_sum_frames` is here although `Follow` is not.** How long an operator likes
+  to integrate for is a way of working and belongs with the other preferences; which
+  file is being watched is one file and a session's business (lab record, task 08). The
+  default of five is about five seconds of acquisition at the SLIMPHONY pusher rate,
+  which averages several repetitions together and still moves visibly during a run.
 
 Plain dataclass, no Qt in the type itself, so a test can exercise the defaults and the
 round trip without a `QApplication`. `load_settings`/`save_settings` are the only two
@@ -37,6 +42,7 @@ __all__ = [
     "EXPORT_DPIS",
     "INFO_PANEL_WIDTH",
     "ORGANISATION",
+    "ROLLING_SUM_MAX",
     "TEXT_SCALES",
     "THEMES",
     "ViewerSettings",
@@ -85,6 +91,19 @@ for the reason `EXPORT_DPIS` is here: `validate` has to clamp a hand-edited valu
 this module importing one that pulls in Qt's widgets."""
 
 
+ROLLING_SUM_MAX = 200
+"""The most frames the rolling sum will total, and the top of its spinner.
+
+A cap rather than a free number, because this total is recomputed every time a frame
+finishes -- about once a second on a run -- and reading a frame costs about 5 ms, so 200
+frames is 1 second of reading against a 1 second budget (lab record, task 17). Anything
+longer than that is a whole run being added up, which is what `Sum all` and
+`Sum method frame` are for: they are asked for once and carry a progress dialog and a
+cancel, and this one is not and does not. Here rather than in `main_window.py` for the
+reason `EXPORT_DPIS` is here: `validate` has to clamp a hand-edited value without this
+module importing one that pulls in Qt's widgets."""
+
+
 INFO_PANEL_WIDTH = 320
 """The narrowest the info panel's content goes, in pixels, and the width a first run
 gets. Wide enough for the parameter tree's two columns and the per-push line on two rows;
@@ -114,6 +133,7 @@ class ViewerSettings:
     export_dpi: int = 300
     cache_budget_mb: int = 512
     arrival_offset_ms: float = 0.0
+    rolling_sum_frames: int = 5
     last_directory: str = ""
     window_geometry: bytes = b""
 
@@ -128,6 +148,8 @@ class ViewerSettings:
         detector_bits = self.detector_bits if 1 <= self.detector_bits <= 32 else 8
         info_panel_width = max(INFO_PANEL_WIDTH, int(self.info_panel_width))
         cache_budget_mb = self.cache_budget_mb if self.cache_budget_mb > 0 else 512
+        rolling = int(self.rolling_sum_frames)
+        rolling_sum_frames = rolling if 1 <= rolling <= ROLLING_SUM_MAX else 5
         return replace(
             self,
             aggregate=self.aggregate if self.aggregate in AGGREGATES else "sum",
@@ -139,6 +161,7 @@ class ViewerSettings:
             theme=self.theme if self.theme in THEMES else "dark",
             export_dpi=self.export_dpi if self.export_dpi in EXPORT_DPIS else 300,
             cache_budget_mb=cache_budget_mb,
+            rolling_sum_frames=rolling_sum_frames,
             arrival_offset_ms=self.arrival_offset_ms if math.isfinite(self.arrival_offset_ms) else 0.0,
             last_directory=self.last_directory or "",
         )
@@ -190,6 +213,8 @@ def load_settings() -> ViewerSettings:
                                  defaults.cache_budget_mb),
         arrival_offset_ms=_as_float(store.value("arrival_offset_ms", defaults.arrival_offset_ms),
                                      defaults.arrival_offset_ms),
+        rolling_sum_frames=_as_int(store.value("rolling_sum_frames", defaults.rolling_sum_frames),
+                                    defaults.rolling_sum_frames),
         last_directory=str(store.value("last_directory", defaults.last_directory)),
         window_geometry=_as_bytes(store.value("window_geometry", defaults.window_geometry)),
     )
@@ -219,6 +244,7 @@ def save_settings(settings: ViewerSettings) -> None:
     store.setValue("export_dpi", settings.export_dpi)
     store.setValue("cache_budget_mb", settings.cache_budget_mb)
     store.setValue("arrival_offset_ms", settings.arrival_offset_ms)
+    store.setValue("rolling_sum_frames", settings.rolling_sum_frames)
     store.setValue("last_directory", settings.last_directory)
     store.setValue("window_geometry", QByteArray(settings.window_geometry))
     store.sync()

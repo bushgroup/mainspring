@@ -1,8 +1,8 @@
 """The `mainspring` console entry point: build a `QApplication` and a `MainWindow`.
 
-Thin on purpose. Everything this module does -- parse a command line that is at most a
-file path, point numba's compiled-kernel cache somewhere that survives a frozen `.exe`
-rebuild (seeding it from a build-time pre-warmed copy on first launch), set
+Thin on purpose. Everything this module does -- parse a command line that is a file path
+and how to look at it, point numba's compiled-kernel cache somewhere that survives a
+frozen `.exe` rebuild (seeding it from a build-time pre-warmed copy on first launch), set
 pyqtgraph's config, set the application and organisation names that `QSettings` keys
 off, set the window icon and the Windows taskbar identity that groups under it,
 construct the window, and hand control to the Qt event loop -- is startup, and
@@ -12,6 +12,14 @@ loop.
 
 It is also the PyInstaller entry point (via `packaging/entrypoint.py`), so it stays the
 one place a frozen-build workaround goes (lab record, task 07).
+
+**The options are an interface to another program, not to a person.** The clockwork
+acquisition window starts the viewer on the run it is writing, and what it passes has to
+open that file already following it -- a trainee should not have to find `Follow` and
+`Show` on a window that has just appeared (lab record, task 26). So the words are long
+options with stable names and values a person could have typed, an unrecognised one is
+an error rather than a path, and the whole parse happens **before** `QApplication` is
+constructed, since Qt eats the options it recognises out of any list it is handed.
 """
 
 from __future__ import annotations
@@ -19,8 +27,91 @@ from __future__ import annotations
 import os
 import shutil
 import sys
+from dataclasses import dataclass
 
-__all__ = ["main"]
+__all__ = ["Launch", "main", "parse_arguments"]
+
+USAGE = """usage: mainspring [FILE] [--follow] [--show MODE]
+
+Open a UIMF file in the mainspring viewer.
+
+  FILE           the .uimf file to open
+  --follow       watch the file for what the instrument is still writing to it
+  --show MODE    what following does with each new frame: fixed, newest,
+                 method-sum or rolling-sum. Implies --follow
+  -h, --help     print this and exit
+"""
+"""What `--help` prints, and what an unrecognised option is answered with.
+
+Hand-written, and the parse below with it, rather than `argparse`: the frozen build is
+windowed, so `sys.stdout` and `sys.stderr` may be nothing at all, and `argparse`
+answers a bad option by writing to a stream it assumes is there and raising `SystemExit`
+through a caller that is a `main()` returning a status. A dozen lines of parsing keep
+both of those under this module's control."""
+
+
+@dataclass(frozen=True)
+class Launch:
+    """What one command line asked for: a file, and how to look at it."""
+
+    path: "str | None" = None
+    follow: bool = False
+    show: "str | None" = None
+    """A `Show` entry by its own label (`main_window.FOLLOW_MODES`), already translated
+    from the word on the command line, or None to leave the box where it is."""
+
+
+def parse_arguments(args: "list[str]") -> Launch:
+    """`args` as a `Launch`, raising `ValueError` on anything this does not offer.
+
+    One optional path and long options only. A refusal rather than a guess is the whole
+    point of parsing at all: an unrecognised `--folow` taken as a positional argument
+    would be a file by that name, and the viewer would put up a dialog about a file
+    nobody asked for instead of failing where the mistake is.
+
+    `--show` is given a word rather than a label -- `rolling-sum`, not
+    `Sum newest frames` -- because the caller is another program and the labels are what
+    this window happens to say today (`main_window.FOLLOW_MODE_WORDS`, which is imported
+    here rather than copied so that there is one list of the words and not two).
+    """
+    from .main_window import FOLLOW_MODE_WORDS
+
+    path: "str | None" = None
+    follow = False
+    show: "str | None" = None
+    rest = list(args)
+    while rest:
+        arg = rest.pop(0)
+        if arg == "--follow":
+            follow = True
+        elif arg == "--show" or arg.startswith("--show="):
+            word = arg[len("--show="):] if "=" in arg else (rest.pop(0) if rest else "")
+            if word not in FOLLOW_MODE_WORDS:
+                offered = ", ".join(FOLLOW_MODE_WORDS)
+                raise ValueError(f"--show takes one of {offered}, not {word!r}")
+            show = FOLLOW_MODE_WORDS[word]
+        elif arg.startswith("-") and arg != "-":
+            raise ValueError(f"unrecognised option {arg}")
+        elif path is None:
+            path = arg
+        else:
+            raise ValueError("only one file can be opened at a time")
+    return Launch(path=path, follow=follow, show=show)
+
+
+def _write(stream: object, text: str) -> None:
+    """Print to `stream` if there is one.
+
+    The frozen build is windowed (`packaging/mainspring.spec`, `console=False`), where
+    the standard streams may be `None` or a handle nothing is attached to. A usage
+    message that cannot be shown is not a reason for the exit status to be wrong, and it
+    is certainly not a reason to raise.
+    """
+    try:
+        stream.write(text)
+        stream.flush()
+    except (AttributeError, OSError, ValueError):
+        pass
 
 
 def _numba_cache_dir() -> str:
@@ -98,8 +189,15 @@ def main(argv: "list[str] | None" = None) -> int:
     """Run the viewer; returns a process exit status.
 
     An optional path argument opens that file, which is what a file association and a
-    drag onto the `.exe` both amount to. `argv` is the arguments after the program name,
-    same as `sys.argv[1:]`.
+    drag onto the `.exe` both amount to; `--follow` and `--show` say how to look at it,
+    which is what another program starting the viewer on a run in progress asks for.
+    `argv` is the arguments after the program name, same as `sys.argv[1:]`.
+
+    Three statuses: 0 when the viewer ran (and when `--help` was all that was wanted),
+    2 for a command line this cannot act on, and whatever Qt's event loop returns
+    otherwise. A file that cannot be followed is **not** one of those -- it opens, the
+    status bar says why it is not being followed, and the process exits 0, because the
+    file is what the person was trying to see.
     """
     os.environ.setdefault("NUMBA_CACHE_DIR", _numba_cache_dir())
     os.makedirs(os.environ["NUMBA_CACHE_DIR"], exist_ok=True)
@@ -120,17 +218,35 @@ def main(argv: "list[str] | None" = None) -> int:
     pg.setConfigOptions(imageAxisOrder="row-major", useOpenGL=False, antialias=False)
 
     args = list(sys.argv[1:] if argv is None else argv)
-    app = QApplication.instance() or QApplication([sys.argv[0], *args])
+    if "-h" in args or "--help" in args:
+        _write(sys.stdout, USAGE)
+        return 0
+    try:
+        launch = parse_arguments(args)
+    except ValueError as exc:
+        _write(sys.stderr, f"mainspring: {exc}\n\n{USAGE}")
+        return 2
+
+    # Qt strips the options it recognises out of whatever list it is given, so it is
+    # handed the program name alone: everything after it has been read above, and a
+    # `-style` or a `-platform` meant for Qt is not something this viewer's callers pass.
+    app = QApplication.instance() or QApplication([sys.argv[0]])
     app.setOrganizationName(ORGANISATION)
     app.setApplicationName(APPLICATION)
     app.setWindowIcon(QIcon(_icon_path()))  # inherited by every window the viewer opens
 
     window = MainWindow()
     window.show()
-    if args:
+    if launch.path is not None:
+        # Asked for before the open rather than after it, because the open is
+        # asynchronous: the window applies this when the file is on screen and the frame
+        # list is known (`MainWindow.follow_when_opened`). A `--show` on its own asks
+        # for following too, since the mode it names is what following does.
+        if launch.follow or launch.show is not None:
+            window.follow_when_opened(show=launch.show)
         # A file association or a drag onto the .exe both arrive here the same way: a
         # path Windows chose on the user's behalf, not a dialog they were sitting in
         # front of. `open_file` uses the distinction to decide how loudly a bad open
         # complains (lab record, task 15).
-        window.open_file(args[0], from_command_line=True)
+        window.open_file(launch.path, from_command_line=True)
     return app.exec()
