@@ -12,10 +12,11 @@ instrument writes UIMF.
 
 ## Status
 
-Version 1.0.1. The reader layer, the viewer, and the Windows installer are written and
-verified, and the development record lives in a private companion repository. Following a file
-while the instrument is still writing it ships in this release, along with a round of changes
-to where the controls live, how the figures are exported, and how text and lines are sized.
+Version 1.1.0. The reader layer, the viewer, and the Windows installer are written and
+verified, and the development record lives in a private companion repository. This release
+adds a command line that opens a file already following it, and a fourth way of following a
+run that keeps a total of the newest finished frames, so the program driving an acquisition
+can put a live view of it on screen without the operator opening anything by hand.
 The [user guide](docs/user-guide.md) covers all of it.
 
 The reader reproduces every scan's stored total ion current and base peak intensity exactly
@@ -38,10 +39,10 @@ inconsistently.
 
 The installer is attached to the [latest
 release](https://github.com/bushgroup/mainspring/releases/latest) as
-`mainspring-1.0.1-setup.exe`, 93 MB, and needs no Python installation. It installs into the
+`mainspring-1.1.0-setup.exe`, 93 MB, and needs no Python installation. It installs into the
 current user's profile and asks for no administrator rights, offers a Start menu entry and an
 optional desktop icon, and offers to open `.uimf` files with mainspring. The same release
-carries `mainspring-1.0.1-py3-none-any.whl`, which is the reader and the viewer as a Python
+carries `mainspring-1.1.0-py3-none-any.whl`, which is the reader and the viewer as a Python
 package for a machine that already has Python 3.12.
 
 The installer is not code signed, so Microsoft Defender SmartScreen shows "Windows protected
@@ -159,7 +160,7 @@ root of the checkout:
 & "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe" packaging\mainspring.iss
 ```
 
-Compilation takes about two minutes and writes `dist\installer\mainspring-1.0.1-setup.exe`,
+Compilation takes about two minutes and writes `dist\installer\mainspring-1.1.0-setup.exe`,
 93 MB. That installer is per-user and asks for no administrator rights, because the viewer keeps
 its settings in the current user's registry hive and an instrument PC's operator account may
 have no administrator rights to give. It offers a Start menu entry, an optional desktop icon,
