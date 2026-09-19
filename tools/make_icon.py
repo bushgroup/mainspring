@@ -131,7 +131,7 @@ def build() -> bytes:
             "<BBBBHHII",
             size if size < 256 else 0,  # 256 is stored as 0: the field is one byte
             size if size < 256 else 0,
-            0,  # palette size, 0 for a direct-colour frame
+            0,  # palette size, 0 for a direct-color frame
             0,  # reserved
             1,  # planes
             32,  # bits per pixel

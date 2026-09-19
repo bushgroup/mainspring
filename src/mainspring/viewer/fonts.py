@@ -14,7 +14,7 @@ This module mirrors `theme.py`'s shape on purpose -- the one path that sets the 
 **not** folded into it. `theme.py`'s first paragraph promises it touches the plot canvas
 only and leaves the Qt chrome to the operating system; this reaches the whole
 application, which is a different promise. A text *size* is not a `QPalette`, so the
-non-goal that keeps the chrome's colours Windows's does not keep its type at 100 per
+non-goal that keeps the chrome's colors Windows's does not keep its type at 100 per
 cent.
 
 Three things have to happen for a scale to take effect, and only the first is Qt's:
@@ -124,7 +124,7 @@ def apply(window: object, scale: float) -> float:
     and because the plot layer's own sizing is measured against it; then the three
     owners of text Qt will not reach are told in turn.
 
-    Nothing is rebuilt, so the open file, the frame, the view ranges and the colour
+    Nothing is rebuilt, so the open file, the frame, the view ranges and the color
     levels all survive a change untouched, exactly as they survive a theme toggle.
     """
     global _ACTIVE

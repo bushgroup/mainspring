@@ -26,7 +26,7 @@ voice the public documentation uses -- purpose first, numbers rather than adject
 em dashes. The shortcut is appended by `make_action`, never typed.
 
 `name_of` and `numbered` are how a walk over this window reports what it found, and are
-public because this is not the only such walk: `theme.themed` names stray colours with
+public because this is not the only such walk: `theme.themed` names stray colors with
 the same two, so a reader of either report reads one convention rather than two.
 """
 
@@ -89,7 +89,7 @@ _TIPPED_TYPES = (
 
 _TIPPED_ITEMS = (pg.ImageItem, pg.PlotItem, pg.AxisItem)
 """pyqtgraph items that must explain themselves. `ColorBarItem` is a `PlotItem`, so the
-colour bar is covered without naming it; a hidden axis is skipped by `unexplained`."""
+color bar is covered without naming it; a hidden axis is skipped by `unexplained`."""
 
 _LABEL_HOSTS = (QToolBar, QDockWidget, QStatusBar, QMenu)
 """A `QLabel` counts as a control when it sits in one of these: `Bits:` in the
@@ -367,7 +367,7 @@ def numbered(names: "list[str]") -> "list[str]":
     """Sorted, with repeats distinguished.
 
     Two mute controls of the same class, or two items of one type carrying the same
-    stray colour, must both be reported: a report that named one of them would look
+    stray color, must both be reported: a report that named one of them would look
     like a single problem, and fixing it would look like fixing both.
     """
     counts: dict[str, int] = {}

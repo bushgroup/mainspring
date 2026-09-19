@@ -56,11 +56,12 @@ __all__ = [
     "AXIS_HEIGHT",
     "AXIS_PEN_WIDTH",
     "AXIS_WIDTH",
-    "COLOUR_BAR_AXIS_WIDTH",
-    "COLOUR_BAR_WIDTH",
+    "COLOR_BAR_AXIS_WIDTH",
+    "COLOR_BAR_WIDTH",
     "LINE_WIDTH_LIMITS",
     "REFERENCE_VIEWPORT",
     "RIGHT_AXIS_WIDTH",
+    "SIDE_PLOT_GAP",
     "SIDE_PLOT_SIZE",
     "TICK_LENGTH",
     "TICK_PEN_WIDTH",
@@ -72,15 +73,15 @@ __all__ = [
 ]
 
 
-def scaled(image: np.ndarray, colour_scale: str) -> np.ndarray:
-    """The display transform behind the log/sqrt colour toggle. `"linear"` is a no-op.
+def scaled(image: np.ndarray, color_scale: str) -> np.ndarray:
+    """The display transform behind the log/sqrt color toggle. `"linear"` is a no-op.
 
-    Public because the colour levels are computed in this space and not in the
+    Public because the color levels are computed in this space and not in the
     intensities' own -- so anything that has to reproduce a level, `export.py` included,
     has to be able to get into the same space rather than approximate its way there."""
-    if colour_scale == "log":
+    if color_scale == "log":
         return np.log1p(np.clip(image, 0.0, None))
-    if colour_scale == "sqrt":
+    if color_scale == "sqrt":
         return np.sqrt(np.clip(image, 0.0, None))
     return image
 
@@ -106,6 +107,19 @@ RIGHT_AXIS_WIDTH = 0
 
 SIDE_PLOT_SIZE = 160
 """Pixels across each projection: the spectrum's height and the arrival-time plot's width."""
+
+SIDE_PLOT_GAP = 6
+"""Pixels between the image and each projection **at 100 per cent text**, scaled by
+`fonts.extent()` where it is applied, like every other extent in this module.
+
+The projections met the image edge exactly until now, on the reasoning that a projection
+of what is on screen should touch what it projects. What that costs is the baseline: a
+trace's own noise is drawn in the last pixels before the image, and against a dark heat
+map it is not there to read (Matt, 2026-09-18). A gap is also free of the one thing to be
+careful of here -- a gap between row 0 and row 1 moves no horizontal geometry, and one
+between column 0 and column 1 moves no vertical geometry, so the linked axes still line
+up in pixels and `SidePlots`' half of that agreement is untouched."""
+
 
 LOGO_RENDER_SIZE = 320
 """The mainspring mark is rendered once, at construction, at this many pixels square --
@@ -137,15 +151,15 @@ def _render_svg_pixmap(path: str, size: int) -> QPixmap:
     painter.end()
     return pixmap
 
-COLOUR_BAR_WIDTH = 80
-"""Pixels for the colour bar's column **at 100 per cent text**: pyqtgraph's 25 px strip,
-its `COLOUR_BAR_AXIS_WIDTH` value axis and the item's own margins."""
+COLOR_BAR_WIDTH = 80
+"""Pixels for the color bar's column **at 100 per cent text**: pyqtgraph's 25 px strip,
+its `COLOR_BAR_AXIS_WIDTH` value axis and the item's own margins."""
 
-COLOUR_BAR_AXIS_WIDTH = 45
+COLOR_BAR_AXIS_WIDTH = 45
 """Of that, what `pg.ColorBarItem` gives its value axis. It *fixes* that width rather
 than letting the axis expand into the space it needs, so a bigger tick font is clipped
 rather than accommodated: at 150 per cent the bar showed one value and otherwise said
-nothing about what a colour meant. `set_text_scale` sets both this and the column again,
+nothing about what a color meant. `set_text_scale` sets both this and the column again,
 and only this part of the column grows, since the strip beside it is not text."""
 
 TICK_LENGTH = -8
@@ -158,8 +172,8 @@ ticks are the whole axis."""
 TICK_PEN_WIDTH = 1.5
 """How thick a tick is drawn **at `REFERENCE_VIEWPORT`**, in the same "prominent enough
 to read against the image" judgement as `TICK_LENGTH` (lab record, task 11). The width is
-here and the colour is `theme.py`'s: how much a tick asserts itself is this module's
-decision, and what colour it asserts itself in is the palette's."""
+here and the color is `theme.py`'s: how much a tick asserts itself is this module's
+decision, and what color it asserts itself in is the palette's."""
 
 AXIS_PEN_WIDTH = 1.0
 """The same for the axis line itself, which is furniture rather than a reading aid and is
@@ -328,15 +342,15 @@ class UimfViewBox(pg.ViewBox):
 
 
 class HeatmapView(pg.GraphicsLayoutWidget):
-    """The image, its axes, its colour bar, and the debounced view-changed signal.
+    """The image, its axes, its color bar, and the debounced view-changed signal.
 
     The layout leaves room for the side plots without knowing what they are:
 
         row 0   spectrum cell    .            .
-        row 1   heatmap          arrival-time cell    colour bar
+        row 1   heatmap          arrival-time cell    color bar
                 col 0            col 1                col 2
 
-    The heatmap sits at (1, 0), the colour bar at (1, 2), and `side_plot_slots()` hands
+    The heatmap sits at (1, 0), the color bar at (1, 2), and `side_plot_slots()` hands
     out the two cells above and beside the image. That is why `side_plots.py` can own
     its own widgets and this module can stay about the image. Ticks are drawn on all
     four of the heatmap's axes, inward; the top and right ones carry no values, so the
@@ -368,7 +382,7 @@ class HeatmapView(pg.GraphicsLayoutWidget):
     first resize from repainting axes that do not exist yet; the widths are there so
     that `_fit_lines` has something to compare against when it does."""
 
-    def __init__(self, colour_map: str = "viridis", parent: "object | None" = None) -> None:
+    def __init__(self, color_map: str = "viridis", parent: "object | None" = None) -> None:
         super().__init__(parent=parent)
         self._view_box = UimfViewBox()
         self._plot = self.addPlot(row=1, col=0, viewBox=self._view_box)
@@ -397,7 +411,7 @@ class HeatmapView(pg.GraphicsLayoutWidget):
             axis = self._plot.getAxis(name)
             # `tickAlpha` pinned: pyqtgraph otherwise fades each minor level by half.
             axis.setStyle(tickLength=TICK_LENGTH, tickAlpha=255)
-        # Their pens are not set here: every colour on this widget belongs to
+        # Their pens are not set here: every color on this widget belongs to
         # `set_palette`, called at the end of this constructor and again on every
         # `View > Light mode` toggle.
 
@@ -425,30 +439,30 @@ class HeatmapView(pg.GraphicsLayoutWidget):
                 " Shift-scroll the vertical.",
             )
 
-        # The colour bar is a `PlotItem` of its own in the last column rather than
+        # The color bar is a `PlotItem` of its own in the last column rather than
         # inserted into the heatmap's layout (`insert_in`), so that the arrival-time
         # plot can sit between the two. Its blank bottom axis is fixed to the heatmap's
         # bottom-axis height so the strip spans exactly the image's height.
         # `colorMapMenu=False`: pyqtgraph's own right-click menu offers every registered
         # colormap, and picking one there would neither tick the View menu's choice nor
-        # reach `ViewerSettings` -- `set_colour_map` below is the one path that does both.
-        self._colour_bar = pg.ColorBarItem(colorMap=colour_map, colorMapMenu=False)
-        self._colour_bar.setImageItem(self._image_item)
-        self._colour_bar.getAxis("top").setHeight(TOP_AXIS_HEIGHT)
+        # reach `ViewerSettings` -- `set_color_map` below is the one path that does both.
+        self._color_bar = pg.ColorBarItem(colorMap=color_map, colorMapMenu=False)
+        self._color_bar.setImageItem(self._image_item)
+        self._color_bar.getAxis("top").setHeight(TOP_AXIS_HEIGHT)
         _BAR_TIP = (
-            "The intensity each colour stands for. Drag an end to set the limits by hand,"
+            "The intensity each color stands for. Drag an end to set the limits by hand,"
             " and tick Keep levels to hold them across frames."
         )
-        describe(self._colour_bar, _BAR_TIP)
+        describe(self._color_bar, _BAR_TIP)
         for name in ("left", "bottom", "top", "right"):
-            describe(self._colour_bar.getAxis(name), _BAR_TIP)
-        self.ci.addItem(self._colour_bar, row=1, col=2)
+            describe(self._color_bar.getAxis(name), _BAR_TIP)
+        self.ci.addItem(self._color_bar, row=1, col=2)
 
         # The mainspring mark, in the cell above the arrival-time projection that
         # `side_plot_slots` never hands out (row 0, col 1 is otherwise empty). Purely
         # decorative: a `ViewBox` and a `QGraphicsPixmapItem` are neither in
         # `controls._TIPPED_ITEMS` nor in `theme._PAINTED`, so this needs no tooltip and
-        # no palette-registered colour -- the full-colour mark is the same under both
+        # no palette-registered color -- the full-color mark is the same under both
         # themes, unlike the axes and curves `set_palette` repaints.
         self._logo_box = self.ci.addViewBox(row=0, col=1, lockAspect=True, enableMouse=False)
         self._logo_box.setMenuEnabled(False)
@@ -460,11 +474,12 @@ class HeatmapView(pg.GraphicsLayoutWidget):
 
         # Row 0 and column 1 are the side plots' (`side_plot_slots`); the stretch factors
         # are what keep the image the large thing on screen once they are filled. No
-        # spacing between cells: the projections should touch the image they project.
+        # spacing between cells except the two `SIDE_PLOT_GAP` puts between the image and
+        # its projections, which `set_text_scale` sets and re-sets.
         self.ci.layout.setSpacing(0)
         self.ci.layout.setRowFixedHeight(0, SIDE_PLOT_SIZE)
         self.ci.layout.setColumnFixedWidth(1, SIDE_PLOT_SIZE)
-        # Column 2 is the colour bar's, and its width follows the text in it
+        # Column 2 is the color bar's, and its width follows the text in it
         # (`set_text_scale`, called at the end of this constructor).
         self.ci.layout.setColumnStretchFactor(0, 1)
         self.ci.layout.setRowStretchFactor(1, 1)
@@ -529,7 +544,7 @@ class HeatmapView(pg.GraphicsLayoutWidget):
         """`(width, height)` of the drawing area, in device pixels, at least 1x1.
 
         What `rasterise` should be asked for: the viewport rather than the whole widget,
-        since the axes and the colour bar take some of it (lab record, task 04).
+        since the axes and the color bar take some of it (lab record, task 04).
         """
         size = self.viewport().size()
         return max(1, size.width()), max(1, size.height())
@@ -558,21 +573,21 @@ class HeatmapView(pg.GraphicsLayoutWidget):
         """Back to the frame's full range on one axis alone."""
         self._view_box.reset_axis(axis)
 
-    def set_image(self, result: object, colour_scale: str = "linear") -> None:
+    def set_image(self, result: object, color_scale: str = "linear") -> None:
         """Show a `RasterResult`, placing it by its display ranges.
 
-        `colour_scale` is a display transform applied to the image before it reaches the
-        colour bar -- `log1p` or `sqrt` of the (non-negative) intensity -- so that one
+        `color_scale` is a display transform applied to the image before it reaches the
+        color bar -- `log1p` or `sqrt` of the (non-negative) intensity -- so that one
         bright peak does not wash out everything else in the same view. It never touches
         `result.image` itself: the readouts (the cursor, the info panel) quote the raw
         `RasterResult`, and quoting a transformed number as if it were a stored intensity
         is exactly the mistake `notes/viewer-ux.md` warns the cursor label against.
 
-        Levels go through the colour bar's own `setLevels` rather than through
+        Levels go through the color bar's own `setLevels` rather than through
         `ImageItem`'s `autoLevels` -- once a `ColorBarItem` is attached it owns the
         applied levels and does not follow an image's own auto-scaling (no
         `sigLevelsChanged` on plain `ImageItem` in this pyqtgraph version), so
-        `autoLevels=True` here would silently keep showing whatever the colour bar's
+        `autoLevels=True` here would silently keep showing whatever the color bar's
         levels happened to be, which is 0-1 until told otherwise. **Unless the levels are
         held** (`set_levels`, the keep-levels setting): then this image is shown under
         whatever levels are already pinned, computed from a possibly different image, on
@@ -581,7 +596,7 @@ class HeatmapView(pg.GraphicsLayoutWidget):
         axes = result.axes
         x0, x1 = result.x_range
         y0, y1 = result.y_range
-        displayed = scaled(result.image, colour_scale)
+        displayed = scaled(result.image, color_scale)
         self._image_item.setImage(displayed, autoLevels=False)
         self._image_item.setRect(x0, y0, x1 - x0, y1 - y0)
         # The display spelling, not the rasteriser's own (`labels.py`): an axis label is
@@ -590,7 +605,7 @@ class HeatmapView(pg.GraphicsLayoutWidget):
         self._plot.setLabel("left", labels.html(axes.y_label), **self._label_style)
         if not self._levels_held:
             low, high = float(displayed.min()), float(displayed.max())
-            self._colour_bar.setLevels((low, high if high > low else low + 1.0))
+            self._color_bar.setLevels((low, high if high > low else low + 1.0))
 
     @contextmanager
     def hidden_debug(self):
@@ -603,7 +618,7 @@ class HeatmapView(pg.GraphicsLayoutWidget):
 
         The only thing left of the `substituted` this replaced. Until task 24 an export
         also stood a finer image in for the viewport-sized one, which is what moved the
-        colour levels and made a figure a different picture from the one on screen.
+        color levels and made a figure a different picture from the one on screen.
         """
         previous = self._debug.isVisible()
         try:
@@ -613,44 +628,44 @@ class HeatmapView(pg.GraphicsLayoutWidget):
             self._debug.setVisible(previous)
 
     def levels(self) -> "tuple[float, float]":
-        """The colour bar's current `(low, high)`, whatever last set them."""
-        low, high = self._colour_bar.levels()
+        """The color bar's current `(low, high)`, whatever last set them."""
+        low, high = self._color_bar.levels()
         return float(low), float(high)
 
     def set_levels(self, low: float, high: float) -> None:
-        """Pin the colour levels: every later `set_image` leaves them alone.
+        """Pin the color levels: every later `set_image` leaves them alone.
 
         What the keep-levels setting calls when it is turned on, with whatever is on
         screen right now (`levels()`) -- freezing the current scale rather than starting
         from an arbitrary one, the same choice keep-ranges makes for the view range.
         """
         self._levels_held = True
-        self._colour_bar.setLevels((float(low), float(high)))
+        self._color_bar.setLevels((float(low), float(high)))
 
     def release_levels(self) -> None:
-        """Un-pin the colour levels: the next `set_image` goes back to auto-scaling."""
+        """Un-pin the color levels: the next `set_image` goes back to auto-scaling."""
         self._levels_held = False
 
-    def set_colour_map(self, name: str) -> None:
-        """Switch the colour bar (and the image it drives) to one of `COLOUR_MAPS`.
+    def set_color_map(self, name: str) -> None:
+        """Switch the color bar (and the image it drives) to one of `COLOR_MAPS`.
 
         Independent of the palette in both directions: the map is a statement about the
         data, and `View > Light mode` never moves it (`theme.py`).
         """
-        self._colour_bar.setColorMap(name)
+        self._color_bar.setColorMap(name)
 
     def set_palette(self, palette: "theme.Palette") -> None:
-        """Repaint every colour this widget owns, without rebuilding anything.
+        """Repaint every color this widget owns, without rebuilding anything.
 
         Called once at construction and again on every `View > Light mode` toggle
-        (`theme.apply`, the one path). Nothing here touches the image, the colour map or
+        (`theme.apply`, the one path). Nothing here touches the image, the color map or
         the levels, so a toggle costs the user nothing they had set up.
 
-        The order inside the loop is load-bearing. `setTextPen` writes its colour into
-        `labelStyle` in place and re-renders the label, so calling it **last** recolours
+        The order inside the loop is load-bearing. `setTextPen` writes its color into
+        `labelStyle` in place and re-renders the label, so calling it **last** recolors
         a label that `set_image` has already set without disturbing its text or its bold
         weight -- and `_label_style` is refreshed first so that the next `set_image`
-        writes the same colour rather than putting the old one back.
+        writes the same color rather than putting the old one back.
         """
         self.setBackground(palette.background)
         self._label_style = theme.label_style(palette)
@@ -664,7 +679,7 @@ class HeatmapView(pg.GraphicsLayoutWidget):
         """Redraw every piece of text on this widget at `scale`, and reserve room for it.
 
         Called once at construction and again on every `View > Text size` change
-        (`fonts.apply`, the one path). Nothing here touches the image, the colour map or
+        (`fonts.apply`, the one path). Nothing here touches the image, the color map or
         the levels, so a change costs the user nothing they had set up.
 
         Three separate things, because Qt treats them as three:
@@ -677,18 +692,26 @@ class HeatmapView(pg.GraphicsLayoutWidget):
           set again. The text is read back off the axis rather than passed in: nothing
           here knows what the axes are called, and `setLabel(text=None)` would blank them.
         * **The extents**: the two the projections are aligned against, on this side of
-          that agreement (`side_plots.py` holds the other side), and the colour bar's
+          that agreement (`side_plots.py` holds the other side), and the color bar's
           own column, which is mostly the value axis a reader gets a level off.
         """
         font = fonts.scaled_font(scale)
         self._plot.getAxis("left").setWidth(round(AXIS_WIDTH * fonts.extent()))
         self._plot.getAxis("bottom").setHeight(round(AXIS_HEIGHT * fonts.extent()))
-        self._colour_bar.getAxis("bottom").setHeight(round(AXIS_HEIGHT * fonts.extent()))
-        bar_axis = round(COLOUR_BAR_AXIS_WIDTH * fonts.extent())
-        self._colour_bar.getAxis("right").setWidth(bar_axis)
+        self._color_bar.getAxis("bottom").setHeight(round(AXIS_HEIGHT * fonts.extent()))
+        bar_axis = round(COLOR_BAR_AXIS_WIDTH * fonts.extent())
+        self._color_bar.getAxis("right").setWidth(bar_axis)
         self.ci.layout.setColumnFixedWidth(
-            2, COLOUR_BAR_WIDTH - COLOUR_BAR_AXIS_WIDTH + bar_axis
+            2, COLOR_BAR_WIDTH - COLOR_BAR_AXIS_WIDTH + bar_axis
         )
+        # The two gaps, and only those two. `setRowSpacing(0, ...)` is the space below
+        # row 0, which is the mass spectrum sitting above the image; `setColumnSpacing`
+        # of column 0 is the space to the right of the image, before the arrival-time
+        # plot. The color bar's own column keeps its zero, since it already reads as
+        # separate.
+        gap = round(SIDE_PLOT_GAP * fonts.extent())
+        self.ci.layout.setRowSpacing(0, gap)
+        self.ci.layout.setColumnSpacing(0, gap)
         self._label_style = theme.label_style(theme.active())
         for axis in self._axes():
             axis.setTickFont(font)
@@ -696,15 +719,15 @@ class HeatmapView(pg.GraphicsLayoutWidget):
         self._debug.setFont(font)
 
     def _axes(self) -> "list[pg.AxisItem]":
-        """The heatmap's four axes and the colour bar's four.
+        """The heatmap's four axes and the color bar's four.
 
-        The colour bar's are included because they are furniture on the same canvas: its
+        The color bar's are included because they are furniture on the same canvas: its
         value axis is the one a user reads a level off, and only its gradient belongs to
-        the colour map.
+        the color map.
         """
         return [
             plot.getAxis(name)
-            for plot in (self._plot, self._colour_bar)
+            for plot in (self._plot, self._color_bar)
             for name in ("left", "bottom", "top", "right")
         ]
 
@@ -746,7 +769,7 @@ class HeatmapView(pg.GraphicsLayoutWidget):
         # eight axes' worth of pens, and a drag of the window edge is a hundred resize
         # events. Going through `set_palette` rather than setting the pens here is what
         # keeps the two independent -- a theme toggle cannot reset the thickness, because
-        # it reads `_line_width`, and a resize cannot reset the colour, because it asks
+        # it reads `_line_width`, and a resize cannot reset the color, because it asks
         # for the active palette.
         if self._built and self._fit_lines():
             self.set_palette(theme.active())

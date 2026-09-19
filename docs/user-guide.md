@@ -26,6 +26,9 @@ Explorer opens the viewer directly, unless something else was already set to ope
 that machine, in which case mainspring is offered as a choice rather than replacing it
 (Settings > Default apps).
 
+The title bar names the open file and then the version, so a viewer left on a bench says
+which build it is without anyone opening a menu.
+
 ## Opening a file
 
 Use `Ctrl+O`, or `File > Open`, or pass a path on the command line, or double-click a `.uimf`
@@ -47,7 +50,7 @@ File size and frame count are not what the open costs. A raw per-repetition acqu
 viewer reads one frame and rasterises it to the size of the window rather than loading the
 file. Paging to another frame costs about 5 milliseconds however far into the file it is.
 
-A file the instrument is still writing opens the same way, and the `Follow` control then keeps
+A file the instrument is still writing opens the same way, and the `Live` control then keeps
 it up to date as the run continues. See [Following a file being
 acquired](#following-a-file-being-acquired).
 
@@ -77,32 +80,35 @@ copy both files somewhere you can write to and open the copy.
 
 ## The window
 
-![The mainspring window, showing a PNNL test file with the colour scale set to log](images/window.png)
+![The mainspring window, showing a PNNL test file with the color scale set to log](images/window.png)
 
 Five things fill the window above the status bar.
 
 **The heat map** fills most of it. The horizontal axis is m/z, the vertical axis is arrival time
-in milliseconds, and the colour of each pixel is the intensity of the points that fall inside
+in milliseconds, and the color of each pixel is the intensity of the points that fall inside
 it. Ticks point inward on all four sides, with values on the bottom and left.
 
 **The mass spectrum** sits above the heat map and **the arrival-time distribution** to its
-right. Both are projections of what is on screen rather than of the whole frame: the spectrum
-sums the points inside the current arrival-time range, and the distribution sums those inside
-the current m/z range. Narrowing one axis therefore sharpens the other plot. Neither carries an
-axis of its own, because the heat map's axes already read for the axis they share and their
-intensity axis rescales with every gesture.
+right, each separated from it by a small gap so that the baseline and its noise are readable
+rather than running into the image. Both are projections of what is on screen rather than of
+the whole frame: the spectrum sums the points inside the current arrival-time range, and the
+distribution sums those inside the current m/z range. Narrowing one axis therefore sharpens the
+other plot. Neither carries an axis of its own, because the heat map's axes already read for
+the axis they share and their intensity axis rescales with every gesture. Their traces thicken
+as the window grows, along with the ticks and the axis lines, so a maximised window on a large
+panel reads at the weight a small one does.
 
-**The colour bar** is the strip in the far right column of the plot area. It reads in the units
-`View > Colour scale` selects, so on the `Linear` setting its numbers are stored intensities and
+**The color bar** is the strip in the far right column of the plot area. It reads in the units
+`View > Color scale` selects, so on the `Linear` setting its numbers are stored intensities and
 on `Log` or `Square root` they are the transformed values. Drag either handle to set the limits by
-hand. Its gradient is one of four perceptually uniform colour maps (`Viridis`, `Plasma`,
-`Inferno`, `Magma`), chosen from `View > Colour map`.
+hand. Its gradient is one of four perceptually uniform color maps (`Viridis`, `Plasma`,
+`Inferno`, `Magma`), chosen from `View > Color map`.
 
 **The info panel** is docked on the right. `Ctrl+I` hides and shows it, and it can be dragged
 out of the window and floated.
 
 The screenshot above is PNNL's `9pep_mix` test file, which
-[`tools/fetch_testdata.py`](../tools/fetch_testdata.py) downloads, with the colour scale set to
+[`tools/fetch_testdata.py`](../tools/fetch_testdata.py) downloads, with the color scale set to
 `Log`. The diagonal bands are the multiplexed encoding that file was acquired with.
 
 ## Light mode
@@ -112,9 +118,9 @@ tick it, and it costs nothing: the open file, the frame you are on, the ranges y
 to and any levels you have pinned are all where you left them. The viewer remembers the choice,
 so the next session starts in the mode you last used. Black is the default.
 
-The colour map is not part of the mode. `Viridis` and its three companions read as themselves
+The color map is not part of the mode. `Viridis` and its three companions read as themselves
 whichever background they sit on, and a map that changed under you would make two figures of the
-same frame hard to compare, so `View > Colour map` stays yours to set. A frame with little in it
+same frame hard to compare, so `View > Color map` stays yours to set. A frame with little in it
 therefore draws as a dark rectangle on a white canvas, because dark purple is what the low end of
 `Viridis` is.
 
@@ -160,7 +166,7 @@ image it belongs to would no longer describe it.
 | `Ctrl+I` | Show or hide the info panel |
 
 All three are on the menu bar as well: `Open` under `File`, and `Reset view`, `Info`,
-`Light mode`, `Colour map`, `Colour scale` and `Text size` under `View`. `Aggregate`, `Type`
+`Light mode`, `Color map`, `Color scale` and `Text size` under `View`. `Aggregate`, `Type`
 and `Bits` are under `Data settings`. There is no context menu on the heat map, because the right button is a
 zoom gesture.
 
@@ -183,18 +189,39 @@ view` has fallen from 126,118,062 to 51,225,603.
 
 ## The View menu
 
-### Colour map
+### Swap X/Y
 
-The gradient the heat map and the colour bar are drawn with, one of `Viridis`, `Plasma`,
-`Inferno` and `Magma`. All four are perceptually uniform, so a step in colour is a step in
+Puts arrival time on the horizontal axis and m/z on the vertical. The two projections follow,
+because each is named for the axis it projects onto rather than for a quantity: the plot above
+the image is always the projection onto the horizontal axis and the plot to its right always
+the projection onto the vertical one.
+
+The visible region is carried across the swap rather than reset, so the same bins and scans
+stay on screen.
+
+### Raw units
+
+Shows the TOF bin index and the scan number in place of calibrated m/z and arrival time. Use it
+when the question is about the instrument rather than about the sample, since a bin identifies
+the digitizer sample a count came from and an m/z does not.
+
+This also sets what the cursor readout reports, since the readout names the axes it is on. The
+visible region is carried across the toggle. A frame the writer never calibrated is shown in
+raw units whatever this setting says, because a plausible-looking m/z axis over uncalibrated
+data is worse than an honest bin axis.
+
+### Color map
+
+The gradient the heat map and the color bar are drawn with, one of `Viridis`, `Plasma`,
+`Inferno` and `Magma`. All four are perceptually uniform, so a step in color is a step in
 intensity and never an artefact of the map. The viewer offers no rainbow map for that reason.
 
-### Colour scale
+### Color scale
 
-How intensity maps onto colour. `Linear` is proportional. `Log` and `Square root` compress the
+How intensity maps onto color. `Linear` is proportional. `Log` and `Square root` compress the
 dynamic range, which is what to reach for when one peak is bright enough to leave the rest of
 the frame flat. All three are display transforms only. The cursor readout and the info panel
-always quote the untransformed intensity, so switching the colour scale changes the picture and
+always quote the untransformed intensity, so switching the color scale changes the picture and
 no number.
 
 ### Text size
@@ -246,27 +273,26 @@ Restricts the frame spinner and `Sum all` to frames of one type: `MS1`, `MS2`, `
 `Prescan`, or `All frames`. A file whose writer used a code this list has no name for shows it
 as `Type N` rather than hiding those frames.
 
+## The Help menu
+
+### User guide
+
+Opens this guide, as it was when this version of mainspring was built, in a window of its own.
+It needs no network, which matters on an instrument PC that has none. The window is not modal,
+so the viewer stays usable while it is open, and it keeps your place if you close it and open
+it again.
+
+### User guide online
+
+Opens the guide on the web, which is the newest one rather than this version's. Use it when you
+want to know what a later release does.
+
+### About mainspring
+
+The version, the commit the build came from, and the license. The version is also in the title
+bar, which is the quicker place to read it.
+
 ## The toolbar
-
-### Swap X/Y
-
-Puts arrival time on the horizontal axis and m/z on the vertical. The two projections follow,
-because each is named for the axis it projects onto rather than for a quantity: the plot above
-the image is always the projection onto the horizontal axis and the plot to its right always
-the projection onto the vertical one.
-
-The visible region is carried across the swap rather than reset, so the same bins and scans
-stay on screen.
-
-### Raw units
-
-Shows the TOF bin index and the scan number in place of calibrated m/z and arrival time. Use it
-when the question is about the instrument rather than about the sample, since a bin identifies
-the digitizer sample a count came from and an m/z does not.
-
-The visible region is carried across this toggle too. A frame the writer never calibrated is
-shown in raw units whatever this setting says, because a plausible-looking m/z axis over
-uncalibrated data is worse than an honest bin axis.
 
 ### Keep ranges
 
@@ -279,7 +305,7 @@ ranges is about what happens across a file open.
 
 ### Keep levels
 
-Keeps the colour bar's current limits instead of rescaling them to each new image. Tick it and
+Keeps the color bar's current limits instead of rescaling them to each new image. Tick it and
 the limits on screen at that moment are pinned, across new frames and new zooms alike, until
 you untick it. Two frames drawn under one set of limits can be compared by eye; two frames each
 scaled to its own maximum cannot.
@@ -328,7 +354,7 @@ The status bar names the result as a sum and how many frames went into it, so a 
 never mistaken for a single frame. On a raw per-repetition file of 5,000 frames the whole sum
 takes about 20 seconds, so use `Sum method frame` when one experiment is what you want.
 
-### Follow
+### Live
 
 Watches the open file for what the instrument writes to it, once a second, and keeps the frame
 spinner, the type filter and the repetition count in step with what is there. `Show`, beside it,
@@ -338,7 +364,7 @@ acquired](#following-a-file-being-acquired).
 ### Show
 
 `Fixed frame`, `Newest frame`, `Method frame sum`, or `Sum newest frames`. Available while
-`Follow` is on, and described with it below.
+`Live` is on, and described with it below.
 
 ### Frames
 
@@ -349,7 +375,7 @@ number, and the number you set is remembered between sessions.
 
 ## Following a file being acquired
 
-To watch a run as it happens, open the file the acquisition is writing and turn on `Follow`. The
+To watch a run as it happens, open the file the acquisition is writing and turn on `Live`. The
 viewer then asks the file once a second what has been added to it. Nothing about the acquisition
 changes: every read is a separate read-only connection that is opened, used and closed, which is
 what keeps the viewer out of the writers' way.
@@ -384,7 +410,7 @@ would change every time it was recomputed and would settle on wherever you happe
 Each is recomputed only when the set of frames it covers has changed, so a poll that finds
 nothing new costs one query and no reading.
 
-The zoom, the colour levels and every other setting are untouched by any of this. Following
+The zoom, the color levels and every other setting are untouched by any of this. Following
 changes which frame is on screen, never how it is drawn.
 
 ### Starting the viewer on a run in progress
@@ -441,7 +467,7 @@ nothing to offer alongside it.
 
 ### What cannot be followed
 
-`Follow` is refused on a file that is not on a drive attached to this machine, and the status bar
+`Live` is refused on a file that is not on a drive attached to this machine, and the status bar
 says so. Following means reading a database while another process writes it, and the two
 processes coordinate through shared memory that only exists when both are on the same machine.
 Opening and reading a file over a share is unaffected. It is only following one that is refused.
@@ -451,25 +477,27 @@ sessions. It describes one acquisition rather than a way of working.
 
 ## The status bar
 
-The status bar has three zones. On the left is the cursor readout, which reports, for the
-pointer's position:
+The status bar has two zones.
 
-- both display values with their axis labels, m/z and arrival time by default;
-- the raw TOF bin and scan number, always, whichever units the axes are in;
-- the intensity drawn at that pixel, labelled with the aggregate that produced it.
+The left one is shared. Most of the time it is the cursor readout, which reports the two axis
+values under the pointer, in the units the axes are in, and the intensity drawn at that pixel
+labelled with the aggregate that produced it. `Raw units` decides which unit system appears,
+since the readout names the axes it is on. The intensity is read back out of the image on
+screen rather than recomputed, so it describes what you are looking at.
 
-Both unit systems appear because they answer different questions and neither can be recovered
-from the other by eye. The intensity is read back out of the image on screen rather than
-recomputed, so it describes what you are looking at.
+The same slot carries what the viewer has just done: the open message, the frame message, and
+anything else it has to say. An ordinary message holds the slot for about five seconds and then
+gives it back to the readout. A failure or a refusal holds it until something replaces it, so a
+`Live` that was refused, or an open that failed, stays on screen rather than disappearing while
+you are looking elsewhere. A button appears beside the message when a run you were following
+ends by discarding its raw file, offering the summed companion that survived.
 
-In the middle are the open and frame messages, and anything else the viewer has to say. A button
-appears beside them when a run you were following ends by discarding its raw file, offering the
-summed companion that survived.
-
-On the right is the peak of each projection: where the mass spectrum peaks and how high, and
-the same for the arrival-time distribution. Each is named by the axis it is on, so the two
-swap over when `Swap X/Y` does. The height is a sum over the range in view on the other axis,
-like every value in a projection, so it moves as you zoom.
+On the right is the peak of each projection, and the total. Where the mass spectrum peaks and
+how high, the same for the arrival-time distribution, and then the sum of every stored point in
+view. Each peak is named by the axis it is on, so the two swap over when `Swap X/Y` does, and
+each height is a sum over the range in view on the other axis, like every value in a
+projection. All three move as you zoom. The total is the same number the info panel calls
+[TIC in view](#tic-in-view).
 
 ## The info panel
 
@@ -528,7 +556,7 @@ pixels.
 
 `File > Export PNG` and `File > Export PDF` write what is on screen to a file. The heat map,
 the mass spectrum and the arrival-time distribution all go in, at the zoom and under the
-colour settings they are drawn with. The colour bar is left out. The figure takes the
+color settings they are drawn with. The color bar is left out. The figure takes the
 background of the mode it was exported in, so tick `Light mode` first for a figure going into
 a paper or onto a white slide.
 
@@ -545,12 +573,12 @@ What the resolution buys is the type and the lines. The axes, the ticks, the lab
 projections are drawn again at the higher density, so a 300 dpi figure carries crisp type at
 print size rather than a magnified screenshot of 96 dpi type. The heat map itself is the image
 already on screen, enlarged with square pixels, so a figure is exactly the picture you looked
-at and chose to export: the same colours in the same places, the same colour limits, the same
+at and chose to export: the same colors in the same places, the same color limits, the same
 peaks resolved and the same ones not.
 
 That is deliberate, and it is a change from 1.0.0, which re-rasterised the frame at the
 export's own resolution. A heat map pixel is an aggregate over the bins and scans inside it,
-so a finer image is a different picture: the colour map shifts, blobs separate into peaks and
+so a finer image is a different picture: the color map shifts, blobs separate into peaks and
 faint features appear that were not on screen. To see more detail, zoom in and export that.
 
 A PDF carries the axes, the ticks, the labels and both projections as vector drawings, so they
@@ -559,7 +587,7 @@ figure's own size in inches.
 
 ## What the viewer remembers
 
-Every toolbar toggle, the colour map, the colour scale, light mode, the text size, the
+Every toolbar toggle, the color map, the color scale, light mode, the text size, the
 aggregate, the detector bit depth, how many frames `Sum newest frames` adds up, whether the
 info panel is showing and how wide it is, the export resolution, the window's size and
 position, and the directory you last opened from are all saved when the viewer closes and
@@ -567,11 +595,11 @@ restored when it starts. On Windows they live under
 `HKEY_CURRENT_USER\Software\University of Washington\mainspring`. Deleting that key returns
 every setting to its default.
 
-The pinned colour levels and the current view range are not among them. Keep levels and keep
+The pinned color levels and the current view range are not among them. Keep levels and keep
 ranges persist as switches, and what they hold is whatever is on screen in the session where
 you turn them on.
 
-`Follow` is not remembered either, and it is the one toolbar control that is not. It says
+`Live` is not remembered either, and it is the one toolbar control that is not. It says
 something about one file rather than about how you like to look at data, and a viewer that
 started polling every finished acquisition anyone opened would be doing work against nothing.
 

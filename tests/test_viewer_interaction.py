@@ -495,7 +495,8 @@ def test_home_returns_to_the_full_range_after_a_zoom(loaded_window, qtbot):
     assert back.tic_in_view == pytest.approx(full.tic_in_view)
 
 
-def test_the_cursor_readout_names_every_unit_and_the_aggregation(loaded_window):
+def test_the_cursor_readout_names_the_axes_it_is_in_and_the_aggregation(loaded_window):
+    """One unit system, the axes' own, and never the other one's names alongside it."""
     window, result = loaded_window
     axes = window._current_axes
     # The middle of the view: guaranteed to be inside the image, whatever the widget size.
@@ -503,18 +504,38 @@ def test_the_cursor_readout_names_every_unit_and_the_aggregation(loaded_window):
     x, y = 0.5 * (x0 + x1), 0.5 * (y0 + y1)
 
     window._on_cursor_moved(x, y)
-    text = window._readout.text()
+    text = window.readout_text()
 
     # The plain spelling of each axis name, not the rasteriser's own (`viewer/labels.py`).
     assert labels.plain(axes.x_label) in text and labels.plain(axes.y_label) in text
     assert "<i>" not in text  # the italic m/z is for a figure, not for a line of numbers
-    assert "bin " in text and "scan " in text
+    # Calibrated axes, so no raw indices beside them: the bar has room for one system and
+    # `Raw units` is the switch (lab record, task 30).
+    assert not window.settings.raw_units
+    assert "bin " not in text and "scan " not in text
     # The number is the drawn pixel's, and it is labelled with what made it.
     row, column = pixel_of(result, x, y)
     assert f"{result.aggregate} {float(result.image[row, column]):,.0f}" in text
 
     window._clear_readout()
-    assert window._readout.text() == ""
+    assert window.readout_text() == ""
+
+
+def test_raw_units_switches_the_cursor_readout_to_bin_and_scan(loaded_window, qtbot):
+    """The same toggle that relabels the axes relabels this, because it is the axes it
+    reports. The two systems are never both on screen and neither is ever more than one
+    click away."""
+    window, _ = loaded_window
+    window._raw_action.setChecked(True)
+    qtbot.waitUntil(lambda: window.settings.raw_units, timeout=5000)
+
+    axes = window._current_axes
+    (x0, x1), (y0, y1) = axes.full_range
+    window._on_cursor_moved(0.5 * (x0 + x1), 0.5 * (y0 + y1))
+    text = window.readout_text()
+
+    assert labels.plain(axes.x_label) in text and labels.plain(axes.y_label) in text
+    assert "m/z" not in text
 
 
 # --- the status bar's three zones (task 24) -------------------------------------------
@@ -619,7 +640,7 @@ def _edges(rect) -> tuple[float, float, float, float]:
 
 def test_the_side_plots_sit_above_and_right_and_align_with_the_image(view, qtbot):
     """The spectrum above the heatmap spans exactly its columns; the arrival-time plot
-    beside it spans exactly its rows; the colour bar is past both.
+    beside it spans exactly its rows; the color bar is past both.
 
     Alignment is checked twice, by two different mechanisms. The scene geometry says
     the plot areas' edges coincide; the linked ranges say so independently, because
@@ -637,19 +658,58 @@ def test_the_side_plots_sit_above_and_right_and_align_with_the_image(view, qtbot
     img_l, img_t, img_r, img_b = _edges(view.view_box.sceneBoundingRect())
     above = _edges(side.x_plot.getViewBox().sceneBoundingRect())
     beside = _edges(side.y_plot.getViewBox().sceneBoundingRect())
-    bar = _edges(view._colour_bar.getViewBox().sceneBoundingRect())
+    bar = _edges(view._color_bar.getViewBox().sceneBoundingRect())
 
     assert above[0] == pytest.approx(img_l, abs=1.0) and above[2] == pytest.approx(img_r, abs=1.0)
     assert above[3] <= img_t  # above, not overlapping
     assert beside[1] == pytest.approx(img_t, abs=1.0) and beside[3] == pytest.approx(img_b, abs=1.0)
     assert beside[0] >= img_r  # to the right
-    assert bar[0] >= beside[2]  # and the colour bar past that
+    assert bar[0] >= beside[2]  # and the color bar past that
     assert bar[1] == pytest.approx(img_t, abs=1.0) and bar[3] == pytest.approx(img_b, abs=1.0)
 
     view.view_box.setRange(xRange=(10.0, 40.0), yRange=(5.0, 25.0), padding=0.0)
     QApplication.processEvents()
     assert side.x_plot.getViewBox().viewRange()[0] == pytest.approx((10.0, 40.0))
     assert side.y_plot.getViewBox().viewRange()[1] == pytest.approx((5.0, 25.0))
+
+
+def test_a_gap_of_exactly_side_plot_gap_separates_the_image_from_each_projection(qtbot,
+                                                                                 monkeypatch):
+    """The projections no longer meet the image, so a trace's baseline noise is readable.
+
+    Measured as a **difference** between two layouts, one with the gap set to nothing,
+    rather than against an absolute separation. pyqtgraph's own view box already leaves a
+    pixel and a half between neighbouring cells, and asserting a number that included it
+    would be asserting pyqtgraph's spacing as well as ours -- and would fail the day it
+    moved, for no reason a reader of this file could see.
+    """
+    from PySide6.QtWidgets import QApplication
+    from mainspring.viewer import fonts, heatmap as heatmap_module
+    from mainspring.viewer.heatmap import SIDE_PLOT_GAP, HeatmapView
+    from mainspring.viewer.side_plots import SidePlots
+
+    def separations(gap: int) -> tuple[float, float]:
+        monkeypatch.setattr(heatmap_module, "SIDE_PLOT_GAP", gap)
+        view = HeatmapView()
+        qtbot.addWidget(view)
+        view.resize(1000, 700)
+        view.set_text_scale(1.0)
+        side = SidePlots(view)
+        QApplication.processEvents()
+        view.ci.layout.activate()
+        QApplication.processEvents()
+        image = view.view_box.sceneBoundingRect()
+        above = side.x_plot.getViewBox().sceneBoundingRect()
+        beside = side.y_plot.getViewBox().sceneBoundingRect()
+        return image.top() - above.bottom(), beside.left() - image.right()
+
+    flush_above, flush_beside = separations(0)
+    gapped_above, gapped_beside = separations(SIDE_PLOT_GAP)
+    wanted = round(SIDE_PLOT_GAP * fonts.extent())
+
+    assert gapped_above - flush_above == pytest.approx(wanted, abs=0.5)
+    assert gapped_beside - flush_beside == pytest.approx(wanted, abs=0.5)
+    assert wanted > 0  # a gap that rounded to nothing would pass the two above
 
 
 def test_the_side_plots_are_bare_curves(view):
@@ -727,9 +787,9 @@ def test_the_line_width_is_clamped_at_both_ends(view, qtbot):
         assert low <= view._axis_width <= high
 
 
-def test_a_theme_toggle_keeps_the_thickness_and_a_resize_keeps_the_colour(qtbot):
+def test_a_theme_toggle_keeps_the_thickness_and_a_resize_keeps_the_color(qtbot):
     """The two are independent because both go through `set_palette`: it reads
-    `_line_width` for the widths and is handed the active palette for the colours, so
+    `_line_width` for the widths and is handed the active palette for the colors, so
     neither change can put the other's old value back. Driven through a window because
     `theme.apply` is the one path a palette change takes (`theme.py`)."""
     from mainspring.viewer import theme
@@ -753,3 +813,51 @@ def test_a_theme_toggle_keeps_the_thickness_and_a_resize_keeps_the_colour(qtbot)
     window.resize(900, 620)
     qtbot.waitUntil(lambda: view._line_width < heavier, timeout=2000)
     assert view.plot_item.getAxis("left").tickPen().color().name() == theme.LIGHT.foreground
+
+
+# --- the status bar's shared left slot (task 30) ---------------------------------------
+
+def test_an_ordinary_message_holds_the_slot_and_then_gives_it_back(loaded_window, qtbot):
+    """The readout and the message share one position, so one of them has to yield.
+
+    `isHidden` rather than `isVisible` throughout: a child of a window that was never
+    shown is not visible whatever it was told to do, which is the trap
+    `MainWindow.companion_offer` is written around.
+    """
+    window, _ = loaded_window
+    window._status_timer.setInterval(30)
+
+    window._show_status("summed 4 frames")
+    assert not window._status.isHidden() and window._readout.isHidden()
+    assert window.status_text() == "summed 4 frames"
+
+    qtbot.waitUntil(lambda: window._status.isHidden(), timeout=5000)
+    assert not window._readout.isHidden()
+    # The message is still the answer to "what did the viewer say", which is what the
+    # suite and check_public ask; only the slot has changed hands.
+    assert window.status_text() == "summed 4 frames"
+
+
+def test_a_failure_keeps_the_slot_until_something_replaces_it(loaded_window, qtbot):
+    """A refused Live or a failed open is the only notice the operator gets, and a
+    readout that quietly took the slot back would lose it."""
+    window, _ = loaded_window
+    window._status_timer.setInterval(30)
+
+    window._show_status("Error: no", sticky=True)
+    qtbot.wait(120)
+    assert not window._status.isHidden() and window._readout.isHidden()
+
+    window._show_status("opened in 3 ms")
+    qtbot.waitUntil(lambda: window._status.isHidden(), timeout=5000)
+    assert not window._readout.isHidden()
+
+
+def test_the_sum_over_the_view_range_is_on_the_right_of_the_status_bar(loaded_window):
+    """Free with every render (`RasterResult.tic_in_view`), and the same number the info
+    panel calls TIC in view."""
+    window, result = loaded_window
+    window._show_peaks(window._last_render)
+    text = window._peaks.text()
+    assert "sum in view" in text
+    assert f"{result.tic_in_view:,.0f}" in text

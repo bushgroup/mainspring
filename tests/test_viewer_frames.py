@@ -1,7 +1,7 @@
 """Task 06: toolbar toggles, the info panel, frame navigation and sum-all.
 
 Four groups, roughly in the order a session would meet them: the per-push arithmetic
-and the info panel widget on their own; the held colour levels and the colour-scale
+and the info panel widget on their own; the held color levels and the color-scale
 transform on a bare `HeatmapView`; then the toolbar and frame navigation through a full
 `MainWindow`, offscreen, on the synthetic fixture -- same style as
 `test_viewer_interaction.py`, which this complements rather than repeats (that file owns
@@ -80,7 +80,7 @@ def test_info_panel_live_readout_states_accumulations_and_bits_with_the_number(q
     assert "100" in text and "8-bit" in text  # never a per-push number on its own
 
 
-# --- held colour levels and the colour-scale transform ---------------------------------
+# --- held color levels and the color-scale transform ---------------------------------
 
 def _fake_result(image: "np.ndarray") -> RasterResult:
     axes = DisplayAxes(x_edges=np.array([0.0, 1.0]), y_edges=np.array([0.0, 1.0]),
@@ -92,18 +92,18 @@ def _fake_result(image: "np.ndarray") -> RasterResult:
     )
 
 
-def test_colour_scale_compresses_the_levels_but_never_the_raw_result(qtbot):
+def test_color_scale_compresses_the_levels_but_never_the_raw_result(qtbot):
     view = HeatmapView()
     qtbot.addWidget(view)
     result = _fake_result(np.array([[0.0, 3.0], [8.0, 15.0]]))
 
-    view.set_image(result, colour_scale="linear")
+    view.set_image(result, color_scale="linear")
     assert view.levels()[1] == pytest.approx(15.0)
 
-    view.set_image(result, colour_scale="log")
+    view.set_image(result, color_scale="log")
     assert view.levels()[1] == pytest.approx(np.log1p(15.0))
 
-    view.set_image(result, colour_scale="sqrt")
+    view.set_image(result, color_scale="sqrt")
     assert view.levels()[1] == pytest.approx(np.sqrt(15.0))
 
     # The transform never touches the RasterResult the readouts quote.
@@ -111,9 +111,9 @@ def test_colour_scale_compresses_the_levels_but_never_the_raw_result(qtbot):
     assert result.max_intensity == pytest.approx(15.0)
 
 
-def test_axis_labels_are_bold_and_keep_a_visible_colour(qtbot):
+def test_axis_labels_are_bold_and_keep_a_visible_color(qtbot):
     """Regression: `AxisItem.setLabel(**style)` replaces `labelStyle` wholesale rather
-    than merging into it, so passing `font-weight` alone silently dropped the colour
+    than merging into it, so passing `font-weight` alone silently dropped the color
     `AxisItem.__init__`'s own `setTextPen` had put there -- the label was still present
     and bold, just rendered in Qt's rich-text default (black) against this viewer's
     black background. Neither a bounding-rect check nor the tooltip walk would catch an
@@ -128,7 +128,7 @@ def test_axis_labels_are_bold_and_keep_a_visible_colour(qtbot):
         assert style.get("color")
 
 
-def test_set_levels_holds_the_colour_bar_across_a_new_image(qtbot):
+def test_set_levels_holds_the_color_bar_across_a_new_image(qtbot):
     view = HeatmapView()
     qtbot.addWidget(view)
     view.set_image(_fake_result(np.array([[0.0, 10.0]])))
@@ -488,85 +488,85 @@ def test_a_stored_hidden_info_panel_starts_hidden(qtbot):
     assert window._info_action in toolbar.actions()
 
 
-# --- the View > Colour map menu ---------------------------------------------------------
+# --- the View > Color map menu ---------------------------------------------------------
 
-def _colour_map_menu(window):
+def _color_map_menu(window):
     view_menu = next(a.menu() for a in window.menuBar().actions() if a.text() == "&View")
-    return next(a.menu() for a in view_menu.actions() if a.text() == "Colour map")
+    return next(a.menu() for a in view_menu.actions() if a.text() == "Color map")
 
 
-def test_colour_map_menu_offers_the_four_maps_with_the_stored_one_ticked(qtbot):
-    from mainspring.viewer.settings import COLOUR_MAPS, ViewerSettings
+def test_color_map_menu_offers_the_four_maps_with_the_stored_one_ticked(qtbot):
+    from mainspring.viewer.settings import COLOR_MAPS, ViewerSettings
 
-    window = MainWindow(ViewerSettings(colour_map="inferno"))
+    window = MainWindow(ViewerSettings(color_map="inferno"))
     qtbot.addWidget(window)
     window.show()
 
-    actions = _colour_map_menu(window).actions()
-    assert [a.text() for a in actions] == [name.capitalize() for name in COLOUR_MAPS]
+    actions = _color_map_menu(window).actions()
+    assert [a.text() for a in actions] == [name.capitalize() for name in COLOR_MAPS]
     checked = [a.text() for a in actions if a.isChecked()]
     assert checked == ["Inferno"]
 
 
-def test_picking_a_colour_map_ticks_it_alone_and_is_remembered(qtbot):
+def test_picking_a_color_map_ticks_it_alone_and_is_remembered(qtbot):
     window = MainWindow()
     qtbot.addWidget(window)
     window.show()
 
-    plasma = next(a for a in _colour_map_menu(window).actions() if a.text() == "Plasma")
+    plasma = next(a for a in _color_map_menu(window).actions() if a.text() == "Plasma")
     plasma.trigger()
 
     assert plasma.isChecked()
-    assert [a.isChecked() for a in _colour_map_menu(window).actions()].count(True) == 1
-    assert window.settings.colour_map == "plasma"
-    assert window.heatmap._colour_bar.colorMap().name == "plasma"
+    assert [a.isChecked() for a in _color_map_menu(window).actions()].count(True) == 1
+    assert window.settings.color_map == "plasma"
+    assert window.heatmap._color_bar.colorMap().name == "plasma"
 
 
-# --- the View > Colour scale menu -----------------------------------------------------
+# --- the View > Color scale menu -----------------------------------------------------
 
-def _colour_scale_menu(window):
+def _color_scale_menu(window):
     view_menu = next(a.menu() for a in window.menuBar().actions() if a.text() == "&View")
-    return next(a.menu() for a in view_menu.actions() if a.text() == "Colour scale")
+    return next(a.menu() for a in view_menu.actions() if a.text() == "Color scale")
 
 
-def test_every_colour_scale_has_a_display_name():
+def test_every_color_scale_has_a_display_name():
     """The menu is built by looking each code word up, so a scale added to
-    `COLOUR_SCALES` without a name here would raise rather than go unlabelled."""
-    from mainspring.viewer.main_window import COLOUR_SCALE_NAMES
-    from mainspring.viewer.settings import COLOUR_SCALES
+    `COLOR_SCALES` without a name here would raise rather than go unlabelled."""
+    from mainspring.viewer.main_window import COLOR_SCALE_NAMES
+    from mainspring.viewer.settings import COLOR_SCALES
 
-    assert set(COLOUR_SCALE_NAMES) == set(COLOUR_SCALES)
+    assert set(COLOR_SCALE_NAMES) == set(COLOR_SCALES)
 
 
-def test_colour_scale_menu_offers_the_three_scales_with_the_stored_one_ticked(qtbot):
-    from mainspring.viewer.main_window import COLOUR_SCALE_NAMES
-    from mainspring.viewer.settings import COLOUR_SCALES, ViewerSettings
+def test_color_scale_menu_offers_the_three_scales_with_the_stored_one_ticked(qtbot):
+    from mainspring.viewer.main_window import COLOR_SCALE_NAMES
+    from mainspring.viewer.settings import COLOR_SCALES, ViewerSettings
 
-    window = MainWindow(ViewerSettings(colour_scale="sqrt"))
+    window = MainWindow(ViewerSettings(color_scale="sqrt"))
     qtbot.addWidget(window)
     window.show()
 
-    actions = _colour_scale_menu(window).actions()
-    assert [a.text() for a in actions] == [COLOUR_SCALE_NAMES[n] for n in COLOUR_SCALES]
+    actions = _color_scale_menu(window).actions()
+    assert [a.text() for a in actions] == [COLOR_SCALE_NAMES[n] for n in COLOR_SCALES]
     assert [a.text() for a in actions if a.isChecked()] == ["Square root"]
 
 
-def test_picking_a_colour_scale_ticks_it_alone_and_redraws_the_image(opened_window, qtbot):
+def test_picking_a_color_scale_ticks_it_alone_and_redraws_the_image(opened_window, qtbot):
     window = opened_window
     high = window.heatmap.levels()[1]
 
-    log = next(a for a in _colour_scale_menu(window).actions() if a.text() == "Log")
+    log = next(a for a in _color_scale_menu(window).actions() if a.text() == "Log")
     log.trigger()
 
     assert log.isChecked()
-    assert [a.isChecked() for a in _colour_scale_menu(window).actions()].count(True) == 1
-    assert window.settings.colour_scale == "log"
+    assert [a.isChecked() for a in _color_scale_menu(window).actions()].count(True) == 1
+    assert window.settings.color_scale == "log"
     # The levels are in display space, so a log scale compresses them without the
     # render worker being asked for anything.
     assert window.heatmap.levels()[1] == pytest.approx(np.log1p(high))
 
 
-def test_the_colour_scale_is_no_longer_on_the_toolbar(qtbot):
+def test_the_color_scale_is_no_longer_on_the_toolbar(qtbot):
     """Items 1 and 2 of task 24: everything describing how the data are drawn is in a
     menu, and the toolbar is what a user touches every minute."""
     from PySide6.QtWidgets import QLabel, QToolBar
@@ -575,7 +575,7 @@ def test_the_colour_scale_is_no_longer_on_the_toolbar(qtbot):
     qtbot.addWidget(window)
     toolbar = window.findChild(QToolBar, "view_toolbar")
     labels = [w.text() for w in toolbar.findChildren(QLabel)]
-    assert not any("Colour" in text for text in labels)
+    assert not any("Color" in text for text in labels)
 
 
 # --- the Data settings menu -----------------------------------------------------------
@@ -584,13 +584,13 @@ def _data_menu(window):
     return next(a.menu() for a in window.menuBar().actions() if a.text() == "&Data settings")
 
 
-def test_the_menu_bar_carries_file_view_and_data_settings(qtbot):
+def test_the_menu_bar_carries_file_view_data_settings_and_help(qtbot):
     window = MainWindow()
     qtbot.addWidget(window)
     texts = [a.text() for a in window.menuBar().actions()]
-    assert texts == ["&File", "&View", "&Data settings"]
-    # Three menus, three different mnemonics.
-    assert len({t[t.index("&") + 1].lower() for t in texts}) == 3
+    assert texts == ["&File", "&View", "&Data settings", "&Help"]
+    # Four menus, four different mnemonics.
+    assert len({t[t.index("&") + 1].lower() for t in texts}) == 4
 
 
 def test_aggregate_and_bits_are_in_the_data_menu_and_not_on_the_toolbar(qtbot):
@@ -815,3 +815,61 @@ def test_nearest_picks_the_closest_and_ties_go_low():
     assert _nearest([7], 100) == 7, "a single frame"
     for value in range(-5, 30):
         assert _nearest(numbers, value) == min(numbers, key=lambda n: abs(n - value))
+
+
+# --- the toolbar's live group (task 30) ------------------------------------------------
+
+def test_a_separator_divides_the_live_controls_from_the_rest(qtbot):
+    """Everything left of the rule describes a file sitting still; everything right of
+    it is about one being written."""
+    from PySide6.QtWidgets import QToolBar
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    toolbar = window.findChild(QToolBar, "view_toolbar")
+
+    actions = toolbar.actions()
+    separators = [i for i, action in enumerate(actions) if action.isSeparator()]
+    assert separators, "the live group is not divided from the rest"
+    live = actions.index(window._follow_action)
+    sums = actions.index(window.sum_action)
+    assert any(sums < i < live for i in separators)
+
+
+def test_the_live_control_is_called_live(qtbot):
+    """The label changed in 1.4.0; the command-line word did not, because it is an
+    interface between two programs (`mainspring.interface`)."""
+    from mainspring.interface import OPTION_FOLLOW
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    assert window._follow_action.text() == "Live"
+    assert OPTION_FOLLOW == "--follow"
+
+
+def test_swap_and_raw_units_are_in_the_view_menu_and_not_on_the_toolbar(qtbot):
+    from PySide6.QtWidgets import QMenu, QToolBar
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    toolbar = window.findChild(QToolBar, "view_toolbar")
+
+    assert window._swap_action not in toolbar.actions()
+    assert window._raw_action not in toolbar.actions()
+    view_menu = next(
+        menu for menu in window.menuBar().findChildren(QMenu)
+        if menu.title().replace("&", "") == "View"
+    )
+    assert window._swap_action in view_menu.actions()
+    assert window._raw_action in view_menu.actions()
+
+
+def test_the_arrival_offset_is_whole_milliseconds(qtbot):
+    """Integers, to get the toolbar's width back. The setting stays a float, so a value
+    written by an older version still loads and still applies."""
+    window = MainWindow()
+    qtbot.addWidget(window)
+    assert window._arrival_offset_box.decimals() == 0
+    assert window._arrival_offset_box.minimum() == -10_000.0
+    assert window._arrival_offset_box.maximum() == 10_000.0
+    assert isinstance(window.settings.arrival_offset_ms, float)

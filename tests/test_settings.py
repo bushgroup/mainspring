@@ -16,11 +16,11 @@ def test_defaults_are_already_valid():
     assert ViewerSettings().validate() == ViewerSettings()
 
 
-def test_validate_clamps_an_unrecognised_aggregate_or_colour_scale():
-    settings = ViewerSettings(aggregate="bogus", colour_scale="bogus")
+def test_validate_clamps_an_unrecognised_aggregate_or_color_scale():
+    settings = ViewerSettings(aggregate="bogus", color_scale="bogus")
     fixed = settings.validate()
     assert fixed.aggregate == "sum"
-    assert fixed.colour_scale == "linear"
+    assert fixed.color_scale == "linear"
 
 
 def test_validate_clamps_an_unrecognised_text_scale():
@@ -37,9 +37,9 @@ def test_validate_keeps_the_info_panel_at_least_its_minimum_width():
     assert ViewerSettings(info_panel_width=900).validate().info_panel_width == 900
 
 
-def test_validate_clamps_an_unrecognised_colour_map():
-    assert ViewerSettings(colour_map="bogus").validate().colour_map == "viridis"
-    assert ViewerSettings(colour_map="plasma").validate().colour_map == "plasma"
+def test_validate_clamps_an_unrecognised_color_map():
+    assert ViewerSettings(color_map="bogus").validate().color_map == "viridis"
+    assert ViewerSettings(color_map="plasma").validate().color_map == "plasma"
 
 
 def test_validate_clamps_a_non_finite_arrival_offset():
@@ -91,14 +91,14 @@ def test_settings_round_trip_through_qsettings():
         aggregate="max",
         swap_axes=True,
         raw_units=True,
-        colour_scale="log",
+        color_scale="log",
         keep_ranges=True,
         keep_levels=True,
         show_info_panel=False,
         info_panel_width=480,
         text_scale=1.5,
         detector_bits=14,
-        colour_map="plasma",
+        color_map="plasma",
         export_dpi=600,
         cache_budget_mb=256,
         arrival_offset_ms=-42.5,
@@ -133,3 +133,43 @@ def test_an_unrecognised_stored_value_falls_back_to_the_default_rather_than_fail
     settings = load_settings()
     assert settings.detector_bits == 8  # the default, not a crash
     assert settings.aggregate == "max"  # everything else still round-trips
+
+
+def test_the_old_british_spelling_of_the_two_color_keys_is_read_once_and_then_removed():
+    """An upgrade keeps the map and the scale the user chose.
+
+    The keys were `colour_map` and `colour_scale` up to 1.3.0. A store written by that
+    version has to keep answering, or every existing installation silently loses two
+    settings on upgrade; and the old key has to go once the new one is written, or a
+    store carries two keys for one setting and they drift.
+    """
+    from mainspring.viewer.settings import _store
+
+    store = _store()
+    store.setValue("colour_map", "magma")
+    store.setValue("colour_scale", "log")
+    store.sync()
+
+    loaded = load_settings()
+    assert loaded.color_map == "magma"
+    assert loaded.color_scale == "log"
+
+    save_settings(loaded)
+    store = _store()
+    assert not store.contains("colour_map")
+    assert not store.contains("colour_scale")
+    assert store.value("color_map") == "magma"
+    assert load_settings().color_map == "magma"
+
+
+def test_the_new_spelling_wins_when_a_store_somehow_carries_both():
+    """A store hand-edited, or written by two versions in turn, is not ambiguous: the
+    key this version writes is the one it reads."""
+    from mainspring.viewer.settings import _store
+
+    store = _store()
+    store.setValue("colour_map", "magma")
+    store.setValue("color_map", "plasma")
+    store.sync()
+
+    assert load_settings().color_map == "plasma"

@@ -12,11 +12,11 @@ instrument writes UIMF.
 
 ## Status
 
-Version 1.1.0. The reader layer, the viewer, and the Windows installer are written and
+Version 1.4.0. The reader layer, the viewer, and the Windows installer are written and
 verified, and the development record lives in a private companion repository. This release
-adds a command line that opens a file already following it, and a fourth way of following a
-run that keeps a total of the newest finished frames, so the program driving an acquisition
-can put a live view of it on screen without the operator opening anything by hand.
+is about reading the window: a Help menu that carries the user guide, the version in the
+title bar, plot furniture at full contrast, traces that stand clear of the heat map and
+thicken with it, and a status bar that shows one thing at a time.
 The [user guide](docs/user-guide.md) covers all of it.
 
 The reader reproduces every scan's stored total ion current and base peak intensity exactly

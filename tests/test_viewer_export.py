@@ -1,6 +1,6 @@
 """What `File > Export` writes, and the two things about it that are easy to get wrong.
 
-The colour bar is left out by cropping rather than by taking anything apart, so the crop
+The color bar is left out by cropping rather than by taking anything apart, so the crop
 is what is tested: not only that the bar is outside it, but that nothing else is --
 `m/z` and `Arrival time (ms)` hang a few pixels outside the plot item that owns them,
 and a crop to the plots alone shaved the outer edge off both.
@@ -8,7 +8,7 @@ and a crop to the plots alone shaved the outer edge off both.
 The figure is the scene as it stands, so what is tested about the heatmap is that the
 export does not touch it: the same array, under the same levels, before and after. Task 24
 deleted the re-rasterise that used to stand a finer image in for the screen's, which moved
-the colour levels and made the figure a different picture from the one the user exported.
+the color levels and made the figure a different picture from the one the user exported.
 
 Everything here runs on the synthetic fixture, offscreen, with no data file. The window
 paints boxes for glyphs under the offscreen platform, which is why nothing below looks
@@ -55,7 +55,7 @@ def viewer(qtbot, synthetic_uimf):
 
 
 def _bar_of(window: MainWindow) -> pg.ColorBarItem:
-    """The colour bar, found by type rather than by reaching for a private attribute."""
+    """The color bar, found by type rather than by reaching for a private attribute."""
     bars = [
         item for item in window.heatmap.scene().items()
         if isinstance(item, pg.ColorBarItem)
@@ -66,7 +66,7 @@ def _bar_of(window: MainWindow) -> pg.ColorBarItem:
 
 # --- the crop ---------------------------------------------------------------------------
 
-def test_the_crop_excludes_the_colour_bar(viewer):
+def test_the_crop_excludes_the_color_bar(viewer):
     bar = _bar_of(viewer)
     rect = content_rect(viewer.heatmap, viewer.side_plots)
 
@@ -81,7 +81,7 @@ def test_the_crop_keeps_the_axis_labels_the_plots_do_not_contain(viewer):
     `AxisItem` draws its label in a text item that overhangs the space the plot's layout
     reserved, so a crop to the three plot items alone cut into `m/z` and
     `Arrival time (ms)`. Asserted over every text item in the scene that is not the
-    colour bar's, so a label added later is covered without being named here.
+    color bar's, so a label added later is covered without being named here.
     """
     bar = _bar_of(viewer)
     rect = content_rect(viewer.heatmap, viewer.side_plots)
@@ -202,7 +202,7 @@ def test_the_pdf_page_is_the_same_size_at_every_resolution(viewer, tmp_path):
 
 def test_the_export_is_the_picture_on_screen(viewer, tmp_path):
     """The reason task 24 deleted the re-rasterise. A heatmap pixel is an aggregate over
-    the bins and scans inside it, so a finer image is a different picture: the colour map
+    the bins and scans inside it, so a finer image is a different picture: the color map
     moves, blobs separate, faint features appear. An export must be the figure the user
     looked at and decided to export."""
     # Copied, and compared by value: `ImageItem.setImage` keeps a `view()` of what it is

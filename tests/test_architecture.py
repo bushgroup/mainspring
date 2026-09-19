@@ -17,7 +17,8 @@ import pytest
 
 UIMF_MODULES = ("cache", "calib", "cli", "decode", "frame", "raster", "reader", "writer")
 VIEWER_MODULES = (
-    "app", "controls", "export", "fonts", "heatmap", "info_panel", "labels",
+    "app", "controls", "export", "fonts", "heatmap",
+    "help", "info_panel", "labels",
     "main_window", "settings", "side_plots", "theme", "workers",
 )
 
@@ -86,7 +87,7 @@ def test_the_data_layer_no_longer_has_stubs_in_it():
 
 def test_the_viewer_layer_no_longer_has_stubs_in_it():
     """Task 06 filled the last of `viewer/` -- the settings, the info panel, frame
-    navigation and sum-all, and the held colour levels they depend on
+    navigation and sum-all, and the held color levels they depend on
     (`notes/architecture.md`'s stub list). Same check as the data layer's, extended here
     now that nothing under either package is left unbuilt."""
     _assert_no_stubs("mainspring.viewer", VIEWER_MODULES)

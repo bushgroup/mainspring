@@ -1,11 +1,11 @@
-"""`File > Export`: the display as it stands, at a chosen resolution, without the colour bar.
+"""`File > Export`: the display as it stands, at a chosen resolution, without the color bar.
 
 Everything on screen is one `QGraphicsScene`, so an export is one
 `QGraphicsScene.render` into whatever paint device the format asks for -- a `QImage` for
 PNG, a `QPdfWriter` for PDF. There is no second drawing path to keep in step with the
 first: what is exported is the scene the user is looking at, rendered again.
 
-**Leaving the colour bar out is a matter of which rectangle is rendered**, not of taking
+**Leaving the color bar out is a matter of which rectangle is rendered**, not of taking
 anything apart. The bar is a `PlotItem` of its own in the layout's last column
 (`heatmap.py`), so the heatmap and its two projections are a contiguous rectangle to the
 left of it; `content_rect` unites their three scene rects and the render is clipped to
@@ -17,16 +17,16 @@ figure is the array already on screen, enlarged with square pixels. Until task 2
 export re-rasterised the frame at its own pixel size, on the reasoning that a 3x figure
 deserves 3x the samples -- which is true of a picture and wrong of this one. A heatmap
 pixel is an aggregate over the bins and scans inside it, so re-rasterising finer changes
-what every pixel *means*: the colour map moves, peaks that were one blob separate, faint
+what every pixel *means*: the color map moves, peaks that were one blob separate, faint
 features appear, and the figure is a different picture from the one the user looked at
 and decided to export. That is the opposite of what an export is for. It also had to
-rescale the colour levels to follow the new numbers, which was a second approximation
+rescale the color levels to follow the new numbers, which was a second approximation
 stacked on the first.
 
 So the export renders the scene as it stands. The `ImageItem` holds an array the size of
 the *viewport* -- that is the point of the sparse frame, and it is why a gesture repaints
 at all (`uimf/raster.py`, `workers.RenderRequest`) -- and at 3x each of its samples
-becomes a 3x3 block of one colour. `_render` deliberately does not set
+becomes a 3x3 block of one color. `_render` deliberately does not set
 `SmoothPixmapTransform`, so that block is a block: an interpolated upscale would invent a
 gradient between two aggregates and read as data. What the resolution does buy is real
 and is the whole reason to ask for one: the axes, the ticks, the labels and both
@@ -141,7 +141,7 @@ def export_display(
     """Write the display to `path` at `dpi`, and answer with its pixel size.
 
     What is written is the scene as it stands: the window, the axes, the aggregate, the
-    colour scale and the levels are all already on it, so there is nothing about "which
+    color scale and the levels are all already on it, so there is nothing about "which
     picture is this" to pass in and nothing that could disagree with what the user is
     looking at.
 
@@ -235,7 +235,7 @@ def _render(view: object, painter: QPainter, target: QRectF, source: QRectF) -> 
     `painter.drawImage`, which honours that hint, so setting it would interpolate the
     heatmap's upscale. A heatmap pixel is an aggregate over the bins and scans inside it
     and a gradient invented between two of them would read as data; without the hint each
-    sample comes out as a square block of one colour, which is what it is.
+    sample comes out as a square block of one color, which is what it is.
 
     `IgnoreAspectRatio` with a target computed from the source: the two agree to within
     the pixel that rounding to whole pixels costs, and letting Qt letterbox that pixel
@@ -302,7 +302,7 @@ class ExportDialog(QDialog):
             form.addRow("Resolution:", self._dpi_box)
             layout.addLayout(form)
         layout.addWidget(self._size_label)
-        note = QLabel("The colour bar is not part of the exported figure.")
+        note = QLabel("The color bar is not part of the exported figure.")
         note.setEnabled(False)  # a footnote, not a control
         layout.addWidget(note)
         layout.addWidget(self._buttons)

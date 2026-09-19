@@ -24,6 +24,22 @@ block_cipher = None
 # entry script against it means the build works from any cwd, not just this directory.
 ENTRYPOINT = os.path.join(SPECPATH, "entrypoint.py")
 
+REPO_ROOT = os.path.abspath(os.path.join(SPECPATH, ".."))
+
+# The user guide, carried so that Help > User guide answers on a machine with no network
+# -- which is most instrument PCs. `collect_data_files("mainspring")` reaches inside the
+# package only, and `docs/` is deliberately outside it: the guide is one source, read by
+# the viewer and rendered on GitHub, and copying it into `src/` to make a collector find
+# it would make two. `viewer/help.py` looks for it at this path relative to `_MEIPASS`.
+GUIDE_DATAS = [
+    (os.path.join(REPO_ROOT, "docs", "user-guide.md"), "docs"),
+]
+GUIDE_DATAS += [
+    (os.path.join(REPO_ROOT, "docs", "images", name), os.path.join("docs", "images"))
+    for name in sorted(os.listdir(os.path.join(REPO_ROOT, "docs", "images")))
+    if name.lower().endswith((".png", ".jpg", ".jpeg", ".svg"))
+]
+
 # The icon is package data, not a packaging asset: the viewer sets it on its own windows
 # through `mainspring.viewer.app`, so it has to travel with the package for a source run
 # and a wheel install as well as for this build, and `collect_data_files("mainspring")`
@@ -121,7 +137,7 @@ a = Analysis(
     [ENTRYPOINT],
     pathex=[],
     binaries=[],
-    datas=collect_data_files("mainspring"),
+    datas=collect_data_files("mainspring") + GUIDE_DATAS,
     # The viewer does not import `mainspring.report` -- the entry point reaches the uimf
     # layer and the GUI, and nothing on screen is stamped today -- so the commit module
     # would not be followed into the bundle by itself. Named here so a frozen mainspring

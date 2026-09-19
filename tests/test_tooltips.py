@@ -117,7 +117,7 @@ def test_make_action_configures_before_it_connects(qtbot):
 
 
 def test_the_plot_items_explain_themselves(qtbot):
-    """The heatmap, its four axes, the colour bar and both projections."""
+    """The heatmap, its four axes, the color bar and both projections."""
     window = MainWindow()
     qtbot.addWidget(window)
 
@@ -125,7 +125,7 @@ def test_the_plot_items_explain_themselves(qtbot):
     images = [i for i in items if isinstance(i, pg.ImageItem)]
     axes = [i for i in items if isinstance(i, pg.AxisItem) and i.isVisible()]
     plots = [i for i in items if isinstance(i, pg.PlotItem)]
-    assert images and axes and len(plots) >= 4  # heatmap, two projections, colour bar
+    assert images and axes and len(plots) >= 4  # heatmap, two projections, color bar
     for item in images + axes + plots:
         assert item.toolTip().strip(), f"{item!r} explains nothing"
 

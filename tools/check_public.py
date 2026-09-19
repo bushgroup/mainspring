@@ -96,25 +96,36 @@ def section(title: str) -> None:
 
 
 def declared_versions() -> dict[str, str]:
-    """The version as each of the three files that hand-carry it states it.
+    """The version as each of the files that hand-carry it states it.
 
     Nothing derives one of these from another: the package literal is what an
-    import reports, `pyproject.toml` is what a wheel is built as, and the Inno
-    Setup define is what the installer calls itself and names its own file. They
-    only agree because someone keeps them agreeing, which is why this is checked
-    rather than trusted.
+    import reports, `pyproject.toml` is what a wheel is built as, the Inno Setup
+    define is what the installer calls itself and names its own file, the
+    citation file is what a reader of the repository cites, and the README's
+    status line is what a visitor reads first. They only agree because someone
+    keeps them agreeing, which is why this is checked rather than trusted.
+
+    The last two were outside this check until 1.4.0, and the README's had been
+    wrong since 1.1.0 -- a number nobody reads is a number nobody updates, and
+    the one a visitor sees first is the worst place for it.
     """
     with open(os.path.join(ROOT, "pyproject.toml"), "rb") as handle:
         pyproject = tomllib.load(handle)["project"]["version"]
     iss = open(os.path.join(ROOT, "packaging", "mainspring.iss"), encoding="utf-8").read()
     found = re.search(r'^#define\s+MyAppVersion\s+"([^"]+)"', iss, re.MULTILINE)
+    cff = open(os.path.join(ROOT, "CITATION.cff"), encoding="utf-8").read()
+    cited = re.search(r'^version:\s*"?([^"\s]+)"?\s*$', cff, re.MULTILINE)
+    readme = open(os.path.join(ROOT, "README.md"), encoding="utf-8").read()
+    stated = re.search(r'^Version\s+([0-9]+\.[0-9]+\.[0-9]+)\.', readme, re.MULTILINE)
     return {"pyproject.toml": pyproject,
-            "packaging/mainspring.iss": found.group(1) if found else "(not found)"}
+            "packaging/mainspring.iss": found.group(1) if found else "(not found)",
+            "CITATION.cff": cited.group(1) if cited else "(not found)",
+            "README.md": stated.group(1) if stated else "(not found)"}
 
 
 UIMF_MODULES = ("cache", "calib", "cli", "decode", "frame", "raster", "reader", "writer")
 VIEWER_MODULES = (
-    "app", "controls", "export", "fonts", "heatmap", "info_panel", "labels",
+    "app", "controls", "export", "fonts", "heatmap", "help", "info_panel", "labels",
     "main_window", "settings", "side_plots", "theme", "workers",
 )
 
@@ -143,7 +154,7 @@ def main() -> int:
     check_true("mainspring imports and carries a version", bool(mainspring.__version__))
     declared = declared_versions() | {"mainspring.__version__": mainspring.__version__}
     check_true(
-        "the package, the wheel and the installer declare one version ("
+        "every file that hand-carries the version declares the same one ("
         + ", ".join(f"{where} {what}" for where, what in declared.items()) + ")",
         len(set(declared.values())) == 1,
     )
@@ -879,7 +890,38 @@ def main() -> int:
             not mute,
         )
 
-        # And nothing on the plot canvas is painted a colour its palette does not hold.
+        # The Help menu answers with no network, which is the whole reason the guide is
+        # carried rather than linked. A packaging change that stopped shipping it would
+        # otherwise show up only as an empty window on an instrument PC.
+        from mainspring.viewer.help import guide_path, read_guide
+
+        found = guide_path()
+        check_true(f"the user guide is where Help looks for it ({found})", bool(found))
+        guide_text, _ = read_guide()
+        check_true("and it is the whole document rather than a placeholder",
+                   len(guide_text) > 5000 and "# mainspring user guide" in guide_text)
+
+        # The window's title says which version it is. The first question anyone asks
+        # about a viewer left open on a bench, and the cheapest place to answer it.
+        check_true(f"the window title carries the version ({window.windowTitle()})",
+                   mainspring.__version__ in window.windowTitle())
+
+        # The status bar's left slot is shared, and a failure holds it. A message that
+        # faded would leave a refused Live looking like nothing happened.
+        # `isHidden`, not `isVisible`: a child of a window that was never shown is not
+        # visible whatever it was told to do, which is the same trap `companion_offer`
+        # is written around.
+        window._show_status("an ordinary thing happened")
+        shared_ok = not window._status.isHidden() and window._readout.isHidden()
+        window._release_status()
+        shared_ok = shared_ok and not window._readout.isHidden() and window._status.isHidden()
+        window._show_status("something went wrong", sticky=True)
+        window._release_status()
+        check_true("an ordinary status message gives the slot back and a failure does not",
+                   shared_ok and not window._status.isHidden()
+                   and window._readout.isHidden())
+
+        # And nothing on the plot canvas is painted a color its palette does not hold.
         # Under **light** above all: under the dark palette this passes for anything
         # hardcoded to the values the viewer has always drawn, which is most of what the
         # walk exists to catch (`viewer/theme.py`). Data-free, so it FAILs in a bare
@@ -928,7 +970,7 @@ def main() -> int:
 
             # File > Export: the figure a user actually takes away. Data-free, so it
             # runs in a bare clone -- and it checks the two things a screenshot would
-            # not, that the colour bar's column is outside the rectangle rendered and
+            # not, that the color bar's column is outside the rectangle rendered and
             # that the export is the picture on screen, the same array under the same
             # levels, rather than a finer one the user never saw (lab record, task 24).
             from mainspring.viewer.export import (
@@ -937,11 +979,11 @@ def main() -> int:
 
             rect = content_rect(window.heatmap, window.side_plots)
             bar = window.heatmap.scene().items()
-            colour_bar = [i for i in bar if isinstance(i, pg.ColorBarItem)]
+            color_bar = [i for i in bar if isinstance(i, pg.ColorBarItem)]
             check_true(
-                "the exported rectangle leaves the colour bar out",
-                bool(colour_bar)
-                and not rect.intersects(colour_bar[0].mapRectToScene(colour_bar[0].boundingRect())),
+                "the exported rectangle leaves the color bar out",
+                bool(color_bar)
+                and not rect.intersects(color_bar[0].mapRectToScene(color_bar[0].boundingRect())),
             )
             screen_image = window.heatmap.image_item.image.copy()
             screen_levels = window.heatmap.levels()
@@ -1117,9 +1159,12 @@ def main() -> int:
                            and window._live_sum_frames == (3, 4))
 
                 window.stop_following()
-                check_true("stopping the follow greys the two controls that answer to it",
+                check_true("stopping the follow greys the two controls that answer to"
+                           " it, and the labels that name them",
                            not window._follow_mode.isEnabled()
-                           and not window._rolling_sum_spin.isEnabled())
+                           and not window._rolling_sum_spin.isEnabled()
+                           and not window._follow_label.isEnabled()
+                           and not window._rolling_sum_label.isEnabled())
                 window.close()
 
         # The end of a run that does not keep its raw file. A scene of its own because

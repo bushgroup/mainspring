@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from mainspring.viewer.main_window import MainWindow
+from mainspring.viewer.main_window import WINDOW_TITLE, MainWindow
 
 
 def test_window_loads_the_synthetic_file_and_places_the_image(qtbot, synthetic_uimf):
@@ -55,7 +55,7 @@ def test_a_file_with_no_frames_fails_without_a_frame_paint(qtbot, tmp_path):
         timeout=5000,
     )
     # It opened, so it is the file on screen, frames or not.
-    assert window.windowTitle() == "empty.uimf — mainspring"
+    assert window.windowTitle() == f"empty.uimf — {WINDOW_TITLE}"
 
 
 def test_resizing_the_heatmap_re_rasterises_at_the_new_pixel_size(qtbot, synthetic_uimf):
@@ -87,12 +87,12 @@ def test_the_title_names_the_open_file(qtbot, synthetic_uimf):
 
     window = MainWindow()
     qtbot.addWidget(window)
-    assert window.windowTitle() == "mainspring"
+    assert window.windowTitle() == WINDOW_TITLE
 
     with qtbot.waitSignal(window.frame_shown, timeout=5000):
         window.open_file(synthetic_uimf.path)
 
-    assert window.windowTitle() == f"{os.path.basename(synthetic_uimf.path)} — mainspring"
+    assert window.windowTitle() == f"{os.path.basename(synthetic_uimf.path)} — {WINDOW_TITLE}"
 
 
 def test_a_failed_open_leaves_the_title_bare(qtbot, tmp_path):
@@ -104,7 +104,7 @@ def test_a_failed_open_leaves_the_title_bare(qtbot, tmp_path):
         lambda: (window.status_text() or "").startswith("Error"), timeout=5000
     )
 
-    assert window.windowTitle() == "mainspring"
+    assert window.windowTitle() == WINDOW_TITLE
 
 
 def test_a_failed_dialog_open_shows_no_modal(qtbot, tmp_path, monkeypatch):
@@ -144,4 +144,4 @@ def test_a_failed_command_line_open_shows_a_modal_naming_the_file(qtbot, tmp_pat
 
     assert len(shown) == 1
     assert "does-not-exist.uimf" in shown[0].text()
-    assert window.windowTitle() == "mainspring"
+    assert window.windowTitle() == WINDOW_TITLE

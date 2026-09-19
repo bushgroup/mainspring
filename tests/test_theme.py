@@ -2,13 +2,13 @@
 
 The coverage assertion is `test_nothing_on_the_canvas_is_painted_outside_its_palette`,
 and on its own it is worth very little: run under the dark palette it passes for every
-colour hardcoded to the value the viewer has always drawn, which is most of what the
+color hardcoded to the value the viewer has always drawn, which is most of what the
 walk exists to catch. So it is run under both palettes, and the negative tests below put
-each of the four colours the tree carried before this feature back in place and assert
+each of the four colors the tree carried before this feature back in place and assert
 the walk names it. Those are what make the coverage assertion mean something.
 
 The other half is that a toggle is *free*: the open file, the frame, the view ranges and
-the pinned colour levels all survive it, because the palette is set on the items that
+the pinned color levels all survive it, because the palette is set on the items that
 are already on screen rather than by rebuilding them.
 """
 
@@ -34,14 +34,17 @@ def test_every_theme_name_has_a_palette():
     assert all(name == theme.PALETTES[name].name for name in THEMES)
 
 
-def test_dark_is_the_default_and_is_what_the_viewer_always_drew():
-    """An existing user sees no change: the defaults are pyqtgraph's own `k` and `d`,
-    the pale curve blue and the debug overlay's near-white, spelled out."""
+def test_dark_is_the_default_and_both_palettes_are_maximum_contrast():
+    """Every role the palette owns is the background's opposite, and the two palettes
+    differ only in which of black and white the background is."""
     assert ViewerSettings().theme == "dark"
     assert theme.DARK.background == "#000000"
-    assert theme.DARK.foreground == "#969696"
-    assert theme.DARK.curve == "#bed2ff"
-    assert theme.DARK.debug == "#dcdcdc"
+    assert theme.LIGHT.background == "#ffffff"
+    for palette, furniture in ((theme.DARK, "#ffffff"), (theme.LIGHT, "#000000")):
+        assert palette.foreground == furniture
+        assert palette.curve == furniture
+        assert palette.debug == furniture
+        assert palette.background != furniture
 
 
 def test_a_hand_edited_theme_is_clamped():
@@ -97,7 +100,7 @@ def test_nothing_on_the_canvas_is_painted_outside_its_palette(qtbot):
 
 def test_the_walk_still_holds_with_a_file_open(qtbot, synthetic_uimf):
     """Opening a file sets both axis labels and both projections' data, which is the
-    first moment anything on the canvas has a colour it did not start with."""
+    first moment anything on the canvas has a color it did not start with."""
     window = MainWindow()
     qtbot.addWidget(window)
     with qtbot.waitSignal(window.frame_shown, timeout=20000):
@@ -107,7 +110,7 @@ def test_the_walk_still_holds_with_a_file_open(qtbot, synthetic_uimf):
         assert theme.themed(window) == [], name
 
 
-def test_the_curve_colour_the_viewer_used_to_hardcode_is_named(qtbot):
+def test_the_curve_color_the_viewer_used_to_hardcode_is_named(qtbot):
     """`side_plots._PEN`, a pale blue chosen for a black background and close to
     unreadable on white. The first thing the walk was written to find."""
     window = MainWindow()
@@ -127,7 +130,7 @@ def test_the_debug_overlay_is_walked_even_though_it_is_hidden(qtbot):
     assert not window.heatmap._debug.isVisible()
 
     window.heatmap._debug.setColor(pg.mkColor(220, 220, 220))
-    assert any("text colour" in name for name in theme.themed(window))
+    assert any("text color" in name for name in theme.themed(window))
 
 
 def test_a_tick_pen_left_at_the_dark_foreground_is_named(qtbot):
@@ -135,19 +138,25 @@ def test_a_tick_pen_left_at_the_dark_foreground_is_named(qtbot):
     qtbot.addWidget(window)
     theme.apply(window, "light")
 
-    window.heatmap.plot_item.getAxis("left").setTickPen(pg.mkPen("#969696", width=1.5))
+    window.heatmap.plot_item.getAxis("left").setTickPen(pg.mkPen("#808080", width=1.5))
     assert any("tick pen" in name for name in theme.themed(window))
 
 
-def test_an_axis_label_that_lost_its_colour_is_named(qtbot):
-    """The invisible-label bug, in the direction light mode would produce it: a label
-    set with `font-weight` alone falls back to Qt's rich-text black."""
+def test_an_axis_label_that_lost_its_color_is_named(qtbot):
+    """The invisible-label bug: a label set with `font-weight` alone falls back to Qt's
+    rich-text black.
+
+    Asserted under **dark**, unlike every other case in this file. Black is now the light
+    palette's own foreground, so a label that lost its color is a label that happens to
+    be right in light mode and invisible in dark -- which is the way round this bug now
+    reaches a user, and the only palette the walk can still catch it under.
+    """
     window = MainWindow()
     qtbot.addWidget(window)
-    theme.apply(window, "light")
+    theme.apply(window, "dark")
 
     window.heatmap.plot_item.setLabel("bottom", "m/z", color="#000000", **{"font-weight": "bold"})
-    assert any("label colour" in name for name in theme.themed(window))
+    assert any("label color" in name for name in theme.themed(window))
 
 
 def test_two_stray_items_of_one_type_are_both_named(qtbot):
@@ -163,24 +172,24 @@ def test_two_stray_items_of_one_type_are_both_named(qtbot):
     assert named[0] != named[1]
 
 
-def test_the_colour_map_is_not_part_of_the_theme(qtbot, synthetic_uimf):
+def test_the_color_map_is_not_part_of_the_theme(qtbot, synthetic_uimf):
     """The map is a statement about the data, the palette one about the furniture. A
     toggle must not move the user's choice, and the walk must not ask the image or the
-    colour bar's gradient to be palette members."""
+    color bar's gradient to be palette members."""
     window = MainWindow()
     qtbot.addWidget(window)
-    window._on_colour_map_changed("magma", True)
+    window._on_color_map_changed("magma", True)
     with qtbot.waitSignal(window.frame_shown, timeout=20000):
         window.open_file(synthetic_uimf.path)
 
     _light(window)
-    assert window.settings.colour_map == "magma"
+    assert window.settings.color_map == "magma"
     assert theme.themed(window) == []
 
 
 def test_the_axis_labels_are_repainted_when_the_theme_changes(qtbot, synthetic_uimf):
     """Set once by `set_image` under one palette, and they have to follow the other --
-    this is the failure the walk's `label colour` entry exists for."""
+    this is the failure the walk's `label color` entry exists for."""
     window = MainWindow()
     qtbot.addWidget(window)
     with qtbot.waitSignal(window.frame_shown, timeout=20000):
@@ -196,9 +205,9 @@ def test_the_axis_labels_are_repainted_when_the_theme_changes(qtbot, synthetic_u
     assert axis.labelText
 
 
-def test_a_frame_drawn_after_the_toggle_keeps_the_light_label_colour(qtbot, synthetic_uimf):
+def test_a_frame_drawn_after_the_toggle_keeps_the_light_label_color(qtbot, synthetic_uimf):
     """The other order: the theme changes first, then a render sets the labels again.
-    A module-level style constant would put the dark colour back here."""
+    A module-level style constant would put the dark color back here."""
     window = MainWindow()
     qtbot.addWidget(window)
     with qtbot.waitSignal(window.frame_shown, timeout=20000):

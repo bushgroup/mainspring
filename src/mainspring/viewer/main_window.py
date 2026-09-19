@@ -65,7 +65,7 @@ import os
 import time
 
 import numpy as np
-from PySide6.QtCore import Qt, QByteArray, Signal
+from PySide6.QtCore import Qt, QByteArray, QTimer, Signal
 from PySide6.QtGui import QActionGroup
 from PySide6.QtWidgets import (
     QApplication,
@@ -83,6 +83,7 @@ from PySide6.QtWidgets import (
     QToolBar,
 )
 
+from .. import __version__
 from ..interface import SHOW_WORDS
 from ..uimf import (
     DisplayAxes,
@@ -105,11 +106,12 @@ from .controls import (
     make_action,
 )
 from .export import ExportDialog, content_rect, export_display
+from .help import GuideWindow, about_text, open_guide_online
 from .heatmap import HeatmapView, pixel_of
 from .info_panel import InfoPanel
 from .settings import (
-    COLOUR_MAPS,
-    COLOUR_SCALES,
+    COLOR_MAPS,
+    COLOR_SCALES,
     ROLLING_SUM_MAX,
     TEXT_SCALES,
     ViewerSettings,
@@ -119,12 +121,33 @@ from .settings import (
 from .side_plots import SidePlots, peak_of
 from .workers import LoadWorker, RenderMailbox, RenderRequest, RenderWorker, SumRequest
 
-__all__ = ["APP_TITLE", "FOLLOW_MODES", "FOLLOW_MODE_WORDS", "MainWindow"]
+__all__ = ["APP_TITLE", "FOLLOW_MODES", "FOLLOW_MODE_WORDS", "MainWindow", "WINDOW_TITLE"]
 
 APP_TITLE = "mainspring"
-"""The window title with no file open. With one open it is `"<file name> -- mainspring"`,
-file first, the way Windows names a document window, so that two viewers on the taskbar
-can be told apart by what they show rather than by what they are."""
+"""The program's name on its own, with no version. It is the fallback stem an export
+takes when no file is open and the title a message box carries, and neither of those
+wants a version number in it."""
+
+WINDOW_TITLE = f"{APP_TITLE} {__version__}"
+"""The window title with no file open. With one open it is
+`"<file name> -- mainspring <version>"`, file first, the way Windows names a document
+window, so that two viewers on the taskbar can be told apart by what they show rather
+than by what they are. The version is in the title because the first question about a
+window on an instrument PC is which version it is, and the answer should not need the
+Help menu."""
+
+STATUS_HOLD_MS = 5000
+"""How long an ordinary message keeps the left of the status bar before the cursor
+readout comes back.
+
+The bar carried the readout and the message side by side until 1.4.0, and there was not
+width for both (Matt, 2026-09-18). They share one slot now, and sharing needs a rule for
+who gives way: an ordinary message is an event that has just happened and is worth five
+seconds, the readout is a running answer to where the pointer is and is worth the rest of
+the time. A failure or a refusal is neither -- it holds until something replaces it, which
+is what `sticky` is for. A module constant so the suite can shorten it; several tests wait
+five seconds on `status_text`."""
+
 
 # The sample's own frame-type convention (`notes/uimf-format.md`), extended past what
 # our one sample uses: 0 and 1 both mean MS1 across the modern and legacy tables
@@ -133,8 +156,8 @@ can be told apart by what they show rather than by what they are."""
 # choice worth filtering on, whether or not this table has a name for it yet.
 _FRAME_TYPE_NAMES = {0: "MS1", 1: "MS1", 2: "MS2", 3: "Calibration", 4: "Prescan"}
 
-COLOUR_SCALE_NAMES = {"linear": "Linear", "log": "Log", "sqrt": "Square root"}
-"""What each of `settings.COLOUR_SCALES` is called in `View > Colour scale`. Here and not
+COLOR_SCALE_NAMES = {"linear": "Linear", "log": "Log", "sqrt": "Square root"}
+"""What each of `settings.COLOR_SCALES` is called in `View > Color scale`. Here and not
 there because these are display strings and `settings.py` is the module that must not
 know about the menu; `"sqrt"` is the one that needs it, since the capitalised code word
 is not what a reader of a menu is looking for."""
@@ -200,7 +223,7 @@ class MainWindow(QMainWindow):
     def __init__(self, settings: "ViewerSettings | None" = None) -> None:
         super().__init__()
         self.settings = settings or load_settings()
-        self.setWindowTitle(APP_TITLE)
+        self.setWindowTitle(WINDOW_TITLE)
         if self.settings.window_geometry:
             self.restoreGeometry(QByteArray(self.settings.window_geometry))
         else:
@@ -238,7 +261,7 @@ class MainWindow(QMainWindow):
         self._ever_shown = False
         self._shown_this_file = False
 
-        self.heatmap = HeatmapView(colour_map=self.settings.colour_map)
+        self.heatmap = HeatmapView(color_map=self.settings.color_map)
         self.setCentralWidget(self.heatmap)
         self.side_plots = SidePlots(self.heatmap)
         # Before any of the window's own signals are wired: both plot widgets exist, so
@@ -278,9 +301,13 @@ class MainWindow(QMainWindow):
         self._busy.setMaximumWidth(120)
         self._busy.hide()
         describe(self._busy, "A frame is being decoded.")
-        # Three zones, left to right: where the pointer is, what the window is doing,
-        # and where each projection peaks. `QStatusBar.showMessage` is not used at all
-        # (`_show_status`), so the left-hand widgets are never covered over.
+        # Two zones now, left and right. The left one is shared: the cursor readout
+        # normally, and whatever the window has just done for `STATUS_HOLD_MS` after it
+        # happens. Exactly one of the two labels is visible at a time, in the same
+        # position, rather than one label whose text has two owners -- two labels keep
+        # their own tooltips, and `status_text()` keeps meaning the message however long
+        # ago the readout took the slot back. `QStatusBar.showMessage` is still not used
+        # at all (`_show_status`), so nothing ever covers a permanent widget.
         self._readout = QLabel("")
         describe(
             self._readout,
@@ -288,6 +315,12 @@ class MainWindow(QMainWindow):
         )
         self._status = QLabel("")
         describe(self._status, "What the viewer last did, and what the frame on screen is.")
+        self._status.hide()
+        self._status_sticky = False
+        self._status_timer = QTimer(self)
+        self._status_timer.setSingleShot(True)
+        self._status_timer.setInterval(STATUS_HOLD_MS)
+        self._status_timer.timeout.connect(self._release_status)
         # Beside the message rather than in a dialog, and only when there is something
         # to offer. A run that does not keep its raw file deletes it at the close, so
         # the message this sits next to is nearly always the last thing a followed
@@ -305,8 +338,9 @@ class MainWindow(QMainWindow):
         self._peaks = QLabel("")
         describe(
             self._peaks,
-            "Where each projection peaks and how high, with each projection being a sum"
-            " over the range in view on the other axis.",
+            "Where each projection peaks and how high, and the total intensity of every"
+            " stored point in view. Each projection is a sum over the range in view on"
+            " the other axis.",
         )
         self.statusBar().addWidget(self._readout, 0)
         # The message no longer takes the slack, so that the button can sit against its
@@ -353,13 +387,13 @@ class MainWindow(QMainWindow):
         self.export_png_action = make_action(
             self,
             "Export &PNG...",
-            tip="Save the heatmap and its projections as a PNG image, without the colour bar.",
+            tip="Save the heatmap and its projections as a PNG image, without the color bar.",
             triggered=lambda: self._prompt_export("png"),
         )
         self.export_pdf_action = make_action(
             self,
             "Export P&DF...",
-            tip="Save the heatmap and its projections as a PDF, without the colour bar.",
+            tip="Save the heatmap and its projections as a PDF, without the color bar.",
             triggered=lambda: self._prompt_export("pdf"),
         )
         # Nothing to export until something has been rendered, and an entry that opens a
@@ -388,69 +422,120 @@ class MainWindow(QMainWindow):
         self._light_action = make_action(
             self,
             "&Light mode",
-            tip="Draw the plot area on white instead of black. The colour map does not change.",
+            tip="Draw the plot area on white instead of black. The color map does not change.",
             checkable=True,
             checked=(self.settings.theme == "light"),
             toggled=self._on_light_mode_toggled,
+        )
+        # Both of these were toolbar toggles until 1.4.0. They say how the axes are
+        # *labelled* rather than what is being looked at, they are set once and left, and
+        # the toolbar had run out of width for the controls that are touched frame by
+        # frame (Matt, 2026-09-18).
+        self._swap_action = make_action(
+            self,
+            "S&wap X/Y",
+            tip="Put arrival time on the horizontal axis and m/z on the vertical.",
+            checkable=True,
+            checked=self.settings.swap_axes,
+            toggled=self._on_swap_toggled,
+        )
+        self._raw_action = make_action(
+            self,
+            "Ra&w units",
+            tip="Show TOF bin and scan number instead of calibrated m/z and arrival time.",
+            checkable=True,
+            checked=self.settings.raw_units,
+            toggled=self._on_raw_units_toggled,
         )
         view_menu = self.menuBar().addMenu("&View")
         view_menu.addAction(self.reset_action)
         view_menu.addAction(self._info_action)
         view_menu.addAction(self._light_action)
-        self._build_colour_map_menu(view_menu)
-        self._build_colour_scale_menu(view_menu)
+        view_menu.addSeparator()
+        view_menu.addAction(self._swap_action)
+        view_menu.addAction(self._raw_action)
+        self._build_color_map_menu(view_menu)
+        self._build_color_scale_menu(view_menu)
         self._build_text_size_menu(view_menu)
         self._build_data_menu()
 
-    def _build_colour_map_menu(self, view_menu: "object") -> None:
+        # Last on the bar, as Help is everywhere. `&H` was the only free mnemonic after
+        # File, View and Data settings.
+        self._guide_action = make_action(
+            self,
+            "&User guide",
+            tip="Open the user guide that came with this version, in a window.",
+            triggered=self._show_guide,
+        )
+        self._guide_online_action = make_action(
+            self,
+            "User guide &online",
+            tip="Open the newest user guide on the web, which may describe a later"
+                " version than this one.",
+            triggered=self._open_guide_online,
+        )
+        self._about_action = make_action(
+            self,
+            "&About mainspring",
+            tip="Show the version, the build it came from, and the license.",
+            triggered=self._show_about,
+        )
+        help_menu = self.menuBar().addMenu("&Help")
+        help_menu.addAction(self._guide_action)
+        help_menu.addAction(self._guide_online_action)
+        help_menu.addSeparator()
+        help_menu.addAction(self._about_action)
+        self._guide_window: "GuideWindow | None" = None
+
+    def _build_color_map_menu(self, view_menu: "object") -> None:
         """A curated four-map choice, radio-style, in its own `View` submenu.
 
         pyqtgraph's `ColorBarItem` ships a right-click menu of its own listing every
         registered colormap; it is turned off at construction (`heatmap.py`) because a
         choice made through it would neither tick an entry here nor reach
-        `ViewerSettings` -- this menu is the one place the colour map lives.
+        `ViewerSettings` -- this menu is the one place the color map lives.
         """
-        colour_map_menu = view_menu.addMenu("Colour map")
+        color_map_menu = view_menu.addMenu("Color map")
         group = QActionGroup(self)
         group.setExclusive(True)
-        for name in COLOUR_MAPS:
+        for name in COLOR_MAPS:
             action = make_action(
                 self,
                 name.capitalize(),
-                tip=f"Colour the heatmap with the {name.capitalize()} colormap.",
+                tip=f"Color the heatmap with the {name.capitalize()} colormap.",
                 checkable=True,
-                checked=(name == self.settings.colour_map),
-                toggled=lambda checked, n=name: self._on_colour_map_changed(n, checked),
+                checked=(name == self.settings.color_map),
+                toggled=lambda checked, n=name: self._on_color_map_changed(n, checked),
             )
             group.addAction(action)
-            colour_map_menu.addAction(action)
+            color_map_menu.addAction(action)
 
-    def _build_colour_scale_menu(self, view_menu: "object") -> None:
-        """How intensity maps onto colour, radio-style, beside the colour map.
+    def _build_color_scale_menu(self, view_menu: "object") -> None:
+        """How intensity maps onto color, radio-style, beside the color map.
 
-        Built exactly like `_build_colour_map_menu` and placed next to it because the
-        two are one question asked twice -- which colours, and how the numbers are
+        Built exactly like `_build_color_map_menu` and placed next to it because the
+        two are one question asked twice -- which colors, and how the numbers are
         spread across them. It was a toolbar combo until a user reading isotopically
         resolved spectra pointed out that everything describing how the *data* are drawn
         should be in a menu and the toolbar should be the things touched every minute
         (lab record, task 24).
         """
-        colour_scale_menu = view_menu.addMenu("Colour scale")
+        color_scale_menu = view_menu.addMenu("Color scale")
         group = QActionGroup(self)
         group.setExclusive(True)
-        for name in COLOUR_SCALES:
-            label = COLOUR_SCALE_NAMES[name]
+        for name in COLOR_SCALES:
+            label = COLOR_SCALE_NAMES[name]
             action = make_action(
                 self,
                 label,
-                tip=f"Map intensity onto colour on a {label.lower()} scale."
+                tip=f"Map intensity onto color on a {label.lower()} scale."
                     " The readouts still quote the untransformed intensity.",
                 checkable=True,
-                checked=(name == self.settings.colour_scale),
-                toggled=lambda checked, n=name: self._on_colour_scale_changed(n, checked),
+                checked=(name == self.settings.color_scale),
+                toggled=lambda checked, n=name: self._on_color_scale_changed(n, checked),
             )
             group.addAction(action)
-            colour_scale_menu.addAction(action)
+            color_scale_menu.addAction(action)
 
     def _build_text_size_menu(self, view_menu: "object") -> None:
         """One scale over every piece of text in the application, radio-style.
@@ -539,7 +624,7 @@ class MainWindow(QMainWindow):
         """The axis toggles, frame navigation, the sums and follow.
 
         What is left after task 24 moved everything describing the *data* into
-        `Data settings` and everything describing how it is *coloured* into `View`: the
+        `Data settings` and everything describing how it is *colored* into `View`: the
         toolbar is now the controls a user touches while looking at a frame.
 
         Each control is fully configured -- range, items, initial value from the
@@ -556,35 +641,20 @@ class MainWindow(QMainWindow):
         # is the only place it appears -- so it is the control most easily left mute.
         describe(toolbar.toggleViewAction(), "Show the toolbar.")
 
-        self._swap_action = make_action(
-            self,
-            "Swap X/Y",
-            tip="Put arrival time on the horizontal axis and m/z on the vertical.",
-            checkable=True,
-            checked=self.settings.swap_axes,
-            toggled=self._on_swap_toggled,
-        )
-        toolbar.addAction(self._swap_action)
-
-        self._raw_action = make_action(
-            self,
-            "Raw units",
-            tip="Show TOF bin and scan number instead of calibrated m/z and arrival time.",
-            checkable=True,
-            checked=self.settings.raw_units,
-            toggled=self._on_raw_units_toggled,
-        )
-        toolbar.addAction(self._raw_action)
-
+        # Whole milliseconds, and a range a tenth of what it was. A spin box is as wide
+        # as its widest value plus its buttons, so three decimals and six digits were
+        # costing the toolbar about eighty pixels to express a precision nobody sets an
+        # arrival-time offset to (Matt, 2026-09-18). The setting itself stays a float, so
+        # a value written by an older version still loads and still applies.
         self._arrival_offset_box = DoubleSpinBox()
-        self._arrival_offset_box.setRange(-100_000.0, 100_000.0)
-        self._arrival_offset_box.setDecimals(3)
+        self._arrival_offset_box.setRange(-10_000.0, 10_000.0)
+        self._arrival_offset_box.setDecimals(0)
         self._arrival_offset_box.setSingleStep(1.0)
         self._arrival_offset_box.setValue(self.settings.arrival_offset_ms)
         self._arrival_offset_box.valueChanged.connect(self._on_arrival_offset_changed)
         self._arrival_offset_label = add_labelled(
             toolbar,
-            " Arrival offset (ms): ",
+            " Offset (ms): ",
             self._arrival_offset_box,
             tip="Shift the displayed arrival-time axis by this many milliseconds.",
         )
@@ -602,7 +672,7 @@ class MainWindow(QMainWindow):
         self._keep_levels_action = make_action(
             self,
             "Keep levels",
-            tip="Keep the current colour limits instead of rescaling to each frame.",
+            tip="Keep the current color limits instead of rescaling to each frame.",
             checkable=True,
             checked=self.settings.keep_levels,
             toggled=self._on_keep_levels_toggled,
@@ -678,13 +748,20 @@ class MainWindow(QMainWindow):
         toolbar.addAction(self.sum_action)
         self._show_grouping_controls(False)
 
-        # Follow last, because it is the control that acts on all the others: what it
+        # A rule before the live group. Everything to the left of it describes a file
+        # that is sitting still; everything to the right is about one being written, and
+        # the three of them only mean anything together (Matt, 2026-09-18).
+        toolbar.addSeparator()
+
+        # Live last, because it is the control that acts on all the others: what it
         # finds reaches the screen through the frame spinner and the sum this toolbar
         # already carries. Not a persisted setting, unlike every other toggle here --
-        # see `_on_follow_toggled`.
+        # see `_on_follow_toggled`. The label is `Live` and the command-line word stays
+        # `--follow` (`mainspring.interface`): the word is an interface between two
+        # programs and the label is what an operator reads.
         self._follow_action = make_action(
             self,
-            "Follow",
+            "Live",
             tip="Watch this file for frames the instrument is still writing.",
             checkable=True,
             checked=False,
@@ -737,6 +814,41 @@ class MainWindow(QMainWindow):
         if path:
             self.settings.last_directory = os.path.dirname(path)
             self.open_file(path)
+
+    def _show_guide(self) -> None:
+        """Open the guide window, or raise the one already open.
+
+        One window, kept rather than rebuilt: the guide is long, a reader who has
+        scrolled to the export section and gone back to the viewer should find it where
+        they left it, and building a second copy of a 31 KB document to put on top of the
+        first is the wrong answer to a menu entry pressed twice.
+        """
+        if self._guide_window is None:
+            self._guide_window = GuideWindow(self)
+        self._guide_window.show()
+        self._guide_window.raise_()
+        self._guide_window.activateWindow()
+
+    def _open_guide_online(self) -> None:
+        """The guide on the web, in the machine's own browser.
+
+        A failure is said rather than swallowed: on a machine with no browser
+        association, or none at all, nothing visible happens otherwise and the entry
+        looks broken.
+        """
+        if not open_guide_online():
+            self._show_status(
+                "Could not open a browser for the online user guide", sticky=True
+            )
+
+    def _show_about(self) -> None:
+        box = QMessageBox(self)
+        box.setWindowTitle(f"About {APP_TITLE}")
+        box.setTextFormat(Qt.TextFormat.RichText)
+        box.setText(about_text())
+        box.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
+        box.setStandardButtons(QMessageBox.StandardButton.Close)
+        box.exec()
 
     def _prompt_export(self, fmt: str) -> None:
         """Ask where, then at what resolution, then write it.
@@ -979,7 +1091,7 @@ class MainWindow(QMainWindow):
             self._follow_action.blockSignals(True)
             self._follow_action.setChecked(False)
             self._follow_action.blockSignals(False)
-            self._show_status(refusal)
+            self._show_status(refusal, sticky=True)
             return
         self._enable_follow_controls(True)
         self._clear_offer()
@@ -993,10 +1105,21 @@ class MainWindow(QMainWindow):
         Both say what to do with what a poll finds, so neither is anything to answer
         with nothing being watched. The number is a persisted setting all the same, so
         it keeps its value while it is greyed and is there at the value the operator
-        chose the next time Follow goes on.
+        chose the next time Live goes on.
+
+        **Their labels are disabled with them.** A `QLabel` added by `add_labelled` is a
+        widget of its own and keeps drawing in the enabled color however grey the control
+        beside it goes, so `Show:` and `Frames:` read as live while the two things they
+        name are not (Matt, 2026-09-18). Disabling a label changes nothing but how it is
+        painted.
         """
-        self._follow_mode.setEnabled(enabled)
-        self._rolling_sum_spin.setEnabled(enabled)
+        for widget in (
+            self._follow_mode,
+            self._follow_label,
+            self._rolling_sum_spin,
+            self._rolling_sum_label,
+        ):
+            widget.setEnabled(enabled)
 
     def follow_when_opened(self, *, show: "str | None" = None) -> None:
         """Ask for `Follow`, in `show`, as soon as the open in flight has finished.
@@ -1043,7 +1166,7 @@ class MainWindow(QMainWindow):
         if show in offered:
             self._follow_mode.setCurrentText(show)
         elif self.following:
-            self._show_status(f"{show} is not offered on this file")
+            self._show_status(f"{show} is not offered on this file", sticky=True)
 
     def _forget_launch_options(self) -> None:
         """Drop what the command line asked for, an open having failed.
@@ -1168,10 +1291,10 @@ class MainWindow(QMainWindow):
         self._live = None
         self._live_sum_frames = ()
         if not gone:
-            self._show_status(f"Stopped following: {message}")
+            self._show_status(f"Stopped following: {message}", sticky=True)
             return
         name = os.path.basename(self._path) if self._path else "the file"
-        self._show_status(f"Stopped following: {name} is no longer there")
+        self._show_status(f"Stopped following: {name} is no longer there", sticky=True)
         self._offer_companion()
 
     def _offer_companion(self) -> None:
@@ -1322,7 +1445,7 @@ class MainWindow(QMainWindow):
         self._grouping = grouping
         # Named as soon as the file has opened, frames or no frames: an empty file is
         # still the file on screen.
-        self.setWindowTitle(f"{os.path.basename(self._path or '')} — {APP_TITLE}")
+        self.setWindowTitle(f"{os.path.basename(self._path or '')} — {WINDOW_TITLE}")
         self._populate_type_filter()
         self._apply_detector_bits()
         self._show_grouping_controls(grouping.grouped)
@@ -1343,7 +1466,7 @@ class MainWindow(QMainWindow):
         if not frame_numbers:
             self._busy.hide()
             self._opening = False
-            self._show_status("This file has no frames")
+            self._show_status("This file has no frames", sticky=True)
             # Nothing will be painted, so this is where a launched follow starts -- and
             # a file with no frames yet is exactly the file another program launches the
             # viewer on: created by the acquisition software, opened before the first
@@ -1461,7 +1584,7 @@ class MainWindow(QMainWindow):
             command_line_open = self._opened_from_command_line
             self._path = None
             self._opened_from_command_line = False
-            self.setWindowTitle(APP_TITLE)
+            self.setWindowTitle(WINDOW_TITLE)
             if command_line_open:
                 # Explorer launched this process *because of* the file -- a double-click
                 # on a corrupt file, a vanished network share, or something merely named
@@ -1478,9 +1601,14 @@ class MainWindow(QMainWindow):
         if self._sum_dialog is not None:
             self._sum_dialog.close()
             self._sum_dialog = None
-        self._show_status(f"Error: {message}")
+        self._show_status(f"Error: {message}", sticky=True)
 
     def _on_view_resized(self, width: int, height: int) -> None:
+        # The projections' curve width follows the window too, and the heatmap's own
+        # furniture has already been refitted by the time this arrives. Here rather than
+        # inside `HeatmapView` because the side plots are the window's, not the heatmap's,
+        # although they draw in its layout.
+        self.side_plots.fit_lines(width, height)
         self._request_render(*self.heatmap.view_range(), width, height)
 
     def _on_view_changed(self, x_range: "tuple[float, float]",
@@ -1514,7 +1642,7 @@ class MainWindow(QMainWindow):
             return  # a frame or a file has moved on since this was asked for
         result = render.result
         self._last_render = render
-        self.heatmap.set_image(result, colour_scale=self.settings.colour_scale)
+        self.heatmap.set_image(result, color_scale=self.settings.color_scale)
         self.side_plots.set_profiles(render.x_profile, render.y_profile)
         self._show_peaks(render)
         self.heatmap.set_debug_text(
@@ -1596,14 +1724,14 @@ class MainWindow(QMainWindow):
         self.settings.aggregate = name
         self._request_render(*self.heatmap.view_range())
 
-    def _on_colour_scale_changed(self, name: str, checked: bool) -> None:
-        # Same as `_on_colour_map_changed`: the exclusive group also fires this for the
+    def _on_color_scale_changed(self, name: str, checked: bool) -> None:
+        # Same as `_on_color_map_changed`: the exclusive group also fires this for the
         # entry it is unchecking, and only the newly-checked one is the change.
         if not checked:
             return
-        self.settings.colour_scale = name
+        self.settings.color_scale = name
         if self._last_render is not None:
-            self.heatmap.set_image(self._last_render.result, colour_scale=self.settings.colour_scale)
+            self.heatmap.set_image(self._last_render.result, color_scale=self.settings.color_scale)
 
     def _on_swap_toggled(self, checked: bool) -> None:
         self.settings.swap_axes = checked
@@ -1627,20 +1755,20 @@ class MainWindow(QMainWindow):
         else:
             self.heatmap.release_levels()
 
-    def _on_colour_map_changed(self, name: str, checked: bool) -> None:
+    def _on_color_map_changed(self, name: str, checked: bool) -> None:
         # The exclusive `QActionGroup` also toggles the previously-checked entry off,
         # which fires this same handler with `checked=False` -- only the newly-checked
         # one is the change to act on.
         if not checked:
             return
-        self.settings.colour_map = name
-        self.heatmap.set_colour_map(name)
+        self.settings.color_map = name
+        self.heatmap.set_color_map(name)
 
     def _on_light_mode_toggled(self, checked: bool) -> None:
         """Repaint the canvas and nothing else.
 
-        No re-render and no reload: `theme.apply` sets colours on the items already on
-        screen, so the open file, the frame, the view ranges and the colour levels are
+        No re-render and no reload: `theme.apply` sets colors on the items already on
+        screen, so the open file, the frame, the view ranges and the color levels are
         all still exactly where the user left them (`theme.py`).
         """
         self.settings.theme = "light" if checked else "dark"
@@ -1650,7 +1778,7 @@ class MainWindow(QMainWindow):
         """Resize every piece of text, and nothing else.
 
         The counterpart of `_on_light_mode_toggled`, and the same promise: no re-render
-        and no reload, so the open file, the frame, the view ranges and the colour levels
+        and no reload, so the open file, the frame, the view ranges and the color levels
         are all still where the user left them (`fonts.py`).
         """
         if not checked:
@@ -1825,32 +1953,43 @@ class MainWindow(QMainWindow):
     # --- cursor readout ---------------------------------------------------------------
 
     def _on_cursor_moved(self, x: float, y: float) -> None:
-        """The status-bar readout: where the pointer is, in every unit the frame has.
+        """The status-bar readout: where the pointer is, in the units the axes are in.
 
-        Both the display units and the raw bin and scan are shown, because they answer
-        different questions -- an m/z identifies a species, a bin identifies the sample
-        of the digitizer trace it came from -- and neither can be recovered from the
-        other by eye. The intensity is the one **drawn at that pixel**, read back out of
-        the image on screen rather than recomputed, and it is labelled with the
-        aggregation that produced it: a `sum` pixel is a total over however many bins
-        and scans that pixel covers, and quoting it as if it were a stored intensity is
-        the mistake this label exists to prevent.
+        **One unit system, the one `Raw units` selects**, rather than both. This line
+        carried the display values *and* the raw bin and scan until 1.4.0, on the
+        reasoning that they answer different questions -- an m/z identifies a species, a
+        bin identifies the sample of the digitizer trace it came from -- and that neither
+        is recoverable from the other by eye. Both of those are still true. What changed
+        is the width: the readout now shares the left of the bar with the message that
+        used to sit beside it, and four values plus an intensity did not fit (Matt,
+        2026-09-18). The toggle that already switches the axes between the two systems is
+        the natural switch for this, and the other system is one click away rather than
+        gone.
+
+        The intensity is the one **drawn at that pixel**, read back out of the image on
+        screen rather than recomputed, and it is labelled with the aggregation that
+        produced it: a `sum` pixel is a total over however many bins and scans that pixel
+        covers, and quoting it as if it were a stored intensity is the mistake this label
+        exists to prevent.
         """
         axes = self._current_axes
         if axes is None or self._last_render is None:
             return
         result = self._last_render.result
-        # The plain spelling: this is a line of numbers, and the italic `m` an axis
-        # label is set in would read here as an error rather than as typesetting.
-        parts = [
-            f"{labels.plain(axes.x_label)} {x:,.4g}",
-            f"{labels.plain(axes.y_label)} {y:,.4g}",
-        ]
-        bin_value, scan_value = (y, x) if axes.swapped else (x, y)
-        bin_index = _element_of(axes.bin_edges, bin_value)
-        scan_index = _element_of(axes.scan_edges, scan_value)
-        if bin_index is not None and scan_index is not None:
-            parts.append(f"bin {bin_index}  scan {scan_index}")
+        if self.settings.raw_units:
+            # The axes are already bin and scan, so their own values are the raw ones and
+            # searching the edge tables would be asking a question already answered.
+            parts = [
+                f"{labels.plain(axes.x_label)} {x:,.0f}",
+                f"{labels.plain(axes.y_label)} {y:,.0f}",
+            ]
+        else:
+            # The plain spelling: this is a line of numbers, and the italic `m` an axis
+            # label is set in would read here as an error rather than as typesetting.
+            parts = [
+                f"{labels.plain(axes.x_label)} {x:,.4g}",
+                f"{labels.plain(axes.y_label)} {y:,.4g}",
+            ]
         cell = pixel_of(result, x, y)
         if cell is not None:
             row, column = cell
@@ -1862,19 +2001,52 @@ class MainWindow(QMainWindow):
 
     # --- the status bar ---------------------------------------------------------------
 
-    def _show_status(self, text: str) -> None:
-        """Say what the window is doing, in the middle zone of the status bar.
+    def _show_status(self, text: str, *, sticky: bool = False) -> None:
+        """Say what the window is doing, on the left of the status bar.
 
         A label rather than `QStatusBar.showMessage`. Every one of the twelve places this
         replaced was untimed, and an untimed message covers the bar's own left-hand
         widgets for the rest of the session -- which is fine when nothing is there and
         impossible once the cursor readout is (lab record, task 24).
+
+        `sticky` is the distinction the shared slot needs. An ordinary message -- an open,
+        a frame, a sum -- is an event, and after `STATUS_HOLD_MS` the pointer's position
+        is the more useful thing to be looking at. A failure, a refusal or a stopped
+        follow is a state the operator has to act on, and a readout that quietly replaced
+        it five seconds later would lose the only notice they were given. A sticky message
+        is displaced by the next message and by opening another file, and by nothing else.
         """
         self._status.setText(text)
+        self._status_sticky = sticky
+        self._status.setVisible(True)
+        self._readout.setVisible(False)
+        if sticky:
+            self._status_timer.stop()
+        else:
+            self._status_timer.start()
+
+    def _release_status(self) -> None:
+        """Give the slot back to the cursor readout. The timer's one job."""
+        if self._status_sticky:
+            return
+        self._status.setVisible(False)
+        self._readout.setVisible(True)
 
     def status_text(self) -> str:
-        """What the status bar is saying. The read side of `_show_status`."""
+        """What the window last said. The read side of `_show_status`.
+
+        The message, not the slot: it keeps answering after the readout has taken the
+        slot back, because "what did the viewer say about this file" and "what is on
+        screen in that one label right now" are different questions and the tests and
+        `check_public.py` ask the first.
+        """
         return self._status.text()
+
+    def readout_text(self) -> str:
+        """Where the pointer is. The read side of `_on_cursor_moved`, beside
+        `status_text` and for the same reason: the two share a slot and neither is
+        readable off the other."""
+        return self._readout.text()
 
     def _show_peaks(self, render: "object | None") -> None:
         """Where each projection peaks, on the right of the status bar.
@@ -1899,6 +2071,11 @@ class MainWindow(QMainWindow):
                 parts.append(
                     f"peak {labels.plain(name)} {position:,.6g} ({height:,.0f})"
                 )
+        # The total, after the two peaks: where the signal is, then how much of it there
+        # is. It costs nothing -- `tic_in_view` arrives with every render, float64 and
+        # exact -- and it is the same number the info panel calls TIC in view, which is
+        # the one an operator most often wants without opening the panel to get it.
+        parts.append(f"sum in view {render.result.tic_in_view:,.0f}")
         self._peaks.setText("   |   ".join(parts))
 
     def closeEvent(self, event) -> None:

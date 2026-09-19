@@ -12,7 +12,7 @@
 ; instrument PC's operator account may not have admin rights.
 
 #define MyAppName "mainspring"
-#define MyAppVersion "1.3.0"
+#define MyAppVersion "1.4.0"
 #define MyAppPublisher "University of Washington"
 #define MyAppURL "https://github.com/bushgroup/mainspring"
 #define MyAppExeName "mainspring.exe"

@@ -6,7 +6,7 @@ choice. Two states only, dark still the default, and the **plot canvas only** --
 menu bar, toolbar, info dock and dialogs stay the operating system's (lab record,
 task 14, which is also where the reasoning against a `QPalette` theme lives).
 
-**The colour map is not part of the theme.** `COLOUR_MAPS` grows no reversed variants
+**The color map is not part of the theme.** `COLOR_MAPS` grows no reversed variants
 and nothing here touches the user's choice: the map is a statement about the data and
 the palette is a statement about the furniture around it, so a near-empty frame drawn
 as a dark rectangle on a white canvas is the honest picture and not a bug.
@@ -17,19 +17,19 @@ difficulty:
 1. `pg.setConfigOptions(background=..., foreground=...)` is read when an item is
    **constructed**. Setting it fixes whatever is built next and nothing already on
    screen, so it is necessary and never sufficient.
-2. An axis label's colour is spelled out in the style dict handed to
+2. An axis label's color is spelled out in the style dict handed to
    `AxisItem.setLabel`, because that call *replaces* `labelStyle` wholesale rather than
    merging into it. `label_style` is therefore a function of the palette and not a
    module-level constant: a constant computed at import cannot answer a runtime toggle,
    and the failure it produces is a label that is present, bold and invisible.
-3. Every colour set once at construction has to be set again. That is what
+3. Every color set once at construction has to be set again. That is what
    `HeatmapView.set_palette` and `SidePlots.set_palette` are for, and `apply` is the one
    path that calls them.
 
 `themed` is the analogue of `controls.unexplained`, with one difference that matters.
-"Has a tooltip" is a property Qt answers uniformly; "the theme set this colour" is not a
+"Has a tooltip" is a property Qt answers uniformly; "the theme set this color" is not a
 bit anything records, so the strongest available test is that every pen, brush and text
-pen on the items the palette owns is a colour *in the active palette*. Under the dark
+pen on the items the palette owns is a color *in the active palette*. Under the dark
 palette that test passes for anything hardcoded to today's values, which is most of what
 it exists to catch -- so **`themed` is run under the light palette**, the non-default
 one, by `tools/check_public.py` and by `tests/test_theme.py`. Run only under dark it
@@ -61,12 +61,15 @@ __all__ = [
 
 @dataclass(frozen=True)
 class Palette:
-    """The four colours the plot canvas is allowed to paint with.
+    """The four colors the plot canvas is allowed to paint with.
 
-    Four rather than one background and one foreground because the two accents are
-    already in the tree and each has a job the foreground cannot do: a curve has to be
-    distinguishable from an axis at a glance, and the render-time readout has to be
-    legible over the image it is drawn on top of.
+    Both palettes now set all three of the foreground roles to the same value -- the
+    background's opposite, black or white -- because a viewer read at a glance across a
+    bench wants contrast before it wants an accent (Matt, 2026-09-18), and because the
+    projections carry no axis of their own for a curve to be confused with. The class
+    keeps four fields anyway: they are four *roles*, the walk that proves nothing was
+    painted outside a palette is written in terms of them, and an accent restored to any
+    one of them is then a value and not a refactor.
     """
 
     name: str
@@ -79,40 +82,37 @@ class Palette:
     debug: str
     """The render-time overlay, drawn only under `MAINSPRING_DEBUG_RENDER`."""
 
-    def colours(self) -> "tuple[QColor, ...]":
-        return tuple(
-            QColor(value) for value in (self.background, self.foreground, self.curve, self.debug)
-        )
+    def role(self, name: str) -> QColor:
+        """One role's color, by field name. What `themed` asks each pen about.
 
-    def holds(self, colour: QColor) -> bool:
-        """Is `colour` one of this palette's four? What `themed` asks of every pen."""
-        return colour.rgb() in {value.rgb() for value in self.colours()}
+        There was a `holds(color)` here until both palettes became black and white: "is
+        this one of the four" then accepted every stray black and every stray white,
+        which is the two colors a forgotten default is most likely to be. The question
+        worth asking is per role, and it is this one.
+        """
+        return QColor(getattr(self, name))
 
 
 DARK = Palette(
     name="dark",
     background="#000000",
-    foreground="#969696",
-    curve="#bed2ff",
-    debug="#dcdcdc",
+    foreground="#ffffff",
+    curve="#ffffff",
+    debug="#ffffff",
 )
-"""Exactly what the viewer has drawn since M2: pyqtgraph's own `k` and `d` defaults,
-`side_plots`' pale curve blue and the debug overlay's near-white. Spelled out rather
-than read from the config options so that a pyqtgraph release that moves its defaults
-cannot move this viewer's look."""
+"""Everything the palette owns at the greatest contrast the canvas can carry: white on
+black. Spelled out rather than read from the config options so that a pyqtgraph release
+that moves its defaults cannot move this viewer's look."""
 
 LIGHT = Palette(
     name="light",
     background="#ffffff",
-    foreground="#686868",
-    curve="#204080",
-    debug="#202020",
+    foreground="#000000",
+    curve="#000000",
+    debug="#000000",
 )
-"""The mirror of `DARK` on white, matched on contrast rather than by inverting the
-channels: `#686868` on white is the 5.6:1 that `#969696` gives on black, so the axes
-read as the same muted furniture at the same weight rather than as a heavier frame, and
-`#204080` is the curve blue's counterpart at the ratio the pale blue has on black.
-Inverting instead would put a pale blue trace on white, which is close to unreadable."""
+"""The same rule on white: black on white. `DARK` and `LIGHT` differ only in which of
+the two the background is."""
 
 PALETTES = {palette.name: palette for palette in (DARK, LIGHT)}
 """Keyed by name. The same two names are `settings.THEMES`, which is where they live
@@ -128,15 +128,15 @@ canvas per process and a second idea of which palette is on it would only ever d
 with the first."""
 
 _PAINTED = (pg.AxisItem, pg.PlotDataItem, pg.TextItem)
-"""The item types `themed` inspects: everything on the canvas that paints a colour the
+"""The item types `themed` inspects: everything on the canvas that paints a color the
 palette owns.
 
 What is deliberately *not* here, and why:
 
-* `pg.ImageItem` -- the heatmap's pixels and the colour bar's gradient strip are colour
-  *map* colours, which the theme does not set and must not.
+* `pg.ImageItem` -- the heatmap's pixels and the color bar's gradient strip are color
+  *map* colors, which the theme does not set and must not.
 * the `ColorBarItem`'s `LinearRegionItem` and its two `InfiniteLine` handles -- drawn on
-  top of that gradient, so they belong to the colour bar rather than to the canvas.
+  top of that gradient, so they belong to the color bar rather than to the canvas.
 * `pg.PlotCurveItem` and `pg.ScatterPlotItem` -- the two halves of a `PlotDataItem`,
   which sets both from its own `pen` and `symbol` options. The projections are bare
   curves and never set `symbol`, so the scatter half never paints at all.
@@ -145,7 +145,7 @@ What is deliberately *not* here, and why:
 **Hidden items are walked too**, unlike `controls.unexplained`, which skips them because
 there is nothing to point at. Here there is: the render-time overlay is hidden unless
 `MAINSPRING_DEBUG_RENDER` is set and the projections hide all eight of their axes, so a
-walk that skipped what is not currently drawn would exempt the two places a stray colour
+walk that skipped what is not currently drawn would exempt the two places a stray color
 is least likely to be noticed by eye.
 """
 
@@ -158,9 +158,9 @@ def active() -> Palette:
 def label_style(palette: Palette) -> "dict[str, str]":
     """The style dict for a bold axis label under `palette`, at the active text size.
 
-    A function and not a constant, for the reason in this module's docstring: the colour
+    A function and not a constant, for the reason in this module's docstring: the color
     has to be in the dict, because `AxisItem.setLabel(**style)` replaces `labelStyle`
-    rather than merging into it, and a colour computed at import time cannot answer a
+    rather than merging into it, and a color computed at import time cannot answer a
     toggle. `HeatmapView` re-reads this on every `set_palette` and every `set_image`,
     so a label is repainted whichever of the two happens next.
 
@@ -183,7 +183,7 @@ def apply(window: object, theme: str) -> Palette:
     The one path a theme change takes. It sets the config options so that anything
     constructed afterwards is born right, then calls each owner's `set_palette` so that
     everything already on screen is corrected -- nothing is rebuilt, so the open file,
-    the frame, the view ranges and the colour levels all survive a toggle untouched.
+    the frame, the view ranges and the color levels all survive a toggle untouched.
 
     An unrecognised name falls back to `DARK` rather than raising: this is called with a
     restored setting, and `ViewerSettings.validate` has already clamped it, so a name
@@ -200,47 +200,63 @@ def apply(window: object, theme: str) -> Palette:
 
 
 def themed(window: object) -> "list[str]":
-    """Names of everything on the plot canvas painted a colour the active palette lacks.
+    """Names of everything on the plot canvas painted a color its role does not have.
 
     Type-based like `controls.unexplained`, and for the same reason: an item added
     tomorrow is walked because of what it is. An empty list under **both** palettes is
-    the rule; under the light one is the half that can fail.
+    the rule.
+
+    **The test is per role, not per palette**, and it has to be. Both palettes are now
+    black and white (`DARK`, `LIGHT`), so "is this color one of the palette's four"
+    accepts every stray black and every stray white -- which is to say it accepts the
+    two colors a forgotten default is overwhelmingly likely to be, and the walk would
+    have become theatre. Asking instead whether the *axis pen* is the foreground and the
+    *curve* the curve color is strictly stronger, it catches the invisible-label bug
+    under either palette, and it costs one argument at each call site that already knew
+    which role it was looking at.
     """
     palette = active()
     stray: list[str] = []
     view = window.heatmap
-    _check(palette, view.backgroundBrush().color(), f"{name_of(view)} background", stray)
+    _check(palette, "background", view.backgroundBrush().color(), f"{name_of(view)} background", stray)
 
     for item in view.scene().items():
         if not isinstance(item, _PAINTED):
             continue
         name = name_of(item)
         if isinstance(item, pg.AxisItem):
-            _check_pen(palette, item.pen(), f"{name} axis pen", stray)
-            _check_pen(palette, item.tickPen(), f"{name} tick pen", stray)
-            _check_pen(palette, item.textPen(), f"{name} text pen", stray)
+            _check_pen(palette, "foreground", item.pen(), f"{name} axis pen", stray)
+            _check_pen(palette, "foreground", item.tickPen(), f"{name} tick pen", stray)
+            _check_pen(palette, "foreground", item.textPen(), f"{name} text pen", stray)
             label = item.labelStyle.get("color")
             if label is not None:
-                _check(palette, QColor(label), f"{name} label colour", stray)
+                _check(palette, "foreground", QColor(label), f"{name} label color", stray)
         elif isinstance(item, pg.PlotDataItem):
-            _check_pen(palette, item.opts.get("pen"), f"{name} curve pen", stray)
-            _check_brush(palette, item.opts.get("fillBrush"), f"{name} fill brush", stray)
+            _check_pen(palette, "curve", item.opts.get("pen"), f"{name} curve pen", stray)
+            _check_brush(palette, "curve", item.opts.get("fillBrush"), f"{name} fill brush", stray)
         else:  # pg.TextItem
-            _check(palette, item.color, f"{name} text colour", stray)
+            _check(palette, "debug", item.color, f"{name} text color", stray)
 
     return numbered(stray)
 
 
-def _check(palette: Palette, colour: "QColor | None", name: str, stray: "list[str]") -> None:
-    if colour is not None and not palette.holds(QColor(colour)):
-        stray.append(f"{name} ({QColor(colour).name()})")
+def _check(
+    palette: Palette, role: str, color: "QColor | None", name: str, stray: "list[str]"
+) -> None:
+    if color is None:
+        return
+    wanted = palette.role(role)
+    if QColor(color).rgb() != wanted.rgb():
+        stray.append(f"{name} ({QColor(color).name()}, not the {role} {wanted.name()})")
 
 
-def _check_pen(palette: Palette, pen: object, name: str, stray: "list[str]") -> None:
-    """A pen that draws nothing is not a colour on the canvas.
+def _check_pen(
+    palette: Palette, role: str, pen: object, name: str, stray: "list[str]"
+) -> None:
+    """A pen that draws nothing is not a color on the canvas.
 
-    `Qt.PenStyle.NoPen` is how pyqtgraph says "no outline" while still carrying a colour
-    in the pen -- the debug overlay's border is one -- and reporting that colour would
+    `Qt.PenStyle.NoPen` is how pyqtgraph says "no outline" while still carrying a color
+    in the pen -- the debug overlay's border is one -- and reporting that color would
     send a reader looking for something that is not on screen.
     """
     if pen is None:
@@ -248,13 +264,15 @@ def _check_pen(palette: Palette, pen: object, name: str, stray: "list[str]") -> 
     pen = pg.mkPen(pen)
     if pen.style() == Qt.PenStyle.NoPen:
         return
-    _check(palette, pen.color(), name, stray)
+    _check(palette, role, pen.color(), name, stray)
 
 
-def _check_brush(palette: Palette, brush: object, name: str, stray: "list[str]") -> None:
+def _check_brush(
+    palette: Palette, role: str, brush: object, name: str, stray: "list[str]"
+) -> None:
     if brush is None:
         return
     brush = pg.mkBrush(brush)
     if brush.style() == Qt.BrushStyle.NoBrush:
         return
-    _check(palette, brush.color(), name, stray)
+    _check(palette, role, brush.color(), name, stray)

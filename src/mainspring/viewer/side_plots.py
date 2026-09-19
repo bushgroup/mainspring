@@ -42,7 +42,14 @@ from PySide6.QtCore import QPointF, QRectF, Qt
 
 from . import fonts, theme
 from .controls import describe
-from .heatmap import AXIS_HEIGHT, AXIS_WIDTH, RIGHT_AXIS_WIDTH, TOP_AXIS_HEIGHT
+from .heatmap import (
+    AXIS_HEIGHT,
+    AXIS_WIDTH,
+    LINE_WIDTH_LIMITS,
+    REFERENCE_VIEWPORT,
+    RIGHT_AXIS_WIDTH,
+    TOP_AXIS_HEIGHT,
+)
 
 __all__ = ["ProjectionViewBox", "SidePlots", "peak_of"]
 
@@ -51,10 +58,19 @@ MIN_BAND_PIXELS = 2.0
 click that wobbled. The same number `UimfViewBox._rect_zoom` uses on the heatmap, so one
 hand produces one result wherever it presses."""
 
-CURVE_WIDTH = 1
-"""How thick a projection is drawn. One pixel, so that a spectrum reduced by the
-peak-preserving downsampler still shows a single-bin spike as a spike rather than as a
-blob; the colour is the palette's (`theme.py`)."""
+CURVE_WIDTH = 1.0
+"""How thick a projection is drawn **at `REFERENCE_VIEWPORT`**; the color is the
+palette's (`theme.py`).
+
+One pixel at the 1000x700 window the viewer was designed against, and following the
+viewport from there, clamped by `LINE_WIDTH_LIMITS` exactly as the tick and axis pens
+are. It was held at one pixel whatever the window until now, on the reasoning that a
+single-bin spike has to survive the peak-preserving downsampler as a spike -- which is
+true and is about the data, not the pen. What a one-pixel trace on a large window
+actually costs is the noise: an operator reading a baseline off a 4K panel could not see
+it (Matt, 2026-09-18). The three-pixel ceiling is what still answers the old reason,
+since a pen wider than that starts merging neighbouring spikes into one blob.
+"""
 
 # A `PlotItem`'s own grid: the axes and the view box sit in fixed cells (title row 0;
 # top axis (1, 1); left axis (2, 0); view box (2, 1); right axis (2, 2); bottom axis
@@ -158,6 +174,10 @@ class SidePlots:
     also *aligned* on screen looks like a bug -- and alignment is a property of one
     layout, not of two widgets side by side.
     """
+
+    _curve_width = CURVE_WIDTH
+    """Class-level default for the same reason `HeatmapView._line_width` is one: the
+    first `fit_lines` has to have something to compare against."""
 
     def __init__(self, heatmap: "object") -> None:
         layout, y_cell, x_cell = heatmap.side_plot_slots()
@@ -265,10 +285,10 @@ class SidePlots:
         Called at construction and again on every `View > Light mode` toggle
         (`theme.apply`, the one path). `PlotDataItem.setPen` pushes the pen straight
         through to the curve item that draws it, so a projection already on screen
-        changes colour without being asked for its data again.
+        changes color without being asked for its data again.
 
         The eight hidden axes are set as well. Nothing draws them today, but each was
-        born holding the palette that was active when its plot was built, and a colour
+        born holding the palette that was active when its plot was built, and a color
         that is only wrong while it cannot be seen is the kind `theme.themed` exists to
         refuse to let through.
         """
@@ -280,7 +300,36 @@ class SidePlots:
                 axis.setTickPen(pen)
                 axis.setTextPen(pen)
         for curve in self.curves:
-            curve.setPen(pg.mkPen(palette.curve, width=CURVE_WIDTH))
+            curve.setPen(pg.mkPen(palette.curve, width=self._curve_width))
+
+    def fit_lines(self, width: int, height: int) -> bool:
+        """Redraw both curves at the width this viewport wants, and say whether it moved.
+
+        The heatmap's `_fit_lines` one module over, with `CURVE_WIDTH` in place of the
+        tick pen and the same viewport, the same reference, the same clamp and the same
+        one-decimal comparison -- a resize is a hundred events and a pen that is a
+        hundredth of a pixel different is not worth a repaint. It is driven off
+        `HeatmapView.view_resized`, which already carries the size, rather than a resize
+        event of its own: these two plots are items in the heatmap's layout and have no
+        resize event to hang one on.
+
+        Re-applied **through `set_palette`** for the reason the heatmap's is: a theme
+        toggle then cannot reset the thickness, because `set_palette` reads
+        `_curve_width`, and a resize cannot reset the color, because it asks for the
+        active palette.
+        """
+        low, high = LINE_WIDTH_LIMITS
+        fitted = min(high, max(low, CURVE_WIDTH * min(width, height) / REFERENCE_VIEWPORT))
+        if round(fitted, 1) == round(self._curve_width, 1):
+            return False
+        self._curve_width = fitted
+        self.set_palette(theme.active())
+        return True
+
+    @property
+    def curve_width(self) -> float:
+        """What a curve is drawn at right now, for a caller that wants to read it back."""
+        return self._curve_width
 
     @property
     def curves(self) -> "tuple[pg.PlotDataItem, pg.PlotDataItem]":
