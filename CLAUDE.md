@@ -23,6 +23,12 @@ you are reading this file *without* that import, you have a public clone — the
 - **Two layers, one seam.** `mainspring.uimf` is the data layer (numpy, optional numba) and
   **never imports Qt**; `mainspring.viewer` is PySide6 + pyqtgraph on top of it. A pipeline that
   installs the package for the reader must not pull a GUI into its import path.
+- **`mainspring.uimf` is a published API with an installed caller.** The names it exports, the
+  `UimfWriter` defaults (`journal_mode="wal"`, `tables="both"`), the six `Mainspring*` parameter
+  names and the reader's `refresh`, `LiveState`, `is_provisional` and `is_local_path` are a
+  contract: changing one is a minor bump at least, and the acquisition side is built against the
+  candidate before the tag moves. `tools/check_public.py` pins the surface against a literal list;
+  the `--follow` and `--show` words another program types live in Qt-free `mainspring.interface`.
 - **Every control the user can touch explains itself.** Build actions and toolbar widgets through
   `mainspring.viewer.controls` (`make_action`, `add_labelled`, `describe`), which requires a
   one-sentence tooltip; `tip=None` is a deliberate, reviewable waiver. `controls.unexplained()`
@@ -43,8 +49,7 @@ you are reading this file *without* that import, you have a public clone — the
   opaque references ("lab record, task 04") at most. Trailer is `Assisted-by: <model name>`, no
   email — never `Co-Authored-By:`. `.githooks/commit-msg` rewrites, `.githooks/pre-commit` rejects
   staged files over 5 MiB and any `.uimf` path; both need `git config core.hooksPath .githooks`
-  once per clone.
-- **`.gitattributes` pins `* text=auto eol=lf`.**
+  once per clone. `.gitattributes` pins `* text=auto eol=lf`.
 - **Outward-facing prose (README, `docs/`, user guides) follows the `manuscript-voice` skill**
   from the lab repo. Repo-internal prose (this file, docstrings, commit messages) does not.
 - **BSD 3-Clause, `LICENSE`, copyright University of Washington.** Public since 2026-09-06,
@@ -56,4 +61,4 @@ you are reading this file *without* that import, you have a public clone — the
 ## Maintaining this file
 
 This file stays lean: rules for working *in this repo*, nothing about the science or the project's
-state. Those belong in the lab repo's CLAUDE.md and notes. Keep it under 60 lines.
+state. Those belong in the lab repo's CLAUDE.md and notes. Keep it under 65 lines.

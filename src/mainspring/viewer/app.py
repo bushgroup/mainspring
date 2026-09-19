@@ -57,8 +57,10 @@ class Launch:
     path: "str | None" = None
     follow: bool = False
     show: "str | None" = None
-    """A `Show` entry by its own label (`main_window.FOLLOW_MODES`), already translated
-    from the word on the command line, or None to leave the box where it is."""
+    """The `--show` word as it was typed (`mainspring.interface.SHOW_WORDS`), or None to
+    leave the box where it is. The word and not the `Show` label it names: translating
+    the two is the window's job and needs the window (`main_window.FOLLOW_MODE_WORDS`),
+    and this dataclass is what a parse produces before there is one."""
 
 
 def parse_arguments(args: "list[str]") -> Launch:
@@ -71,10 +73,12 @@ def parse_arguments(args: "list[str]") -> Launch:
 
     `--show` is given a word rather than a label -- `rolling-sum`, not
     `Sum newest frames` -- because the caller is another program and the labels are what
-    this window happens to say today (`main_window.FOLLOW_MODE_WORDS`, which is imported
-    here rather than copied so that there is one list of the words and not two).
+    this window happens to say today. The words come from `mainspring.interface`, which
+    imports no Qt, so this whole parse runs without one: the program on the other end of
+    them cannot import a GUI either, and a command line that only one side can read is
+    not an interface (lab record, task 27).
     """
-    from .main_window import FOLLOW_MODE_WORDS
+    from ..interface import OPTION_FOLLOW, OPTION_SHOW, SHOW_WORDS
 
     path: "str | None" = None
     follow = False
@@ -82,14 +86,14 @@ def parse_arguments(args: "list[str]") -> Launch:
     rest = list(args)
     while rest:
         arg = rest.pop(0)
-        if arg == "--follow":
+        if arg == OPTION_FOLLOW:
             follow = True
-        elif arg == "--show" or arg.startswith("--show="):
-            word = arg[len("--show="):] if "=" in arg else (rest.pop(0) if rest else "")
-            if word not in FOLLOW_MODE_WORDS:
-                offered = ", ".join(FOLLOW_MODE_WORDS)
-                raise ValueError(f"--show takes one of {offered}, not {word!r}")
-            show = FOLLOW_MODE_WORDS[word]
+        elif arg == OPTION_SHOW or arg.startswith(OPTION_SHOW + "="):
+            word = arg[len(OPTION_SHOW) + 1:] if "=" in arg else (rest.pop(0) if rest else "")
+            if word not in SHOW_WORDS:
+                offered = ", ".join(SHOW_WORDS)
+                raise ValueError(f"{OPTION_SHOW} takes one of {offered}, not {word!r}")
+            show = word
         elif arg.startswith("-") and arg != "-":
             raise ValueError(f"unrecognised option {arg}")
         elif path is None:
@@ -209,7 +213,7 @@ def main(argv: "list[str] | None" = None) -> int:
     from PySide6.QtGui import QIcon
     from PySide6.QtWidgets import QApplication
 
-    from .main_window import MainWindow
+    from .main_window import FOLLOW_MODE_WORDS, MainWindow
     from .settings import APPLICATION, ORGANISATION
 
     # Row-major so a `RasterResult.image` (height x width, numpy's own order) needs no
@@ -241,9 +245,12 @@ def main(argv: "list[str] | None" = None) -> int:
         # Asked for before the open rather than after it, because the open is
         # asynchronous: the window applies this when the file is on screen and the frame
         # list is known (`MainWindow.follow_when_opened`). A `--show` on its own asks
-        # for following too, since the mode it names is what following does.
+        # for following too, since the mode it names is what following does. The word
+        # becomes a `Show` label here, where the window exists: the parse above deals in
+        # words alone so that it needs no Qt.
         if launch.follow or launch.show is not None:
-            window.follow_when_opened(show=launch.show)
+            show = None if launch.show is None else FOLLOW_MODE_WORDS[launch.show]
+            window.follow_when_opened(show=show)
         # A file association or a drag onto the .exe both arrive here the same way: a
         # path Windows chose on the user's behalf, not a dialog they were sitting in
         # front of. `open_file` uses the distinction to decide how loudly a bad open

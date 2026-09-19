@@ -135,6 +135,7 @@ def main() -> int:
     import numpy as np
 
     import mainspring
+    import mainspring.interface as interface
     import mainspring.report as report
     import mainspring.uimf
     from mainspring.uimf import decode
@@ -157,6 +158,66 @@ def main() -> int:
         "the uimf layer exports its public names",
         {"UimfFile", "SparseFrame", "Calibration", "rasterise"} <= set(mainspring.uimf.__all__),
     )
+    # Imported above, inside the same window, so the check just made covers it: the
+    # words another program types have to be readable by a program that cannot import a
+    # GUI, which is the whole reason they are not in the window (lab record, task 27).
+    check_true("the launch words are readable with no Qt loaded",
+               bool(interface.SHOW_WORDS) and interface.OPTION_FOLLOW == "--follow")
+
+    # --------------------------------------------------------------------------------
+    section("the published surface")
+    # `mainspring.uimf` has an installed caller: the acquisition software creates every
+    # UIMF file this lab produces through this writer, pinned to a release tag. Nothing
+    # in a public clone can import that caller, so what stands in for it is this list --
+    # written out rather than derived, because a list built from `__all__` renames itself
+    # along with whatever it was meant to catch (lab record, task 27).
+    import inspect
+
+    from mainspring.uimf import writer as uimf_writer
+
+    PUBLISHED = ("Calibration", "FrameSpec", "GlobalSpec", "SparseFrame", "UimfFile",
+                 "UimfWriter", "encode_intensities", "sum_frames", "decode",
+                 "is_local_path", "LiveState")
+    missing = [name for name in PUBLISHED if not hasattr(mainspring.uimf, name)]
+    check_true(f"mainspring.uimf still exports what the acquisition side imports"
+               f"{' (missing ' + ', '.join(missing) + ')' if missing else ''}",
+               not missing)
+    # Imported by name from the writer module rather than from the package: the two key
+    # registries a client reads to declare a parameter of its own, and the block it may
+    # declare one in.
+    FROM_WRITER = ("CLIENT_PARAM_ID_BASE", "CUSTOM_PARAM_ID_BASE", "FRAME_KEYS",
+                   "GLOBAL_KEYS", "ParamDef")
+    absent = [name for name in FROM_WRITER if not hasattr(uimf_writer, name)]
+    check_true(f"mainspring.uimf.writer still offers the key registries and ParamDef"
+               f"{' (missing ' + ', '.join(absent) + ')' if absent else ''}",
+               not absent)
+    check_true("and the client parameter block is still at 2000",
+               uimf_writer.CLIENT_PARAM_ID_BASE == 2000
+               and uimf_writer.CUSTOM_PARAM_ID_BASE == 1000)
+
+    # The invisible half. Both are defaults, so no call site in the acquisition software
+    # names either one: `wal` is what makes a run followable while it is being written,
+    # and `both` is what keeps the 2011-era tables that PNNL's own reader wants.
+    writer_defaults = {
+        name: parameter.default
+        for name, parameter in inspect.signature(uimf_writer.UimfWriter).parameters.items()
+    }
+    check_true(f"a new file is still WAL by default ({writer_defaults.get('journal_mode')!r})",
+               writer_defaults.get("journal_mode") == "wal")
+    check_true(f"and still writes both table families ({writer_defaults.get('tables')!r})",
+               writer_defaults.get("tables") == "both")
+
+    # The six names are the contract the acquisition side reads and writes by. They are
+    # compared as strings, because renaming the constant is free and renaming the string
+    # is a file the viewer can no longer tell a finished frame from a growing one in.
+    check_true("the six parameter names the two programs share are unchanged",
+               (uimf_writer.WRITER_STAMP, uimf_writer.DETECTOR_BITS, uimf_writer.METHOD_FRAME,
+                uimf_writer.REPETITION, uimf_writer.REPETITIONS, uimf_writer.FRAME_COMPLETE)
+               == ("MainspringWriter", "MainspringDetectorBits", "MainspringMethodFrame",
+                   "MainspringRepetition", "MainspringRepetitions", "MainspringFrameComplete"))
+    check_true("the reader still offers the live-following entry points",
+               all(callable(getattr(mainspring.uimf.UimfFile, name, None))
+                   for name in ("refresh", "is_provisional", "read_frame", "frame_numbers")))
 
     # --------------------------------------------------------------------------------
     section("the intensity codec")
@@ -761,9 +822,13 @@ def main() -> int:
     # nothing.
     check_true("every Show mode has a command-line word and every word a mode",
                sorted(FOLLOW_MODE_WORDS.values()) == sorted(FOLLOW_MODES))
+    check_true("and the words are mainspring.interface's, not this window's",
+               sorted(FOLLOW_MODE_WORDS) == sorted(interface.SHOW_WORDS))
     check_true("the command line reads a path and how to look at it",
                parse_arguments(["run.uimf", "--follow", "--show", "rolling-sum"])
-               == Launch(path="run.uimf", follow=True, show=FOLLOW_ROLLING_SUM))
+               == Launch(path="run.uimf", follow=True, show="rolling-sum"))
+    check_true("and a word becomes the Show entry it names",
+               FOLLOW_MODE_WORDS["rolling-sum"] == FOLLOW_ROLLING_SUM)
     check_raises("an unrecognised option is an error, not a file by that name",
                  ValueError, lambda: parse_arguments(["--folow"]))
     check_raises("and so is a --show word this viewer does not offer",

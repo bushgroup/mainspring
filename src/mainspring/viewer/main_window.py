@@ -82,6 +82,7 @@ from PySide6.QtWidgets import (
     QToolBar,
 )
 
+from ..interface import SHOW_WORDS
 from ..uimf import (
     DisplayAxes,
     FrameGrouping,
@@ -156,19 +157,17 @@ moves through the run rather than restarting at each method-frame boundary -- a 
 integration time on any file, grouped or not, traded against latency by one number (lab
 record, task 26)."""
 
-FOLLOW_MODE_WORDS = {
-    "fixed": FOLLOW_FIXED,
-    "newest": FOLLOW_NEWEST,
-    "method-sum": FOLLOW_METHOD_SUM,
-    "rolling-sum": FOLLOW_ROLLING_SUM,
-}
+FOLLOW_MODE_WORDS = dict(zip(SHOW_WORDS, FOLLOW_MODES, strict=True))
 """`--show <word>` on the command line, and the `Show` entry each word asks for.
 
 Another program starts the viewer on a run in progress (`viewer/app.py`, lab record,
 task 26), and what it passes has to outlive a label being reworded: the words are the
-interface and the labels are what this window happens to say today. One table, here
-rather than in `app.py`, so that a mode added to `FOLLOW_MODES` without a word for it is
-a missing entry in one dict rather than a second list that quietly disagrees."""
+interface and the labels are what this window happens to say today. The words themselves
+live in Qt-free `mainspring.interface`, so that the program typing them can import them
+instead of retyping them in a repository this one cannot see (lab record, task 27); this
+is the one place the two lists are put side by side, and `strict=True` makes a mode added
+to `FOLLOW_MODES` without a word for it fail at import rather than quietly drop off the
+command line."""
 
 
 def _frame_type_name(frame_type: int) -> str:

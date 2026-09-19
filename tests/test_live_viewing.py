@@ -23,6 +23,7 @@ import os
 import numpy as np
 import pytest
 
+from mainspring import interface
 from mainspring.uimf import (
     FrameSpec,
     GlobalSpec,
@@ -31,6 +32,7 @@ from mainspring.uimf import (
     UimfWriter,
     is_local_path,
 )
+from mainspring.viewer import app as viewer_app
 from mainspring.viewer.app import Launch, parse_arguments
 from mainspring.viewer.app import main as viewer_main
 from mainspring.viewer.main_window import (
@@ -759,14 +761,23 @@ def test_every_show_mode_has_a_command_line_word_and_every_word_a_mode():
     window cannot ask for."""
     assert sorted(FOLLOW_MODE_WORDS.values()) == sorted(FOLLOW_MODES)
     assert all(word == word.lower() and " " not in word for word in FOLLOW_MODE_WORDS)
+    # And the words themselves are `mainspring.interface`'s, not this window's: that is
+    # the copy the acquisition software imports (lab record, task 27).
+    assert sorted(FOLLOW_MODE_WORDS) == sorted(interface.SHOW_WORDS)
+    # `--help` offers the same words, since a word nobody is told about is not offered.
+    assert all(word in viewer_app.USAGE for word in interface.SHOW_WORDS)
 
 
 def test_the_command_line_reads_a_path_and_how_to_look_at_it():
     parsed = parse_arguments(["run.uimf", "--follow", "--show", "rolling-sum"])
     assert parsed.path == "run.uimf"
-    assert parsed.follow and parsed.show == FOLLOW_ROLLING_SUM
+    # The word as typed, not the label it names. The parse deals in words alone so that
+    # it needs no Qt; the window translates one into the other when it applies them.
+    assert parsed.follow and parsed.show == "rolling-sum"
+    assert FOLLOW_MODE_WORDS[parsed.show] == FOLLOW_ROLLING_SUM
     assert parse_arguments([]) == Launch()
-    assert parse_arguments(["--show=method-sum"]).show == FOLLOW_METHOD_SUM
+    assert parse_arguments(["--show=method-sum"]).show == "method-sum"
+    assert FOLLOW_MODE_WORDS["method-sum"] == FOLLOW_METHOD_SUM
 
 
 def test_an_option_the_viewer_does_not_offer_is_an_error_and_never_a_file(monkeypatch,

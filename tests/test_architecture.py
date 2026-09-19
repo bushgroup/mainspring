@@ -48,6 +48,24 @@ def test_uimf_layer_imports_no_qt_in_a_fresh_interpreter():
     assert done.stdout.strip() == "[]", done.stdout
 
 
+def test_the_launch_words_import_with_no_qt_in_a_fresh_interpreter():
+    """`mainspring.interface` holds what another program types to start this viewer.
+
+    Checked the same way as the seam above and for a sharper reason: the program that
+    types those words is acquisition software whose own layering forbids it a GUI
+    import, so a word it cannot import is a word it retypes, and two copies of one
+    interface in two repositories drift (lab record, task 27).
+    """
+    code = (
+        "import sys, mainspring.interface as i;"
+        "assert i.SHOW_WORDS and i.OPTION_FOLLOW and i.OPTION_SHOW;"
+        "leaked = [m for m in sys.modules if m.startswith(('PySide6', 'pyqtgraph', 'shiboken6'))];"
+        "print(leaked)"
+    )
+    done = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
+    assert done.stdout.strip() == "[]", done.stdout
+
+
 def test_viewer_does_not_leak_into_the_uimf_layer():
     """Dependencies point one way: nothing under `uimf` may name the viewer."""
     for name in UIMF_MODULES:
