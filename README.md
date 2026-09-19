@@ -41,11 +41,12 @@ inconsistently.
 
 The installer is attached to the [latest
 release](https://github.com/bushgroup/mainspring/releases/latest) as
-`mainspring-1.1.0-setup.exe`, 93 MB, and needs no Python installation. It installs into the
-current user's profile and asks for no administrator rights, offers a Start menu entry and an
-optional desktop icon, and offers to open `.uimf` files with mainspring. The same release
-carries `mainspring-1.1.0-py3-none-any.whl`, which is the reader and the viewer as a Python
-package for a machine that already has Python 3.12.
+`mainspring-<version>-setup.exe`, about 94 MB, and needs no Python installation. It installs
+into the current user's profile and asks for no administrator rights, offers a Start menu entry
+and an optional desktop icon, and offers to open `.uimf` files with mainspring. The same release
+carries `mainspring-<version>-py3-none-any.whl`, which is the reader and the viewer as a Python
+package for a machine that already has Python 3.12. Both file names carry the version of the
+release they are attached to, so follow the link rather than typing one.
 
 The installer is not code signed, so Microsoft Defender SmartScreen shows "Windows protected
 your PC" the first time it is run from a download. Choose More info, then Run anyway. Signing
