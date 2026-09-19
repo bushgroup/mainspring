@@ -4,10 +4,15 @@ The real console is a C++ service that talks to an Acqiris digitizer, and it is 
 half of the writing that mainspring does *not* do: `mainspring.uimf.writer` creates the
 file and owns every parameter, the console opens that file and inserts `Frame_Scans`
 rows into it. There is no way to exercise the protocol against the real thing without
-the instrument, so this appends rows the way the console's `UimfWriter` does, from a
-reading of its source in the lab record (`UIMFWriter.cpp`, `uimfacquisitionrecord.cpp`;
-lab record, task 16). Everything below that is a claim about the console is a claim
-about that source and not about a file anyone has seen yet.
+the instrument, so this appends rows the way the console's own writer does.
+
+**The written authority is the acquisition software's `docs/console-protocol.md`**, and
+in particular its "Division of UIMF writing". Two programs in this lab model this same
+console, and a model re-derived from the C++ a second time is a second opinion that can
+drift from the first without either side noticing: so a claim below is a claim that
+document makes, a discrepancy is fixed there first, and the reading of `UIMFWriter.cpp`
+and `uimfacquisitionrecord.cpp` behind it is provenance in the lab record (tasks 16 and
+27) rather than a file anyone has seen yet.
 
 What it copies, and why each one matters:
 
