@@ -1,6 +1,6 @@
 [project]
 name = "mainspring"
-version = "1.1.0"
+version = "1.2.0"
 description = "Interactive viewer and Python reader for UIMF ion mobility mass spectrometry files."
 readme = "README.md"
 requires-python = "==3.12.*"
