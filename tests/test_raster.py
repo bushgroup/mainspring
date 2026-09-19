@@ -25,7 +25,13 @@ import numpy as np
 import pytest
 
 from mainspring.uimf.calib import Calibration, arrival_time_ms, scan_axis_ms
-from mainspring.uimf.raster import DisplayAxes, profile, rasterise, render_view
+from mainspring.uimf.raster import (
+    DisplayAxes,
+    profile,
+    rasterise,
+    render_view,
+    tic_in_view,
+)
 from mainspring.uimf.reader import UimfFile
 
 SLOPE, INTERCEPT = 0.738123, 0.07690495
@@ -282,6 +288,35 @@ def test_render_view_returns_what_the_three_separate_calls_do(frame_and_axes):
                 assert np.array_equal(got[1], want[1])
 
 
+def test_tic_in_view_is_the_number_the_render_reports(frame_and_axes):
+    """The chromatogram's restricted point against the field it is named after.
+
+    Not a tautology, although both go through the same selection: `tic_in_view` skips
+    the image, the profiles and the aggregate, and this is what says that skipping them
+    changed no answer. Across three windows, including one with nothing in it.
+    """
+    frame, axes = frame_and_axes
+    (x0, x1), (y0, y1) = axes.full_range
+    windows = (
+        ((x0, x1), (y0, y1)),
+        ((x0 + 0.3 * (x1 - x0), x0 + 0.6 * (x1 - x0)), (y0, y0 + 0.5 * (y1 - y0))),
+        ((x0, x0 + 1e-9 * (x1 - x0)), (y0, y0 + 1e-9 * (y1 - y0))),
+    )
+    for x_range, y_range in windows:
+        rendered = rasterise(frame, axes, x_range, y_range, 300, 200)
+        assert tic_in_view(frame, axes, x_range, y_range) == rendered.tic_in_view
+
+
+def test_tic_in_view_at_full_range_is_the_frames_own_total(synthetic_uimf, frame_and_axes):
+    """The two ends of the chromatogram's two sources, at the one view where they must
+    be the same number: everything is in the window, so the walk's answer is the stored
+    `TIC` total the grouped query gives for nothing."""
+    frame, axes = frame_and_axes
+    assert tic_in_view(frame, axes, *axes.full_range) == pytest.approx(
+        synthetic_uimf.tic(1)
+    )
+
+
 def test_render_view_refuses_an_unknown_aggregate(frame_and_axes):
     frame, axes = frame_and_axes
     with pytest.raises(ValueError, match="aggregate"):
@@ -310,6 +345,10 @@ def test_a_real_frame_conserves_its_own_tic(real_uimf):
     assert result.image.sum(dtype=np.float64) == pytest.approx(float(tic.sum()), rel=1e-5)
     peak = rasterise(frame, axes, *axes.full_range, 1200, 800, aggregate="max")
     assert peak.image.max() == pytest.approx(float(bpi.max()))
+    # And the chromatogram's restricted point is the same number on a real writer's
+    # file: at full range it is the frame's own stored `TIC` total, which is the other
+    # source the panel draws (lab record, task 31).
+    assert tic_in_view(frame, axes, *axes.full_range) == pytest.approx(float(tic.sum()))
 
 
 def test_render_view_agrees_with_the_separate_calls_on_a_real_file(real_uimf):

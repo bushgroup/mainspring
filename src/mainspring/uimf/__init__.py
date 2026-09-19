@@ -28,7 +28,7 @@ from .cache import FrameCache
 from .calib import Calibration, arrival_time_ms, scan_axis_ms
 from .decode import decode_frame_blobs, decode_intensities, encode_intensities, numba_available
 from .frame import SparseFrame, sum_frames
-from .raster import DisplayAxes, RasterResult, profile, rasterise
+from .raster import DisplayAxes, RasterResult, profile, rasterise, tic_in_view
 from .reader import (
     SUMMED_SUFFIX,
     FileGone,
@@ -87,4 +87,5 @@ __all__ = [
     "scan_axis_ms",
     "sum_frames",
     "summed_companion",
+    "tic_in_view",
 ]

@@ -1103,3 +1103,149 @@ def test_a_file_with_no_log_beside_it_says_nothing_extra(qtbot, acquisition):
     qtbot.waitUntil(lambda: bool(painted), timeout=5000)
 
     assert "-wal" not in window.status_text()
+
+
+# --- the chromatogram of a run being written (task 31) --------------------------------
+
+
+@pytest.fixture
+def chromatogram_window(qtbot, acquisition, quick_poll):
+    """A followed acquisition with the chromatogram panel open, one frame in.
+
+    The frames are spaced out in time, because a run being watched is the one case where
+    the elapsed-time axis is the point: an operator wants to see how far into the method
+    they are, not which frame number they are on.
+    """
+    from mainspring.viewer.settings import ViewerSettings
+
+    acquisition.frame(method_frame=1, repetition=1, repetitions=3,
+                      start_time_minutes=0.0)
+    window = MainWindow(ViewerSettings(show_chromatogram=True))
+    qtbot.addWidget(window)
+    painted: list = []
+    window.frame_shown.connect(painted.append)
+    window.open_file(acquisition.path)
+    qtbot.waitUntil(lambda: bool(painted), timeout=5000)
+    qtbot.waitUntil(lambda: bool(window.chromatogram.series[0]), timeout=5000)
+    window._follow_action.setChecked(True)
+    assert window.following
+    return window, acquisition
+
+
+def test_the_chromatogram_gains_a_point_as_the_run_writes_one(chromatogram_window, qtbot):
+    """What the panel is for: the run's shape filling in while it happens.
+
+    The poll's third query, narrowed to the tail -- the frames that were provisional at
+    the last look plus any that were not there at all. Everything already drawn stays
+    drawn; nothing re-reads the frames behind it.
+    """
+    window, running = chromatogram_window
+    assert window.chromatogram.series[0] == (1,)
+
+    running.frame(method_frame=1, repetition=2, repetitions=3, start_time_minutes=0.01)
+    qtbot.waitUntil(lambda: window.chromatogram.series[0] == (1, 2), timeout=5000)
+    running.frame(method_frame=1, repetition=3, repetitions=3, start_time_minutes=0.02)
+    qtbot.waitUntil(lambda: window.chromatogram.series[0] == (1, 2, 3), timeout=5000)
+
+    frames, totals = window.chromatogram.series
+    file = UimfFile(running.path)
+    stored = file.frame_totals()
+    for frame, total in zip(frames, totals):
+        assert total == pytest.approx(stored[frame])
+    assert window.chromatogram._axis_name() == "Time (min)"
+
+
+def test_a_frame_still_being_written_shows_its_total_so_far_and_then_its_real_one(
+    chromatogram_window, qtbot
+):
+    """The one point on the trace that moves. A frame's rows arrive in batches, so its
+    total climbs while it fills and settles when the frame is finalised -- and the poll
+    re-asks about exactly that frame because it was provisional at the last look."""
+    window, running = chromatogram_window
+    running.start(scans=SCANS // 3, method_frame=1, repetition=2, repetitions=3,
+                  start_time_minutes=0.01)
+    qtbot.waitUntil(lambda: window.chromatogram.series[0] == (1, 2), timeout=5000)
+    partial = dict(zip(*window.chromatogram.series))[2]
+
+    running.append(2, SCANS // 3)
+    qtbot.waitUntil(
+        lambda: dict(zip(*window.chromatogram.series))[2] > partial, timeout=5000
+    )
+    running.finish(2)
+    qtbot.waitUntil(lambda: 2 in UimfFile(running.path).refresh().final, timeout=5000)
+    qtbot.wait(150)
+    assert dict(zip(*window.chromatogram.series))[2] == pytest.approx(
+        UimfFile(running.path).frame_totals()[2]
+    )
+
+
+def test_a_poll_that_finds_nothing_new_asks_the_file_for_no_totals(
+    chromatogram_window, qtbot, monkeypatch
+):
+    """The rule step 6 of the task set: adding nothing to a poll that finds nothing.
+
+    Counted on `frame_totals` rather than on the signal, because what must not happen is
+    the *query* -- a poll that asked and then found the answer unchanged would still be
+    the load worker doing whole-file work once a second on a thread a frame is waiting
+    on. The last frame is finished first, so there is no provisional tail to re-ask
+    about either.
+    """
+    window, running = chromatogram_window
+    qtbot.waitUntil(lambda: window.chromatogram.series[0] == (1,), timeout=5000)
+    qtbot.waitUntil(lambda: window._live is not None and not window._live.provisional,
+                    timeout=5000)
+
+    polls: list = []
+    totals: list = []
+    real_refresh = UimfFile.refresh
+    real_totals = UimfFile.frame_totals
+
+    def counting_refresh(self):
+        polls.append(1)
+        return real_refresh(self)
+
+    def counting_totals(self, since=None):
+        totals.append(since)
+        return real_totals(self, since)
+
+    monkeypatch.setattr(UimfFile, "refresh", counting_refresh)
+    monkeypatch.setattr(UimfFile, "frame_totals", counting_totals)
+    qtbot.waitUntil(lambda: len(polls) >= 3, timeout=5000)
+    qtbot.wait(50)
+    assert totals == []
+
+
+def test_a_closed_panel_costs_a_followed_run_nothing(qtbot, acquisition, quick_poll):
+    """The poll's third query is not made at all for a panel nobody has opened."""
+    acquisition.frame()
+    window = MainWindow()
+    qtbot.addWidget(window)
+    painted: list = []
+    window.frame_shown.connect(painted.append)
+    window.open_file(acquisition.path)
+    qtbot.waitUntil(lambda: bool(painted), timeout=5000)
+    window._follow_action.setChecked(True)
+
+    asked: list = []
+    window._worker.chromatogram.connect(lambda *a: asked.append(a))
+    acquisition.frame()
+    qtbot.waitUntil(lambda: window._live is not None
+                    and len(window._live.frames) == 2, timeout=5000)
+    qtbot.wait(150)
+    assert asked == []
+
+
+def test_restrict_to_view_is_switched_off_while_a_run_is_followed(
+    chromatogram_window, qtbot
+):
+    """A walk reads every frame of the file, and a poll that waits behind one is a poll
+    that misses the frame it was watching for. Refused with the reason in the tooltip
+    rather than silently doing nothing."""
+    window, _ = chromatogram_window
+    box = window.chromatogram._restrict_box
+    assert not box.isEnabled()
+    assert "Live" in box.toolTip()
+
+    window._follow_action.setChecked(False)
+    assert box.isEnabled()
+    assert "Live" not in box.toolTip()

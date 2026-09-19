@@ -196,6 +196,7 @@ def apply(window: object, theme: str) -> Palette:
     pg.setConfigOptions(background=palette.background, foreground=palette.foreground)
     window.heatmap.set_palette(palette)
     window.side_plots.set_palette(palette)
+    window.chromatogram.set_palette(palette)
     return palette
 
 
@@ -205,6 +206,11 @@ def themed(window: object) -> "list[str]":
     Type-based like `controls.unexplained`, and for the same reason: an item added
     tomorrow is walked because of what it is. An empty list under **both** palettes is
     the rule.
+
+    **Over every canvas `window.plot_canvases()` names**, which is the other half of the
+    same idea: a walk that is type-based inside one widget and hard-coded to that one
+    widget is only half type-based, and what it misses is a whole plot rather than one
+    pen on it.
 
     **The test is per role, not per palette**, and it has to be. Both palettes are now
     black and white (`DARK`, `LIGHT`), so "is this color one of the palette's four"
@@ -217,25 +223,30 @@ def themed(window: object) -> "list[str]":
     """
     palette = active()
     stray: list[str] = []
-    view = window.heatmap
-    _check(palette, "background", view.backgroundBrush().color(), f"{name_of(view)} background", stray)
+    # Every canvas the window owns, not `window.heatmap` alone. A second plot widget in
+    # a dock of its own is exactly the thing a walk written around one name would miss,
+    # and it would miss it silently (lab record, task 31).
+    for view in window.plot_canvases():
+        _check(palette, "background", view.backgroundBrush().color(),
+               f"{name_of(view)} background", stray)
 
-    for item in view.scene().items():
-        if not isinstance(item, _PAINTED):
-            continue
-        name = name_of(item)
-        if isinstance(item, pg.AxisItem):
-            _check_pen(palette, "foreground", item.pen(), f"{name} axis pen", stray)
-            _check_pen(palette, "foreground", item.tickPen(), f"{name} tick pen", stray)
-            _check_pen(palette, "foreground", item.textPen(), f"{name} text pen", stray)
-            label = item.labelStyle.get("color")
-            if label is not None:
-                _check(palette, "foreground", QColor(label), f"{name} label color", stray)
-        elif isinstance(item, pg.PlotDataItem):
-            _check_pen(palette, "curve", item.opts.get("pen"), f"{name} curve pen", stray)
-            _check_brush(palette, "curve", item.opts.get("fillBrush"), f"{name} fill brush", stray)
-        else:  # pg.TextItem
-            _check(palette, "debug", item.color, f"{name} text color", stray)
+        for item in view.scene().items():
+            if not isinstance(item, _PAINTED):
+                continue
+            name = name_of(item)
+            if isinstance(item, pg.AxisItem):
+                _check_pen(palette, "foreground", item.pen(), f"{name} axis pen", stray)
+                _check_pen(palette, "foreground", item.tickPen(), f"{name} tick pen", stray)
+                _check_pen(palette, "foreground", item.textPen(), f"{name} text pen", stray)
+                label = item.labelStyle.get("color")
+                if label is not None:
+                    _check(palette, "foreground", QColor(label), f"{name} label color", stray)
+            elif isinstance(item, pg.PlotDataItem):
+                _check_pen(palette, "curve", item.opts.get("pen"), f"{name} curve pen", stray)
+                _check_brush(palette, "curve", item.opts.get("fillBrush"),
+                             f"{name} fill brush", stray)
+            else:  # pg.TextItem
+                _check(palette, "debug", item.color, f"{name} text color", stray)
 
     return numbered(stray)
 

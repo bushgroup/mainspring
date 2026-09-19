@@ -125,7 +125,8 @@ def declared_versions() -> dict[str, str]:
 
 UIMF_MODULES = ("cache", "calib", "cli", "decode", "frame", "raster", "reader", "writer")
 VIEWER_MODULES = (
-    "app", "controls", "export", "fonts", "heatmap", "help", "info_panel", "labels",
+    "app", "chromatogram", "controls", "export", "fonts", "heatmap", "help",
+    "info_panel", "labels",
     "main_window", "settings", "side_plots", "theme", "workers",
 )
 
@@ -238,6 +239,15 @@ def main() -> int:
     check_true("the reader still offers the live-following entry points",
                all(callable(getattr(mainspring.uimf.UimfFile, name, None))
                    for name in ("refresh", "is_provisional", "read_frame", "frame_numbers")))
+    # Pinned here rather than added to PUBLISHED above, on the precedent
+    # `hot_write_ahead_log` set and for its reason: that list is what the acquisition
+    # side imports, and nothing downstream imports these. They are the viewer's, so a
+    # rename would be caught by its own import -- but a rename is still a minor bump and
+    # a row in the record, and this is what makes that visible here (lab record, task 31).
+    check_true("the reader still offers the chromatogram entry points",
+               all(callable(getattr(mainspring.uimf.UimfFile, name, None))
+                   for name in ("frame_totals", "frame_start_times"))
+               and callable(getattr(mainspring.uimf, "tic_in_view", None)))
 
     # --------------------------------------------------------------------------------
     section("the intensity codec")
@@ -389,6 +399,36 @@ def main() -> int:
                        - sum(spec.tic(n) for n in spec.frames)) < 1e-6)
         check_true("uimf-info --verify passes on a file whose every column we computed",
                    _quiet(uimf_info_main, [path, "--verify"]) == 0)
+
+        # The chromatogram's two whole-file answers (lab record, task 31). The totals
+        # are the cheap source the panel draws by default, and the check that makes that
+        # trade safe is that they equal the frame the decoder produces -- the file's own
+        # `TIC` column against the blobs beside it.
+        from mainspring.uimf.raster import tic_in_view
+
+        totals = uimf.frame_totals()
+        check_true(f"one grouped query gives every frame's total ({len(totals)} frames)",
+                   set(totals) == set(spec.frames)
+                   and all(abs(totals[n] - spec.tic(n)) <= 1e-6 * max(1.0, spec.tic(n))
+                           for n in spec.frames))
+        check_true("and each one is the total of the points that frame decodes to",
+                   all(abs(totals[n] - float(uimf.read_frame(n).intensity.sum()))
+                       <= 1e-6 * max(1.0, totals[n]) for n in spec.frames))
+        check_true(f"narrowed to the tail, it asks only about those frames"
+                   f" ({sorted(uimf.frame_totals(since=spec.frames[-1]))})",
+                   set(uimf.frame_totals(since=spec.frames[-1])) == {spec.frames[-1]})
+        check_true("and the view-restricted total at full range is that same number",
+                   abs(tic_in_view(decoded, axes, *axes.full_range) - spec.tic(1))
+                   <= 1e-6 * spec.tic(1))
+        # Present is not the same as meaningful: `FrameSpec.start_time_minutes` defaults
+        # to 0.0 and the writer stores it on every frame, so this fixture carries the
+        # parameter and says nothing with it. Anything drawing a time axis has to tell
+        # that from a clock, which is `chromatogram.elapsed_minutes`.
+        times = uimf.frame_start_times()
+        check_true(f"start times are read for every frame ({len(times)} of them)",
+                   set(times) == set(spec.frames))
+        check_true("and a writer's default on every frame is not an elapsed-time axis",
+                   set(times.values()) == {0.0})
 
     # --------------------------------------------------------------------------------
     section("the writer, and the two phases of a frame")
@@ -866,7 +906,11 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory() as tmp:
         path = os.path.join(tmp, "viewer.uimf")
-        viewer_spec = write_synthetic_uimf(path, frames=1, scans=16, bins=4096)
+        # Four frames spaced out in time rather than one: the chromatogram checks below
+        # need a trace with points to band and a start-time axis to draw against, and
+        # everything above them asks about frame 1 either way.
+        viewer_spec = write_synthetic_uimf(path, frames=4, scans=16, bins=4096,
+                                           start_time_step_minutes=0.01)
         window = MainWindow()
         painted: list = []
         window.frame_shown.connect(painted.append)
@@ -1000,6 +1044,78 @@ def main() -> int:
                 np.array_equal(window.heatmap.image_item.image, screen_image)
                 and window.heatmap.levels() == screen_levels,
             )
+
+            # The chromatogram dock: its two sources, the band, and what it must leave
+            # alone. Hidden by default, so it is opened here -- which is also what makes
+            # the tooltip walk below see its controls in the state a user meets them in.
+            from mainspring.uimf.raster import tic_in_view
+
+            window._chromatogram_action.trigger()
+            deadline = time.time() + 5.0
+            while not window.chromatogram.series[0] and time.time() < deadline:
+                qt_app.processEvents()
+                time.sleep(0.01)
+            frames, totals = window.chromatogram.series
+            stored = {n: viewer_spec.tic(n) for n in viewer_spec.frames}
+            check_true(
+                f"the chromatogram is the file's own per-frame totals ({len(frames)} frames)",
+                frames == viewer_spec.frames
+                and all(abs(got - stored[n]) <= 1e-6 * max(1.0, stored[n])
+                        for n, got in zip(frames, totals)),
+            )
+            # The two sources at the one view where they have to be the same number.
+            # Not a tautology: one is a `SUM(TIC)` SQLite did over the file's own column
+            # and the other is the decoded points inside the window on screen.
+            full = tic_in_view(window._current_frame, window._current_axes,
+                               *window._current_axes.full_range)
+            check_true(
+                "and the view-restricted total at full range is that same number",
+                abs(full - stored[frames[0]]) <= 1e-6 * max(1.0, stored[frames[0]]),
+            )
+            check_true(
+                f"the time axis is the file's own start times ({window.chromatogram._axis_name()})",
+                window.chromatogram._axis_name() == "Time (min)",
+            )
+            positions = window.chromatogram._positions()
+            window.chromatogram._set_band(positions[1], positions[2])
+            marked = window.chromatogram.selected_frames()
+            check_true(f"a band marks the frames it covers ({marked})",
+                       marked == frames[1:3])
+            # Re-expressed and not cleared, the way `_rebuild_axes` re-expresses the
+            # heatmap's view: the toggle says how the axis is labelled, and a selection
+            # that emptied itself would cost the span the user was about to sum.
+            window.chromatogram.set_raw_units(True)
+            check_true(
+                f"and keeps them when the axis switches to frame numbers"
+                f" ({window.chromatogram._axis_name()})",
+                window.chromatogram._axis_name() == "Frame"
+                and window.chromatogram.selected_frames() == marked,
+            )
+            window.chromatogram.set_raw_units(False)
+            # The export is the heatmap's scene rendered again, and the panel's plot is
+            # a scene of its own -- so a figure cannot gain a chromatogram whatever the
+            # window's layout does with the dock (lab record, task 31).
+            panel_items = set(window.chromatogram.plot.scene().items())
+            check_true(
+                "and nothing of the panel is in the scene an export renders",
+                window.chromatogram.plot.scene() is not window.heatmap.scene()
+                and not panel_items & set(window.heatmap.scene().items()),
+            )
+            mute_panel = unexplained(window)
+            check_true(
+                "every control in the chromatogram panel explains itself"
+                + (f" (mute: {', '.join(mute_panel)})" if mute_panel else ""),
+                not mute_panel,
+            )
+            for name in THEMES:
+                theme.apply(window, name)
+                stray = theme.themed(window)
+                check_true(
+                    f"and nothing in it is painted outside the {name} palette"
+                    + (f" (stray: {', '.join(stray)})" if stray else ""),
+                    not stray,
+                )
+            theme.apply(window, window.settings.theme)
 
             # And a gesture must reach the render worker and come back with a narrower
             # window: the whole interactive path, in one check, through the same signal

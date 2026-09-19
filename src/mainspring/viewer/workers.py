@@ -37,6 +37,15 @@ only runs when the queue is empty -- so an acquisition being followed while a
 twenty-second sum-all runs is not also being polled twenty times. And a slow poll
 delays only the next poll, never a gesture.
 
+**The chromatogram's expensive source runs in that same queue, in chunks.** The file's
+own per-frame totals are one query and need nothing special; totalling the heatmap's
+*current view* in every frame is a read and a selection each, seconds to a minute over a
+whole run. A job that long cannot be one queue item, because the queue is FIFO and the
+frame a user asks for next would wait behind all of it -- so `_walk_restricted` works
+for `CHUNK_BUDGET_S` and puts itself back at the end of the queue, carrying a serial a
+newer request supersedes and keeping what it has already computed under the window it
+computed it for.
+
 Qt lives here, and only here on the data side of the viewer: `mainspring.uimf` knows
 nothing about threads, and everything these workers call is plain numpy. What crosses
 the seam are frozen dataclasses over read-only numpy arrays -- a `SparseFrame` and a
@@ -49,7 +58,7 @@ from __future__ import annotations
 import queue
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 from PySide6.QtCore import QThread, Signal
@@ -66,9 +75,10 @@ from ..uimf import (
 )
 from ..uimf.cache import DEFAULT_BUDGET_BYTES, FrameCache
 from ..uimf.decode import numba_available
-from ..uimf.raster import render_view
+from ..uimf.raster import render_view, tic_in_view
 
 __all__ = [
+    "CHUNK_BUDGET_S",
     "DEBOUNCE_MS",
     "POLL_INTERVAL_S",
     "LoadWorker",
@@ -76,6 +86,7 @@ __all__ = [
     "RenderRequest",
     "RenderResult",
     "RenderWorker",
+    "RestrictedRequest",
     "SumRequest",
 ]
 
@@ -88,6 +99,18 @@ POLL_INTERVAL_S = 1.0
 mobility experiment, about a second long at the SLIMPHONY pusher rate, so a second is
 the rate at which there is anything new to find; the poll itself costs 11 ms of query
 on a 5,000-frame file (lab record, tasks 08 and 17)."""
+
+CHUNK_BUDGET_S = 0.1
+"""How long the chromatogram's view-restricted walk works before re-queueing itself.
+
+**A time budget rather than a frame count**, and measured rather than chosen. The walk
+reads and selects every frame of the file -- 16 s over the 5,000-frame synthetic and
+about a minute over a real run of the same length -- and the queue it runs in is FIFO,
+so what has to be bounded is how long a frame request can sit behind it. A fixed count
+bounds that only if a frame costs the same everywhere, and it does not: 32 frames is
+104 ms on the synthetic raw file, 431 ms on a real clockwork run and 1.15 s on the
+densest frame PNNL publishes (lab record, task 31). A budget bounds it at one frame plus
+this number whatever the file holds, and one frame is the part nothing can avoid."""
 
 
 @dataclass(frozen=True)
@@ -111,6 +134,42 @@ class SumRequest:
     because there are two of them and they are worded differently when they land -- one
     grows repetition by repetition until the method frame ends, the other is a window of
     fixed length that moves. Nothing here reads the string; it is carried."""
+
+
+@dataclass(frozen=True)
+class RestrictedRequest:
+    """One "total these frames over this window" ask, and where the next chunk resumes.
+
+    Immutable and re-queued with a new `start` after each chunk, rather than a mutable
+    cursor the worker keeps: the queue already carries the work, and a request that
+    describes the whole job is also the thing a newer one supersedes.
+
+    `serial` is the window's, and a chunk whose serial is not the current one is
+    dropped. The axis options travel with the ranges because a window is only a window
+    given the axes it was drawn in -- a swap or a units toggle means the same two pairs
+    of numbers name a different set of points, and the answer has to be recomputed
+    rather than served out of the cache.
+    """
+
+    frames: tuple[int, ...] = ()
+    x_range: tuple[float, float] = (0.0, 0.0)
+    y_range: tuple[float, float] = (0.0, 0.0)
+    raw_units: bool = False
+    swapped: bool = False
+    t0_offset_ms: float = 0.0
+    serial: int = 0
+    start: int = 0
+
+    @property
+    def view(self) -> tuple:
+        """What makes two asks the same question, for the cache to key totals by.
+
+        The frame list is deliberately **not** in it: a live run appends frames to the
+        same window, and a key that included the list would throw away every total
+        already computed each time one arrived (lab record, task 31).
+        """
+        return (self.x_range, self.y_range, self.raw_units, self.swapped,
+                self.t0_offset_ms)
 
 
 @dataclass(frozen=True)
@@ -296,6 +355,23 @@ class LoadWorker(QThread):
     look found. The types and the grouping are `None` unless the frame list actually
     *grew*, because neither can change while it does not and re-reading the grouping is
     43 ms against the poll's own 11 ms (lab record, task 17)."""
+    chromatogram = Signal(object, object, bool)
+    """`dict[int, float], dict[int, float], bool` -- each frame's stored `TIC` total,
+    each frame's `StartTimeMinutes`, and whether this replaces the series or adds to it.
+
+    Two whole-file queries, like `frame_types` and `frame_grouping` beside them: 79 ms
+    over a real 45 MB clockwork run and 114 ms over a 5,000-frame one, which is why the
+    window asks for it *after* the first frame and only when the panel is actually on
+    screen. `replace` is False on the poll's form, where both are narrowed to the frames
+    that can have changed and arrive one or two at a time (lab record, task 31)."""
+    restricted = Signal(object, object, int, int)
+    """`serial, dict[int, float], done, total` -- the view-restricted walk so far.
+
+    Emitted once per chunk rather than once at the end, because a walk over a whole run
+    is seconds and a trace that filled in is worth more than one that appeared. The
+    dictionary is the accumulated answer and not the chunk, so a receiver draws what it
+    is handed and keeps nothing. `serial` is the request's, for the same reason a
+    `RenderResult` carries one: the window drops a chunk its view has moved past."""
     follow_stopped = Signal(str, bool)
     """A poll raised, and following has been switched off: the message, and whether the
     file itself has gone.
@@ -322,6 +398,14 @@ class LoadWorker(QThread):
         self._cancel_sum = threading.Event()
         self._poll_interval: float | None = None
         self._live: LiveState | None = None
+        self._chromatogram = False
+        # `view signature -> {frame: total}`. Per frame and not per array, so that a
+        # live run appends to a walk instead of invalidating it, and keyed by the view
+        # so that going back to a window already walked is free. Never evicted and
+        # cleared on open: a completed walk is 5,000 floats, and each distinct one costs
+        # the user seconds of waiting, so nobody can accumulate enough of them to matter.
+        self._restricted_totals: dict[tuple, dict[int, float]] = {}
+        self._restricted_serial = 0
         self.start()
         self._queue.put(("warm", None))
 
@@ -357,6 +441,40 @@ class LoadWorker(QThread):
         """
         self._queue.put(("follow", bool(following)))
 
+    def request_chromatogram(self) -> None:
+        """Read the whole file's per-frame totals and start times; `chromatogram` carries them.
+
+        Asked for by the window rather than done on every open, and asked for *after*
+        the first frame, so that a panel nobody has opened costs nothing and an open
+        that does have it open still paints the frame first.
+        """
+        self._queue.put(("chromatogram", None))
+
+    def set_chromatogram(self, wanted: bool) -> None:
+        """Say whether a follow poll should also report what the newest frames total.
+
+        Through the queue for the reason `set_follow` is: the loop spends its life
+        blocked in `get()`. A poll that finds nothing new sends nothing here either --
+        the extra query is inside the branch that has already decided to emit, and is
+        narrowed to the frames whose totals can have changed, so it is 0.3 to 2.2 ms
+        (lab record, task 31).
+        """
+        self._queue.put(("want_chromatogram", bool(wanted)))
+
+    def request_restricted(self, request: RestrictedRequest) -> None:
+        """Start (or resume) the view-restricted walk; `restricted` reports each chunk.
+
+        Supersedes whatever was walking: the serial moves, and the chunk in flight is
+        dropped when it comes back round. Anything already computed for the same window
+        is kept, because it is keyed by the window and not by the request.
+        """
+        self._restricted_serial = int(request.serial)
+        self._queue.put(("restricted", request))
+
+    def cancel_restricted(self) -> None:
+        """Abandon the walk at its next chunk. Idempotent, and keeps what it has."""
+        self._restricted_serial += 1
+
     def cancel_sum(self) -> None:
         """Ask an in-progress `sum_all` to stop at its next frame. Idempotent."""
         self._cancel_sum.set()
@@ -390,6 +508,12 @@ class LoadWorker(QThread):
                     self._sum(payload)
                 elif kind == "follow":
                     self._set_follow(bool(payload))
+                elif kind == "chromatogram":
+                    self._read_chromatogram()
+                elif kind == "want_chromatogram":
+                    self._chromatogram = bool(payload)
+                elif kind == "restricted":
+                    self._walk_restricted(payload)
                 elif kind == "warm":
                     numba_available()  # compiles the kernels; return value unneeded here
             except Exception as exc:  # noqa: BLE001 -- reported to the window, not raised here
@@ -413,6 +537,11 @@ class LoadWorker(QThread):
         # everything rather than a difference against something else's frame list.
         self._poll_interval = None
         self._live = None
+        # Every restricted total belongs to the file it was walked over, and a serial
+        # moved here is what makes a chunk still in the queue from the last file drop
+        # itself rather than read frames out of this one.
+        self._restricted_totals.clear()
+        self._restricted_serial += 1
         self.opened.emit(globals_, numbers, types, grouping)
 
     def _read_frame(self, frame: int) -> SparseFrame:
@@ -441,6 +570,68 @@ class LoadWorker(QThread):
         if following:
             self._poll()
 
+    def _read_chromatogram(self, since: "int | None" = None) -> None:
+        """Both of the chromatogram's whole-file answers, and emit them together.
+
+        Together rather than as two signals, because they are one picture: a trace drawn
+        against frame number for a moment and then re-drawn against time would read as a
+        glitch, and the panel's own decision about whether the start times mean anything
+        needs both in hand (`chromatogram.elapsed_minutes`).
+        """
+        if self._file is None:
+            return
+        self.chromatogram.emit(
+            self._file.frame_totals(since),
+            self._file.frame_start_times(since),
+            since is None,
+        )
+
+    def _walk_restricted(self, request: RestrictedRequest) -> None:
+        """One chunk of the view-restricted walk, then re-queue or stop.
+
+        Three things are load-bearing here and none of them is the arithmetic.
+
+        **It re-queues rather than looping**, so a frame request or a close that arrives
+        mid-walk is served at the end of this chunk instead of at the end of the run --
+        the queue is FIFO and the walk puts itself at the back of it.
+
+        **The budget is time, not frames** (`CHUNK_BUDGET_S`): what has to be bounded is
+        the wait, and a frame costs 3 ms on one file and 14 ms on another. At least one
+        frame is always done, so a file whose every frame is over budget still finishes.
+
+        **The totals are kept per frame under the view's own key**, so a walk resumed
+        after a superseding request, or extended by a frame a live run has just written,
+        adds to what is there instead of starting again.
+        """
+        if self._file is None or request.serial != self._restricted_serial:
+            return
+        totals = self._restricted_totals.setdefault(request.view, {})
+        globals_ = self._file.global_params()
+        deadline = time.perf_counter() + CHUNK_BUDGET_S
+        index = int(request.start)
+        frames = request.frames
+        while index < len(frames):
+            number = int(frames[index])
+            index += 1
+            if number not in totals:
+                params = self._file.frame_params(number)
+                sparse = self._read_frame(number)
+                axes = DisplayAxes.build(
+                    sparse, params.calibration(globals_.bin_width_ns),
+                    params.average_tof_length_ns,
+                    raw_units=request.raw_units, swapped=request.swapped,
+                    t0_offset_ms=request.t0_offset_ms,
+                )
+                totals[number] = tic_in_view(
+                    sparse, axes, request.x_range, request.y_range
+                )
+            if time.perf_counter() >= deadline:
+                break
+        done = {n: totals[n] for n in frames if n in totals}
+        self.restricted.emit(request.serial, done, index, len(frames))
+        if index < len(frames):
+            self._queue.put(("restricted", replace(request, start=index)))
+
     def _poll(self) -> None:
         """Ask the file what has changed, and report it if anything has.
 
@@ -459,8 +650,37 @@ class LoadWorker(QThread):
         grew = self._live is None or len(state.frames) != len(self._live.frames)
         types = self._file.frame_types() if grew and state.frames else None
         grouping = self._file.frame_grouping() if grew and state.frames else None
+        previous = self._live
         self._live = state
         self.live_update.emit(state, types, grouping)
+        if self._chromatogram:
+            self._extend_chromatogram(previous, state)
+
+    def _extend_chromatogram(
+        self, previous: "LiveState | None", state: LiveState
+    ) -> None:
+        """The third query of a poll, and only about the frames that can have moved.
+
+        A finished frame's total never changes and a frame's start time is written once,
+        before any of its scans, so what is worth re-reading is exactly the frames that
+        were provisional at the last look plus the ones that were not there at all. Both
+        sets are at the tail, so one `FrameNum >= <the lowest of them>` covers them, and
+        narrowed to one or two frames the pair costs 0.3 to 2.2 ms against the poll's own
+        11 ms (lab record, task 31).
+
+        `refresh()` itself is untouched by any of this, which is what keeps the counted
+        "a poll is two queries" check reading two: this is a third query made by the
+        poll's caller, on a condition the poll has already decided is worth reporting.
+        """
+        if self._file is None or not state.frames:
+            return
+        if previous is None:
+            self._read_chromatogram()
+            return
+        moved = set(state.frames) - set(previous.frames) | set(previous.provisional)
+        if not moved:
+            return
+        self._read_chromatogram(since=min(moved))
 
     def _sum(self, request: SumRequest) -> None:
         if self._file is None:

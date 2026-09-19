@@ -14,6 +14,12 @@ that matters more than it looks:
   the per-push readout is only as right as this setting -- which is why the info panel
   states it alongside the number rather than quoting counts on their own (lab record,
   task 01).
+* **`show_chromatogram` defaults off and `Restrict to view` is not persisted at all.**
+  The panel is new, and an existing user's window should not lose room to it on the
+  strength of an upgrade; the info panel, which has always been there, still defaults
+  on. The tick inside it is left out on the line `Follow` is left out on: it is a
+  statement about one look at one file rather than a way of working, and a persisted one
+  would start a walk over every frame of every file the viewer was ever pointed at.
 * **`rolling_sum_frames` is here although `Follow` is not.** How long an operator likes
   to integrate for is a way of working and belongs with the other preferences; which
   file is being watched is one file and a session's business (lab record, task 08). The
@@ -37,8 +43,10 @@ from ..uimf.raster import AGGREGATES
 
 __all__ = [
     "APPLICATION",
+    "CHROMATOGRAM_SIZE",
     "COLOR_MAPS",
     "COLOR_SCALES",
+    "DOCK_AREAS",
     "EXPORT_DPIS",
     "INFO_PANEL_WIDTH",
     "ORGANISATION",
@@ -111,6 +119,39 @@ a user who wants more drags the dock's edge and `info_panel_width` remembers whe
 left it. Here rather than in `info_panel.py` for the reason `EXPORT_DPIS` is here."""
 
 
+CHROMATOGRAM_SIZE = 280
+"""How much room the chromatogram panel takes along whichever edge it is docked on, in
+pixels, and the least it will go to.
+
+The floor and the opening size at once, as `INFO_PANEL_WIDTH` is: enough for a trace,
+two tick-labelled axes, a row of two controls and a wrapped readout, and no more, since
+every pixel of it comes off the heat map. It has to be *applied* rather than left to Qt,
+which gives a fresh dock a share of the window rather than a size (the panel took three
+fifths of the height the first time it was shown).
+
+The number is set by the intensity axis's own label, which is rotated in the horizontal
+orientation and so needs the plot to be about as tall as the label is long. At 240 the
+plot was 170 pixels and `Intensity (Mcounts)` came out clipped; 280 leaves 210 and it
+fits. Shortening the label instead is what took it from `Total intensity` to `Intensity`
+already, and the next thing to go would have been the unit, which is what makes the tick
+values readable at all (`chromatogram.TOTAL_UNITS`).
+
+One number for both orientations, because it is the same question either way. Unlike the
+info panel's width it is **not** persisted, and the reason is that one number cannot mean
+both: the dock draws horizontally at the bottom and vertically at the left, so a size
+saved in one orientation would come back in the other as a height that was chosen as a
+width. Which *edge* it was left on is remembered (`chromatogram_area`), and a drag of the
+panel's own edge lasts until it is moved to another one. Here rather than in
+`chromatogram.py` for the reason `EXPORT_DPIS` is here."""
+
+DOCK_AREAS = (1, 2, 4, 8)
+"""The four `Qt.DockWidgetArea` values a dock may be persisted in: left, right, top,
+bottom, as the integers `QMainWindow.dockWidgetArea` returns. Spelled as numbers because
+this module must not import Qt's widgets -- the same rule that keeps `COLOR_MAPS` and
+`THEMES` here rather than beside the things they name -- and clamped by `validate`, since
+a hand-edited store could otherwise hand `addDockWidget` a value Qt has no area for."""
+
+
 @dataclass
 class ViewerSettings:
     """The persisted viewer state. Defaults are what a first run gets.
@@ -125,6 +166,8 @@ class ViewerSettings:
     keep_ranges: bool = False
     keep_levels: bool = False
     show_info_panel: bool = True
+    show_chromatogram: bool = False
+    chromatogram_area: int = 8  # Qt.DockWidgetArea.BottomDockWidgetArea
     text_scale: float = 1.0
     info_panel_width: int = INFO_PANEL_WIDTH
     detector_bits: int = 8
@@ -157,6 +200,8 @@ class ViewerSettings:
             detector_bits=detector_bits,
             text_scale=self.text_scale if self.text_scale in TEXT_SCALES else 1.0,
             info_panel_width=info_panel_width,
+            chromatogram_area=(self.chromatogram_area
+                               if self.chromatogram_area in DOCK_AREAS else 8),
             color_map=self.color_map if self.color_map in COLOR_MAPS else "viridis",
             theme=self.theme if self.theme in THEMES else "dark",
             export_dpi=self.export_dpi if self.export_dpi in EXPORT_DPIS else 300,
@@ -217,6 +262,11 @@ def load_settings() -> ViewerSettings:
         keep_ranges=_as_bool(store.value("keep_ranges", defaults.keep_ranges)),
         keep_levels=_as_bool(store.value("keep_levels", defaults.keep_levels)),
         show_info_panel=_as_bool(store.value("show_info_panel", defaults.show_info_panel)),
+        show_chromatogram=_as_bool(store.value("show_chromatogram",
+                                               defaults.show_chromatogram)),
+        chromatogram_area=_as_int(store.value("chromatogram_area",
+                                              defaults.chromatogram_area),
+                                  defaults.chromatogram_area),
         text_scale=_as_float(store.value("text_scale", defaults.text_scale),
                              defaults.text_scale),
         info_panel_width=_as_int(store.value("info_panel_width", defaults.info_panel_width),
@@ -253,6 +303,8 @@ def save_settings(settings: ViewerSettings) -> None:
     store.setValue("keep_ranges", settings.keep_ranges)
     store.setValue("keep_levels", settings.keep_levels)
     store.setValue("show_info_panel", settings.show_info_panel)
+    store.setValue("show_chromatogram", settings.show_chromatogram)
+    store.setValue("chromatogram_area", settings.chromatogram_area)
     store.setValue("text_scale", settings.text_scale)
     store.setValue("info_panel_width", settings.info_panel_width)
     store.setValue("detector_bits", settings.detector_bits)

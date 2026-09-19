@@ -83,3 +83,47 @@ def test_the_heatmap_sets_the_html_form_on_its_axes(qtbot):
 
     assert view.plot_item.getAxis("bottom").labelText == "<i>m</i>/<i>z</i>"
     assert view.plot_item.getAxis("left").labelText == "Arrival Time / ms"
+
+
+# --- the chromatogram panel's own table (task 31) -------------------------------------
+
+
+def test_the_panels_names_are_a_second_table_and_not_rows_in_the_first():
+    """What keeps the check above honest.
+
+    `test_every_name_the_rasteriser_produces_has_a_display_spelling` is a *set equality*
+    against `DISPLAY_NAMES`, so a name `raster.py` never produces, added there, would
+    break a check that was never about it. The panel's three names have a different
+    owner and a different source, so they live in `PANEL_NAMES`.
+    """
+    assert set(labels.DISPLAY_NAMES) & set(labels.PANEL_NAMES) == set()
+
+
+def test_both_tables_answer_through_the_same_two_functions():
+    """A caller asking how a name is spelled has no reason to know which table it is in."""
+    from mainspring.viewer.chromatogram import FRAME_AXIS, TIME_AXIS, TOTAL_AXIS
+
+    for name in (TIME_AXIS, FRAME_AXIS, TOTAL_AXIS):
+        assert name in labels.PANEL_NAMES
+        assert labels.plain(name) and labels.html(name)
+    assert labels.plain(TIME_AXIS) == "Time / min"
+
+
+def test_the_panels_names_are_the_ones_the_panel_actually_uses(qtbot):
+    """Held together the way the rasteriser's four are: taken from the panel rather than
+    typed out again, so a rename there stops matching here instead of silently falling
+    back to the raw string."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QMainWindow
+
+    from mainspring.viewer.chromatogram import ChromatogramPanel
+
+    host = QMainWindow()
+    qtbot.addWidget(host)
+    panel = ChromatogramPanel(host)
+    host.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, panel)
+
+    panel.set_series({1: 1.0, 2: 2.0}, {1: 0.0, 2: 0.5})
+    assert panel._axis_name() in labels.PANEL_NAMES
+    panel.set_raw_units(True)
+    assert panel._axis_name() in labels.PANEL_NAMES

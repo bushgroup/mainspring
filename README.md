@@ -12,12 +12,12 @@ instrument writes UIMF.
 
 ## Status
 
-Version 1.4.0. The reader layer, the viewer, and the Windows installer are written and
+Version 1.5.0. The reader layer, the viewer, and the Windows installer are written and
 verified, and the development record lives in a private companion repository. This release
-is about reading the window: a Help menu that carries the user guide, the version in the
-title bar, plot furniture at full contrast, traces that stand clear of the heat map and
-thicken with it, and a status bar that shows one thing at a time.
-The [user guide](docs/user-guide.md) covers all of it.
+adds the chromatogram, a panel that plots the total signal in every frame of a file against
+the time the instrument recorded for it, so that the shape of a run is visible while the run
+is happening. Highlight a span of it to read what that span holds, and sum it into the heat
+map in one click. The [user guide](docs/user-guide.md) covers all of it.
 
 The reader reproduces every scan's stored total ion current and base peak intensity exactly
 on the four files it has been tested against, which were written by four different versions

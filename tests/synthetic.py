@@ -95,7 +95,14 @@ class SyntheticFile:
     modern_only: bool
     grouped: bool = False
     repetitions: int = 0
+    start_time_step_minutes: float = 0.0
     scan_rows: dict[tuple[int, int], SyntheticScan] = field(default_factory=dict)
+
+    def start_time_minutes(self, frame: int) -> float:
+        """When this frame began, as the file was written. 0.0 on every frame unless
+        `start_time_step_minutes` was asked for, which is the default `UimfWriter`
+        stores and the case a time axis must refuse to believe."""
+        return (int(frame) - 1) * self.start_time_step_minutes
 
     def scan(self, frame: int, scan: int) -> SyntheticScan:
         """The written row for one `(frame, scan)`; KeyError if that scan was not stored."""
@@ -176,6 +183,7 @@ def write_synthetic_uimf(
     grouped: bool = False,
     repetitions: int | None = None,
     detector_bits: int | None = None,
+    start_time_step_minutes: float = 0.0,
 ) -> SyntheticFile:
     """Write a UIMF file at `path` and return what is in it.
 
@@ -203,6 +211,14 @@ def write_synthetic_uimf(
     method frame short, on purpose: `FrameGrouping.is_short` is the question that
     distinguishes a cut-short run from a complete one, and a fixture that could not be
     short could not test it. `detector_bits` stores a bit depth.
+
+    `start_time_step_minutes` spaces the frames' `StartTimeMinutes` out, so that the
+    file has an elapsed-time axis worth drawing. **It defaults to 0.0 on purpose**, and
+    that default is itself a case: `FrameSpec.start_time_minutes` is 0.0 unless a client
+    sets it, `UimfWriter` writes it on every frame regardless, so a file can carry the
+    parameter on thousands of frames and mean nothing by it -- which is exactly what the
+    lab's own synthetic scale files do. Anything deciding whether to draw a time axis
+    has to tell the two apart (lab record, task 31).
     """
     if legacy_only and modern_only:
         raise ValueError("legacy_only and modern_only are mutually exclusive")
@@ -227,6 +243,7 @@ def write_synthetic_uimf(
         modern_only=modern_only,
         grouped=grouped,
         repetitions=per_method_frame,
+        start_time_step_minutes=float(start_time_step_minutes),
     )
 
     tables = "legacy" if legacy_only else ("modern" if modern_only else "both")
@@ -261,6 +278,7 @@ def write_synthetic_uimf(
                     calibration_slope=SLOPE,
                     calibration_intercept=INTERCEPT,
                     average_tof_length_ns=AVERAGE_TOF_LENGTH_NS,
+                    start_time_minutes=spec.start_time_minutes(frame),
                     method_frame=(frame - 1) // per_method_frame + 1 if grouped else None,
                     repetition=(frame - 1) % per_method_frame + 1 if grouped else None,
                     repetitions=per_method_frame if grouped else None,

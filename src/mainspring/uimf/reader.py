@@ -25,6 +25,13 @@ and which of those frames may still be growing. Two queries, whatever the frame 
 because a question asked once per frame is what a five-thousand-frame acquisition
 cannot afford (lab record, tasks 08 and 17).
 
+**A question about every frame is one query, never one call per frame.** `frame_types`,
+`frame_grouping`, `frame_totals` and `frame_start_times` each read one thing for the
+whole file at once, because reading the same thing through `frame_params` a frame at a
+time is 6.9 s over five thousand frames and each of these is tens of milliseconds. The
+last two are the chromatogram's two axes, and both take a `since` so that a live poll
+re-asks only about the tail that can have changed.
+
 **An acquisition writes two files, and the one that is followed is the one that may go
 away.** `<stem>.uimf` is the raw file, `<stem>.summed.uimf` the companion the fold
 writes; a run that does not keep its raw file deletes it at the end, once the companion
@@ -68,6 +75,7 @@ from .writer import (
 __all__ = [
     "BUSY_TIMEOUT_MS",
     "PROVISIONAL_WINDOW_S",
+    "START_TIME",
     "SUMMED_SUFFIX",
     "FileGone",
     "FrameParams",
@@ -85,6 +93,21 @@ BUSY_TIMEOUT_MS = 250
 """How long a read waits for the writer's lock before giving up. Short on purpose: a
 viewer that is a quarter of a second stale is fine, a viewer that blocks an acquisition
 is not."""
+
+START_TIME = "StartTimeMinutes"
+"""The parameter naming when a frame began, in minutes, and the chromatogram's time axis.
+
+A PNNL name rather than one of mainspring's own, so it is a string here and not a
+constant imported from the writer beside the six `Mainspring*` ones. `_LEGACY_FRAME_
+NAMES` maps the 2011 column `StartTime` onto it, so one name answers on either table.
+
+**Carrying it is not the same as meaning it.** `FrameSpec.start_time_minutes` defaults
+to 0.0 and `UimfWriter` stores it on every frame, so a file can hold this parameter on
+five thousand frames and say nothing with it -- which is exactly what the synthetic
+scale files do. Whether a file's start times mean anything is `frame_start_times`'s
+caller's question and not this layer's; measured, a real clockwork acquisition sets them
+(100 distinct values 0.638 s apart over a 64 s run) and a PNNL LC run sets the legacy
+column, while both synthetic files leave every frame at 0.0 (lab record, task 31)."""
 
 PROVISIONAL_WINDOW_S = 5.0
 """How recently a file must have been written to for its last frame to count as still
@@ -646,6 +669,79 @@ class UimfFile:
             frames={number: tuple(members) for number, members in frames.items()},
         )
 
+    def frame_totals(self, since: "int | None" = None) -> "dict[int, float]":
+        """`frame -> the total of its stored `TIC` column`, in one grouped query.
+
+        The chromatogram's cheap source: the file's own per-scan totals added up per
+        frame by SQLite, which is exact (the `TIC` column is reproduced by our decode on
+        every row of every file we have, lab record, task 03) and costs one scan of
+        `Frame_Scans` rather than a decode per frame. Measured on real acquisitions:
+        79 ms over a 45 MB, 384,277-row clockwork run and 114 ms over a 5,000-frame
+        83 MB one, against 1.4 s and 16 s to read and sum the same files frame by frame
+        (lab record, task 31). Fast enough to ask for whole and behind the first frame,
+        which is why there is no chunked form of it.
+
+        `since` narrows it to `FrameNum >= since`, which is what a live poll asks: a
+        finished frame's total never changes again, so the only frames worth re-reading
+        are the tail that was still growing. Narrowed to one or two frames it is 0.3 to
+        2.2 ms, so it is what a poll of a followed run can afford to add.
+
+        A frame whose rows are all NULL `TIC` comes back 0.0 rather than absent; a frame
+        with no rows at all is absent, because `Frame_Scans` is where the grouping comes
+        from and a frame nobody has written a scan to is not in it.
+        """
+        query = "SELECT FrameNum, SUM(TIC) FROM Frame_Scans"
+        arguments: tuple = ()
+        if since is not None:
+            query += " WHERE FrameNum >= ?"
+            arguments = (int(since),)
+        query += " GROUP BY FrameNum"
+        with connect(self.path, self.busy_timeout_ms) as conn:
+            return {int(frame): float(total or 0.0)
+                    for frame, total in conn.execute(query, arguments)}
+
+    def frame_start_times(self, since: "int | None" = None) -> "dict[int, float]":
+        """`frame -> `StartTimeMinutes``, in one query, for the frames that carry it.
+
+        The chromatogram's other axis. Same trade as `frame_types` and `frame_grouping`,
+        and the same `since` narrowing as `frame_totals` above -- a frame's start time
+        is written once, with the rest of its parameters, before any of its scans, so a
+        poll never needs to re-ask about a frame it has already seen.
+
+        Empty on a file that does not carry the parameter, which the lab's PNNL-written
+        sample and PNNL's QC_Shew excerpt do not. **Present is not the same as
+        meaningful** (`START_TIME`): a caller wanting a time axis has to decide whether
+        what comes back is a clock or five thousand copies of a default, and this method
+        deliberately does not decide it -- the answer is about the writer, and the two
+        cases are indistinguishable one frame at a time.
+        """
+        if self.is_legacy_only:
+            query = "SELECT FrameNum, StartTime FROM Frame_Parameters"
+            arguments: tuple = ()
+            if since is not None:
+                query += " WHERE FrameNum >= ?"
+                arguments = (int(since),)
+        else:
+            query = (
+                "SELECT FP.FrameNum, FP.ParamValue FROM Frame_Params FP"
+                " JOIN Frame_Param_Keys K ON FP.ParamID = K.ParamID"
+                " WHERE K.ParamName = ?"
+            )
+            arguments = (START_TIME,)
+            if since is not None:
+                query += " AND FP.FrameNum >= ?"
+                arguments += (int(since),)
+        times: dict[int, float] = {}
+        with connect(self.path, self.busy_timeout_ms) as conn:
+            for frame, value in conn.execute(query, arguments):
+                if value is None:
+                    continue
+                try:
+                    times[int(frame)] = float(value)
+                except (TypeError, ValueError):
+                    continue  # a writer that stored something else there; not a time
+        return times
+
     def frame_params(self, frame: int) -> FrameParams:
         """One frame's parameters, modern table preferred.
 
@@ -883,6 +979,11 @@ _LEGACY_FRAME_NAMES = {
     "calibrationdone": "CalibrationDone",
     "temperature": "AmbientTemperature",
     "duration": "DurationSeconds",
+    # Added with `frame_start_times`: the 2011 column is `StartTime` and the modern
+    # parameter is `StartTimeMinutes`, so without this row the one name the chromatogram
+    # asks for would answer on a modern file and not on a legacy one -- and the info
+    # panel would list the same quantity under two spellings depending on the writer.
+    "starttime": "StartTimeMinutes",
 }
 
 

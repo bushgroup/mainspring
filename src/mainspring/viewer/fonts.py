@@ -134,6 +134,7 @@ def apply(window: object, scale: float) -> float:
     window.heatmap.set_text_scale(_ACTIVE)
     window.side_plots.set_text_scale(_ACTIVE)
     window.info_panel.set_text_scale(_ACTIVE)
+    window.chromatogram.set_text_scale(_ACTIVE)
     return _ACTIVE
 
 
@@ -148,20 +149,26 @@ def sized(window: object) -> "list[str]":
     Hidden axes are walked too. The projections hide all eight of theirs and a size that
     is only wrong while it cannot be seen is still wrong: an axis shown later, or an
     export, would draw it.
+
+    **Over every canvas `window.plot_canvases()` names**, and not `window.heatmap`
+    alone, for the reason `theme.themed` walks the same list: a second plot widget in a
+    dock of its own would otherwise be outside both checks, silently (lab record,
+    task 31).
     """
     expected = scaled_font()
     wrong: list[str] = []
-    for item in window.heatmap.scene().items():
-        if isinstance(item, pg.AxisItem):
-            tick_font = item.style.get("tickFont")
-            if tick_font is None or not _same_size(tick_font, expected):
-                wrong.append(f"{name_of(item)} tick font")
-            label_size = item.labelStyle.get("font-size")
-            if label_size is not None and label_size != css_size():
-                wrong.append(f"{name_of(item)} label size ({label_size})")
-        elif isinstance(item, pg.TextItem):
-            if not _same_size(item.textItem.font(), expected):
-                wrong.append(f"{name_of(item)} font")
+    for view in window.plot_canvases():
+        for item in view.scene().items():
+            if isinstance(item, pg.AxisItem):
+                tick_font = item.style.get("tickFont")
+                if tick_font is None or not _same_size(tick_font, expected):
+                    wrong.append(f"{name_of(item)} tick font")
+                label_size = item.labelStyle.get("font-size")
+                if label_size is not None and label_size != css_size():
+                    wrong.append(f"{name_of(item)} label size ({label_size})")
+            elif isinstance(item, pg.TextItem):
+                if not _same_size(item.textItem.font(), expected):
+                    wrong.append(f"{name_of(item)} font")
     return numbered(wrong)
 
 

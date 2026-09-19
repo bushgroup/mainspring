@@ -107,6 +107,10 @@ hand. Its gradient is one of four perceptually uniform color maps (`Viridis`, `P
 **The info panel** is docked on the right. `Ctrl+I` hides and shows it, and it can be dragged
 out of the window and floated.
 
+A sixth, **the chromatogram**, is hidden until you open it with `Ctrl+T`. It plots the total
+signal in every frame of the file against time, and it is the one panel that says how the run as
+a whole is going rather than what one frame of it holds.
+
 The screenshot above is PNNL's `9pep_mix` test file, which
 [`tools/fetch_testdata.py`](../tools/fetch_testdata.py) downloads, with the color scale set to
 `Log`. The diagonal bands are the multiplexed encoding that file was acquired with.
@@ -205,8 +209,9 @@ Shows the TOF bin index and the scan number in place of calibrated m/z and arriv
 when the question is about the instrument rather than about the sample, since a bin identifies
 the digitizer sample a count came from and an m/z does not.
 
-This also sets what the cursor readout reports, since the readout names the axes it is on. The
-visible region is carried across the toggle. A frame the writer never calibrated is shown in
+This also sets what the cursor readout reports, since the readout names the axes it is on, and
+which axis the chromatogram is drawn against. The visible region is carried across the toggle,
+and so is any span highlighted on the chromatogram. A frame the writer never calibrated is shown in
 raw units whatever this setting says, because a plausible-looking m/z axis over uncalibrated
 data is worse than an honest bin axis.
 
@@ -552,6 +557,61 @@ How many stored, non-zero points fall inside the visible region. A UIMF frame is
 points that exist rather than as a dense array, and this is a count of those, not of screen
 pixels.
 
+## The chromatogram
+
+To see the shape of a whole run rather than one frame of it, open `View > Chromatogram`
+(`Ctrl+T`). The panel plots one point per frame in the file, total signal against the time the
+instrument recorded for that frame, and it is the view that answers whether a run is steady,
+when it started to drop, and which part of it is worth looking at closely. It is hidden until
+you ask for it, and the viewer remembers both that you asked and which edge you left it on.
+
+The panel is a dock, so drag it to the bottom of the window and it draws left to right, drag it
+to either side and it draws top to bottom, and drag it out of the window and it is a window of
+its own on a second screen. It is never part of an exported figure, wherever it is docked.
+
+The horizontal axis is elapsed time in minutes when the file records when each frame began,
+which a clockwork acquisition does and PNNL's acquisition software does on some instruments and
+not others. When it does not, the axis is the frame number and the panel says so in the line
+under its controls. `View > Raw units` switches a file that has both onto frame number, and has
+no visible effect on one that has only the one axis.
+
+On a file written one frame per repetition, the axis runs to the end of the method frame you are
+looking at rather than to the last frame written. A run of a hundred repetitions therefore looks
+a hundred long from its first frame onward, and fills as the instrument writes it, instead of
+rescaling every second so that every moment of the run looks the same.
+
+### Highlighting a span
+
+Drag with the right button, or hold Shift and drag with the left, to highlight a span of the
+run. The line under the controls then names the frames the highlight covers, how long they span
+and what they total. Double-click to take the highlight down.
+
+A highlight marks and nothing else. Nothing on the heat map changes until you press
+`Sum selection`, which adds those frames into one heat map exactly as `Sum all` and
+`Sum method frame` do, with the same progress dialog and the same cancel. The highlight stays
+where it is afterwards, so moving it by a frame and summing again is one gesture rather than
+two. A single left click anywhere on the trace shows the frame under the pointer.
+
+### Restrict to view
+
+By default each point is the whole frame's total, read from the file's own `TIC` column in one
+query. Tick `Restrict to view` and each point becomes the total of the points inside the heat
+map's current window instead, which is what finds where in a run a particular feature appears.
+Zoom to the feature on the heat map, tick the box, and the trace redraws as that feature's
+abundance through the run.
+
+This one is expensive, because it reads and decodes every frame in the file. On a 100-frame
+acquisition it takes about two seconds, and on a 5,000-frame one about a minute. The trace fills
+in as it goes and the viewer stays responsive throughout: the work is done in short pieces, so a
+frame you ask for while it runs arrives at once. Moving the heat map's view, or narrowing the
+frame type, asks the question again for the new window. Untick the box and the file's own totals
+come straight back, with nothing to re-read.
+
+`Restrict to view` is greyed out while `Live` is on. Reading every frame of a file would delay
+the poll that is watching for the next one, and the frame the instrument is writing is the more
+urgent of the two. Note that the panel still fills during a run either way: each finished frame
+adds a point, and the frame being written shows its total so far and settles when it is done.
+
 ## Exporting a figure
 
 `File > Export PNG` and `File > Export PDF` write what is on screen to a file. The heat map,
@@ -589,15 +649,21 @@ figure's own size in inches.
 
 Every toolbar toggle, the color map, the color scale, light mode, the text size, the
 aggregate, the detector bit depth, how many frames `Sum newest frames` adds up, whether the
-info panel is showing and how wide it is, the export resolution, the window's size and
-position, and the directory you last opened from are all saved when the viewer closes and
-restored when it starts. On Windows they live under
+info panel is showing and how wide it is, whether the chromatogram is showing and which edge it
+is docked on, the export resolution, the window's size and position, and the directory you last
+opened from are all saved when the viewer closes and restored when it starts. On Windows they live under
 `HKEY_CURRENT_USER\Software\University of Washington\mainspring`. Deleting that key returns
 every setting to its default.
 
 The pinned color levels and the current view range are not among them. Keep levels and keep
 ranges persist as switches, and what they hold is whatever is on screen in the session where
-you turn them on.
+you turn them on. Neither is `Restrict to view`, for the reason `Live` is not: both are
+statements about one look at one file, and a remembered `Restrict to view` would read every
+frame of every file you opened.
+
+How big the chromatogram panel is is not remembered either, only which edge it sits on. The
+panel draws one way at the bottom and the other way at the side, so a size saved in one
+orientation would come back as a height where you chose it as a width.
 
 `Live` is not remembered either, and it is the one toolbar control that is not. It says
 something about one file rather than about how you like to look at data, and a viewer that

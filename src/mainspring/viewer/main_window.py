@@ -49,6 +49,17 @@ either one does arrives through `LoadWorker.live_update` and goes out again thro
 `show_frame` and `sum_frames`, so a followed acquisition reaches the screen by exactly
 the path a keypress does (lab record, task 08).
 
+**The chromatogram is a fourth thing on screen and a second thing to ask the file for.**
+`viewer/chromatogram.py` draws one point per frame for the whole run; what the window
+owns is which of its two sources is asked for and when. The file's own per-frame totals
+are two whole-file queries, asked for after the first frame so that an open is still
+measured by first paint, and only when the panel is actually on screen. The view-
+restricted walk is `LoadWorker`'s, in chunks, re-asked whenever the view or the frame
+set moves and cancelled when a run is being followed. Everything the panel sends back --
+a frame clicked, a span to sum -- leaves through `show_frame` and `sum_frames`, so it
+reaches the screen by the path a keypress does, exactly as a followed acquisition does
+(lab record, task 31).
+
 **A launch can ask for both of them, and asks for them late.** Another program starts
 the viewer on a run in progress (`--follow`, `--show`), and `open_file` is
 asynchronous -- the frame list and the grouping arrive with the `opened` signal, so
@@ -97,6 +108,7 @@ from ..uimf import (
     summed_companion,
 )
 from . import fonts, labels, theme
+from .chromatogram import ChromatogramPanel
 from .controls import (
     DoubleSpinBox,
     SpinBox,
@@ -110,8 +122,10 @@ from .help import GuideWindow, about_text, open_guide_online
 from .heatmap import HeatmapView, pixel_of
 from .info_panel import InfoPanel
 from .settings import (
+    CHROMATOGRAM_SIZE,
     COLOR_MAPS,
     COLOR_SCALES,
+    DOCK_AREAS,
     ROLLING_SUM_MAX,
     TEXT_SCALES,
     ViewerSettings,
@@ -119,7 +133,14 @@ from .settings import (
     save_settings,
 )
 from .side_plots import SidePlots, peak_of
-from .workers import LoadWorker, RenderMailbox, RenderRequest, RenderWorker, SumRequest
+from .workers import (
+    LoadWorker,
+    RenderMailbox,
+    RenderRequest,
+    RenderWorker,
+    RestrictedRequest,
+    SumRequest,
+)
 
 __all__ = ["APP_TITLE", "FOLLOW_MODES", "FOLLOW_MODE_WORDS", "MainWindow", "WINDOW_TITLE"]
 
@@ -264,10 +285,6 @@ class MainWindow(QMainWindow):
         self.heatmap = HeatmapView(color_map=self.settings.color_map)
         self.setCentralWidget(self.heatmap)
         self.side_plots = SidePlots(self.heatmap)
-        # Before any of the window's own signals are wired: both plot widgets exist, so
-        # this is the first moment the restored palette can be put on them, and doing it
-        # here means every later change goes through the same one call (`theme.apply`).
-        theme.apply(self, self.settings.theme)
         self.heatmap.view_resized.connect(self._on_view_resized)
         self.heatmap.view_changed.connect(self._on_view_changed)
         self.heatmap.cursor_moved.connect(self._on_cursor_moved)
@@ -295,6 +312,47 @@ class MainWindow(QMainWindow):
             shortcut="Ctrl+I",
         )
         self._info_action.toggled.connect(self._on_info_toggled)
+
+        # The chromatogram goes to whichever edge it was last left on, defaulting to the
+        # bottom: time reads left to right there, which is how a chromatogram is printed,
+        # and the height it costs is the dimension the info panel is not already taking.
+        # Its size is not restored -- one number cannot mean both orientations
+        # (`settings.CHROMATOGRAM_SIZE`) -- so unlike the info panel there is no
+        # `resizeDocks` here.
+        self.chromatogram = ChromatogramPanel(self)
+        area = Qt.DockWidgetArea(self.settings.chromatogram_area)
+        self.addDockWidget(area, self.chromatogram)
+        self._fit_chromatogram(area)
+        # On every later move too: the number is a height at the bottom and a width at
+        # the side, so the edge changing is exactly when it has to be applied again --
+        # and a move is the one moment at which re-sizing is not fighting a drag.
+        self.chromatogram.dockLocationChanged.connect(self._fit_chromatogram)
+        self.chromatogram.setVisible(self.settings.show_chromatogram)
+        self.chromatogram.frame_picked.connect(self.show_frame)
+        self.chromatogram.sum_requested.connect(self._on_chromatogram_sum)
+        self.chromatogram.restrict_toggled.connect(self._on_restrict_toggled)
+        # The dock's own action, for the reason the info panel uses one: Qt keeps it in
+        # step with the dock in both directions, so the View entry and the dock's X
+        # button are one switch. It is in the View menu and **not** on the toolbar,
+        # which ran out of width for controls touched once a session (lab record,
+        # task 30).
+        self._chromatogram_action = self.chromatogram.toggleViewAction()
+        self._chromatogram_action.setText("Chromatogram")
+        self._chromatogram_action.setShortcut("Ctrl+T")
+        describe(
+            self._chromatogram_action,
+            "Show the total signal in every frame of the file against time, in a panel"
+            " of its own.",
+            shortcut="Ctrl+T",
+        )
+        self._chromatogram_action.toggled.connect(self._on_chromatogram_toggled)
+        self._restricted_serial = 0
+
+        # After the last of the three plot widgets is built and before anything is
+        # drawn on any of them: this is the first moment the restored palette can be put
+        # on all of them at once, and doing it here means every later change goes
+        # through the same one call (`theme.apply`).
+        theme.apply(self, self.settings.theme)
 
         self._busy = QProgressBar()
         self._busy.setRange(0, 0)  # indeterminate: a decode's length is not known upfront
@@ -365,7 +423,14 @@ class MainWindow(QMainWindow):
         self._worker.summed.connect(self._on_summed)
         self._worker.live_update.connect(self._on_live_update)
         self._worker.follow_stopped.connect(self._on_follow_stopped)
+        self._worker.chromatogram.connect(self._on_chromatogram)
+        self._worker.restricted.connect(self._on_restricted)
         self._worker.failed.connect(self._on_failed)
+        # The worker starts not knowing whether anything wants the poll's third query.
+        # `isHidden`, not `isVisible`: a child of a window that has not been shown yet
+        # is not visible whatever it was told to do, which is the trap `companion_offer`
+        # is written around too.
+        self._worker.set_chromatogram(not self.chromatogram.isHidden())
 
         self._mailbox = RenderMailbox()
         self._render_worker = RenderWorker(self._mailbox)
@@ -450,6 +515,7 @@ class MainWindow(QMainWindow):
         view_menu = self.menuBar().addMenu("&View")
         view_menu.addAction(self.reset_action)
         view_menu.addAction(self._info_action)
+        view_menu.addAction(self._chromatogram_action)
         view_menu.addAction(self._light_action)
         view_menu.addSeparator()
         view_menu.addAction(self._swap_action)
@@ -921,6 +987,11 @@ class MainWindow(QMainWindow):
         """
         self._open_started = time.perf_counter()
         self._clear_offer()
+        # Emptied before the open rather than when the new file's totals arrive: the
+        # panel must not go on showing the last run's trace for however long the open
+        # takes, and a walk over the old file's frames has nothing left to walk.
+        self._cancel_restricted()
+        self.chromatogram.clear()
         # Following is about one acquisition, so it does not survive into the next file:
         # a second file opened from the dialog is nearly always a finished one, and a
         # poll left running on it would be lock traffic against nothing.
@@ -932,6 +1003,40 @@ class MainWindow(QMainWindow):
         self._busy.show()
         self._opening = True
         self._worker.open(path)
+
+    def _fit_chromatogram(self, area) -> None:
+        """Give the panel `CHROMATOGRAM_SIZE` along the edge it is on, and no more.
+
+        Qt gives a dock that has never been sized a *share* of the window rather than a
+        size, and the share it gave this one was three fifths of the height -- so the
+        heat map, which is what the window is for, got the rest. `resizeDocks` acts on a
+        dock's position in the layout, which is why this cannot happen before
+        `addDockWidget`. It follows `View > Text size`, like the info panel's floor, for
+        the same reason: the controls and the tick values inside it grow.
+        """
+        vertical = area in (
+            Qt.DockWidgetArea.LeftDockWidgetArea, Qt.DockWidgetArea.RightDockWidgetArea
+        )
+        self.resizeDocks(
+            [self.chromatogram],
+            [round(CHROMATOGRAM_SIZE * fonts.extent())],
+            Qt.Orientation.Horizontal if vertical else Qt.Orientation.Vertical,
+        )
+
+    def plot_canvases(self) -> "list[object]":
+        """Every `GraphicsView` the window owns a plot in, for the two walks.
+
+        `theme.themed` and `fonts.sized` each walk a scene's items by type, so that an
+        item added tomorrow is checked because of what it is. Both used to start from
+        `window.heatmap`, which made them type-based inside one widget and hard-coded to
+        that widget -- and what a list fixes is not a pen being missed but a whole plot
+        being missed, which is what happened the first time one was added in a dock of
+        its own (lab record, task 31). A canvas added here is in both checks at once.
+
+        The two projections are items in the heatmap's own layout and so are already in
+        its scene; the chromatogram is a widget of its own and is not.
+        """
+        return [self.heatmap, self.chromatogram.plot]
 
     @property
     def last_render(self) -> "object | None":
@@ -1076,6 +1181,7 @@ class MainWindow(QMainWindow):
             self._live = None
             self._live_sum_frames = ()
             self._worker.set_follow(False)
+            self.chromatogram.set_restrict_enabled(True)
             if self._path is not None:
                 self._show_status(
                     f"Stopped following {os.path.basename(self._path)}"
@@ -1096,6 +1202,19 @@ class MainWindow(QMainWindow):
         self._enable_follow_controls(True)
         self._clear_offer()
         self._live_sum_frames = ()
+        # The view-restricted walk reads every frame of the file, and a poll that has to
+        # wait behind one is a poll that misses the frame it was watching for. The
+        # stored totals are what a followed run's trace is made of, and they are one
+        # narrow query a poll (lab record, task 31).
+        self._cancel_restricted()
+        self.chromatogram.clear_restricted()
+        self.chromatogram.set_restrict_enabled(
+            False,
+            why="Not available while Live is on, because reading every frame would"
+                " delay the poll.",
+        )
+        if not self.chromatogram.isHidden() and self._global is not None:
+            self._worker.request_chromatogram()
         self._worker.set_follow(True)
         self._show_status(f"Following {os.path.basename(self._path)}")
 
@@ -1430,6 +1549,140 @@ class MainWindow(QMainWindow):
         self._sync_grouping_controls(members[-1])
         self._worker.sum_all(list(members), live=FOLLOW_ROLLING_SUM)
 
+    # --- the chromatogram ---------------------------------------------------------------
+
+    def _on_chromatogram_toggled(self, shown: bool) -> None:
+        """The panel was opened or closed; ask for what it needs, or stop paying for it.
+
+        Nothing is read for a panel nobody has opened, which is the whole of why an
+        upgrade costs an existing user nothing: the two whole-file queries are 79 ms on
+        a real run and the poll's third query is not made at all while this is off.
+        Asked for here rather than on every open for the same reason.
+        """
+        self.settings.show_chromatogram = bool(shown)
+        self._worker.set_chromatogram(bool(shown))
+        if not shown:
+            self._cancel_restricted()
+            return
+        self.chromatogram.set_restrict_enabled(
+            not self.following,
+            why="Not available while Live is on, because reading every frame would"
+                " delay the poll." if self.following else "",
+        )
+        if self._global is not None:
+            self._worker.request_chromatogram()
+
+    def _on_chromatogram(
+        self,
+        totals: "dict[int, float]",
+        start_times: "dict[int, float]",
+        replace_series: bool,
+    ) -> None:
+        """One read of the file's own per-frame totals, whole or as a poll's tail.
+
+        Handed straight to the panel whether or not a walk is in progress: the panel
+        holds the two sources apart and draws one of them, so a stored total arriving
+        during a walk updates the series the user will see when they untick rather than
+        landing among the walk's numbers.
+        """
+        self.chromatogram.set_series(totals, start_times, replace=replace_series)
+        self._sync_chromatogram_span()
+
+    def _on_restricted(
+        self, serial: int, totals: "dict[int, float]", done: int, total: int
+    ) -> None:
+        """One chunk of the view-restricted walk, drawn as it arrives.
+
+        Dropped when the serial is not the current one, the way a `RenderResult` is: the
+        view may have moved since this chunk was asked for, and a newer walk is already
+        under way. The status line counts frames rather than the panel, because the
+        panel's own readout says what the trace *is* and the progress is about the wait.
+        """
+        if serial != self._restricted_serial:
+            return
+        self.chromatogram.set_restricted(totals)
+        self._sync_chromatogram_span()
+        if done >= total:
+            self._show_status(f"Chromatogram restricted to the view: {total:,} frames")
+
+    def _on_restrict_toggled(self, restrict: bool) -> None:
+        """`Restrict to view` was ticked or unticked; start the walk or undo it."""
+        if restrict:
+            self._start_restricted()
+            return
+        self._cancel_restricted()
+        # Nothing is re-read: the panel still holds the file's own totals from the open,
+        # so going back to them is a redraw rather than two queries.
+        self.chromatogram.clear_restricted()
+
+    def _start_restricted(self) -> None:
+        """Ask for the true view-range total of every frame the filter allows.
+
+        Re-issued whenever the answer would be different -- the heatmap's view moved,
+        the axes were re-expressed, the type filter narrowed the frame set -- because
+        each of those changes what "in view" means. The serial moves with every ask, so
+        the chunks of the walk it replaces drop themselves.
+        """
+        if self._global is None or not self.chromatogram.restrict_checked:
+            return
+        if not self._active_frame_numbers:
+            return
+        (x_range, y_range) = self.heatmap.view_range()
+        self._restricted_serial += 1
+        self._worker.request_restricted(RestrictedRequest(
+            frames=tuple(self._active_frame_numbers),
+            x_range=x_range,
+            y_range=y_range,
+            raw_units=self.settings.raw_units,
+            swapped=self.settings.swap_axes,
+            t0_offset_ms=self.settings.arrival_offset_ms,
+            serial=self._restricted_serial,
+        ))
+        self._show_status(
+            f"Totalling the view in {len(self._active_frame_numbers):,} frames..."
+        )
+
+    def _cancel_restricted(self) -> None:
+        """Abandon the walk. The serial moves, so a chunk in flight drops itself."""
+        self._restricted_serial += 1
+        self._worker.cancel_restricted()
+
+    def _sync_chromatogram_span(self) -> None:
+        """Tell the panel how far the axis should reach: the method frame's full length.
+
+        A run of a hundred repetitions should look like a hundred from its first frame
+        on, rather than rescaling every second so that every moment of it looks the
+        same. `FrameGrouping.repetitions` is how many the method asked for, so the frame
+        the current method frame ends on is its first frame plus that, less one -- and
+        `None` on a file with no grouping, where there is nothing to say and the axis is
+        simply the frames there are.
+        """
+        if not self._grouping.grouped:
+            self.chromatogram.set_span(None)
+            return
+        current = self._current_frame_number
+        method_frame = self._grouping.method_frame.get(int(current)) if current else None
+        if method_frame is None and self._frame_numbers:
+            method_frame = self._grouping.method_frame.get(self._frame_numbers[-1])
+        members = self._grouping.frames.get(method_frame, ()) if method_frame else ()
+        asked = self._grouping.repetitions.get(method_frame) if method_frame else None
+        if not members or not asked or self._grouping.covers_whole(method_frame):
+            self.chromatogram.set_span(None)
+            return
+        self.chromatogram.set_span(members[0] + asked - 1)
+
+    def _on_chromatogram_sum(self, frames: object) -> None:
+        """Add up the frames the highlight covers, by the ordinary sum path.
+
+        The same generator, cache, progress dialog and cancel as `Sum all`, so nothing
+        about a sum asked for this way behaves differently from one asked for any other.
+        The highlight stays where it is: the operator may want to move it by a frame and
+        ask again, and taking it down would make that two gestures.
+        """
+        numbers = [int(frame) for frame in frames]
+        if numbers:
+            self.sum_frames(numbers, what="the highlighted span")
+
     # --- worker callbacks -------------------------------------------------------------
 
     def _on_opened(
@@ -1474,6 +1727,11 @@ class MainWindow(QMainWindow):
             self._apply_launch_options()
             return
         self._worker.request_frame(frame_numbers[0])
+        # After the frame and not before it, because the queue is served in order and
+        # the two whole-file queries are 79 ms on a real run: first paint is what an
+        # open is measured by, and the trace can arrive a tenth of a second later.
+        if not self.chromatogram.isHidden():
+            self._worker.request_chromatogram()
 
     def _populate_type_filter(self) -> None:
         """Rebuild `Data settings > Type`, and leave it alone when the types are the same.
@@ -1571,6 +1829,9 @@ class MainWindow(QMainWindow):
             self._frame_spin.setValue(frame_number)
             self._frame_spin.blockSignals(False)
         self._sync_grouping_controls(frame_number)
+        # The chromatogram's axis reaches to the end of the method frame being looked
+        # at, so moving to another one moves the end (`_sync_chromatogram_span`).
+        self._sync_chromatogram_span()
         # Sets the reset target and the gesture limits, then asks for the first render;
         # every later render comes from a gesture through the same signal.
         self.heatmap.set_frame_extent(axes, reset=reset)
@@ -1614,6 +1875,12 @@ class MainWindow(QMainWindow):
     def _on_view_changed(self, x_range: "tuple[float, float]",
                          y_range: "tuple[float, float]") -> None:
         self._request_render(x_range, y_range)
+        # "Restricted to the view" means this view, so a gesture that moves it asks the
+        # question again. Off the debounced signal and not off the raw range change, so
+        # a wheel burst starts one walk rather than sixty; the serial drops the chunks
+        # of the walk this replaces, and anything already computed for a window the user
+        # comes back to is still there.
+        self._start_restricted()
 
     def _request_render(
         self,
@@ -1739,6 +2006,12 @@ class MainWindow(QMainWindow):
 
     def _on_raw_units_toggled(self, checked: bool) -> None:
         self.settings.raw_units = checked
+        # A third job for this toggle, beside the axes and the cursor readout: the
+        # chromatogram's own axis is elapsed time or the frame number, which is the same
+        # calibrated-or-raw question one plot over. On a file that records no usable
+        # start times it is already the frame number and this changes nothing visible,
+        # which the panel's readout says rather than leaving a toggle looking broken.
+        self.chromatogram.set_raw_units(checked)
         self._rebuild_axes()
 
     def _on_arrival_offset_changed(self, value: float) -> None:
@@ -1856,6 +2129,11 @@ class MainWindow(QMainWindow):
         if not checked:
             return  # the exclusive group also reports the entry it is unticking
         moved = self._apply_type_filter()
+        # A restricted walk is over the frames the filter allows, so narrowing it is a
+        # new question. Only here and not in `_apply_type_filter`, which the follow poll
+        # also calls: a walk is off while a run is being followed, and a poll that
+        # restarted one every second would be the thing that walk must never become.
+        self._start_restricted()
         if moved is not None:
             self.show_frame(moved)
 
@@ -1949,6 +2227,11 @@ class MainWindow(QMainWindow):
         # below asks for the translated one.
         self.heatmap.view_box.set_extent(new_axes, reset=False)
         self.heatmap.view_box.setRange(xRange=new_x_range, yRange=new_y_range, padding=0.0)
+        # The same bins and scans are in view, but the two pairs of numbers naming them
+        # are not, and a restricted walk is keyed by those numbers. Re-asked rather than
+        # translated, because the walk's answer is per frame and cheap to key: the cache
+        # simply gains a second window.
+        self._start_restricted()
 
     # --- cursor readout ---------------------------------------------------------------
 
@@ -2088,6 +2371,16 @@ class MainWindow(QMainWindow):
         # whatever it was when it was hidden, so this is right either way.
         if self.info_panel.width() > 0:
             self.settings.info_panel_width = int(self.info_panel.width())
+        # The same two reads for the chromatogram, minus the size: which edge it was
+        # left on is worth remembering and how big it was on that edge cannot be, since
+        # one number would come back as a height where it was chosen as a width
+        # (`settings.CHROMATOGRAM_SIZE`). A floated dock has no area, and
+        # `dockWidgetArea` answers `NoDockWidgetArea` for one -- clamped by `validate`
+        # back to the default rather than stored as a value `addDockWidget` cannot use.
+        self.settings.show_chromatogram = not self.chromatogram.isHidden()
+        area = int(self.dockWidgetArea(self.chromatogram).value)
+        if area in DOCK_AREAS:
+            self.settings.chromatogram_area = area
         save_settings(self.settings)
         self._mailbox.close()
         self._render_worker.wait(2000)

@@ -39,6 +39,7 @@ from .frame import SparseFrame
 
 __all__ = [
     "AGGREGATES", "DisplayAxes", "RasterResult", "profile", "rasterise", "render_view",
+    "tic_in_view",
 ]
 
 AGGREGATES = ("sum", "max")
@@ -360,6 +361,36 @@ def render_view(
         _native_profile(view, axes, "x"),
         _native_profile(view, axes, "y"),
     )
+
+
+def tic_in_view(
+    frame: SparseFrame,
+    axes: DisplayAxes,
+    x_range: tuple[float, float],
+    y_range: tuple[float, float],
+) -> float:
+    """The total stored intensity inside one display window, and nothing else.
+
+    `RasterResult.tic_in_view` without the image, the profiles or the aggregate: one
+    number per frame, which is what a chromatogram restricted to the view wants and all
+    it wants. Float64 and exact, like the field it is named after -- and it *is* that
+    field, computed the same way from the same selection, so a full-range call equals
+    the frame's stored `TIC` total exactly.
+
+    There is no `width`/`height` here because there is no image: the pixel grid only
+    ever decides which cell a point lands in, and a total over the window does not care.
+    It still goes through `_view` at one cell each way rather than selecting the points
+    by a shorter route of its own, and that is the point -- the same selection the
+    render path makes is the only version of this number that cannot drift away from the
+    one the heatmap reports. The cell tables it builds and throws away are the price:
+    1.6 to 4.3 ms a frame across the files this lab has, against about 9 ms for the
+    `read_frame` in front of it, so a walk over a whole run has to be chunked and
+    cancellable rather than shaved here (lab record, task 31).
+    """
+    x0, x1 = float(x_range[0]), float(x_range[1])
+    y0, y1 = float(y_range[0]), float(y_range[1])
+    view = _view(frame, axes, x0, x1, y0, y1, 1, 1)
+    return float(np.sum(view.intensity, dtype=np.float64))
 
 
 def rasterise(

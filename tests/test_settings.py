@@ -7,7 +7,12 @@ real viewer session would use.
 
 from __future__ import annotations
 
-from mainspring.viewer.settings import ViewerSettings, load_settings, save_settings
+from mainspring.viewer.settings import (
+    DOCK_AREAS,
+    ViewerSettings,
+    load_settings,
+    save_settings,
+)
 
 
 def test_defaults_are_already_valid():
@@ -173,3 +178,39 @@ def test_the_new_spelling_wins_when_a_store_somehow_carries_both():
     store.sync()
 
     assert load_settings().color_map == "plasma"
+
+
+# --- the chromatogram panel's two fields (task 31) ------------------------------------
+
+
+def test_the_chromatogram_is_hidden_by_default_and_the_info_panel_is_not():
+    """A panel added in 1.5.0 must not take room from an existing user's window on the
+    strength of an upgrade; the info panel has always been there and still opens."""
+    defaults = ViewerSettings()
+    assert defaults.show_chromatogram is False
+    assert defaults.show_info_panel is True
+    assert defaults.chromatogram_area == 8  # Qt.DockWidgetArea.BottomDockWidgetArea
+
+
+def test_a_dock_area_qt_has_no_meaning_for_is_clamped():
+    """`addDockWidget` is handed this number. A floated dock answers `NoDockWidgetArea`
+    (0) and a hand-edited store could hold anything, so both come back as the default
+    rather than as a value Qt cannot use."""
+    for bad in (0, 3, 16, -1):
+        assert ViewerSettings(chromatogram_area=bad).validate().chromatogram_area == 8
+    for area in DOCK_AREAS:
+        assert ViewerSettings(chromatogram_area=area).validate().chromatogram_area == area
+
+
+def test_the_chromatogram_fields_round_trip():
+    save_settings(ViewerSettings(show_chromatogram=True, chromatogram_area=1))
+    loaded = load_settings()
+    assert loaded.show_chromatogram is True
+    assert loaded.chromatogram_area == 1
+
+
+def test_restrict_to_view_is_not_a_persisted_setting():
+    """Left out on the line `Follow` is left out on: a statement about one look at one
+    file, and a persisted one would start a walk over every frame of every file the
+    viewer was ever pointed at."""
+    assert not any("restrict" in name for name in vars(ViewerSettings()))

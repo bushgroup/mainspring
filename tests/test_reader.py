@@ -263,8 +263,115 @@ def test_a_legacy_only_file_cannot_carry_the_grouping(tmp_path):
     assert not UimfFile(spec.path).frame_grouping().grouped
 
 
-def test_a_real_file_carries_no_grouping(real_uimf):
+def test_a_real_file_carries_the_grouping_only_if_mainspring_wrote_it(real_uimf):
     """Nothing PNNL writes has these parameters in it, and the viewer's method-frame
     controls are hidden on exactly that answer -- so it is worth checking against real
-    files rather than only against a fixture written not to have them."""
-    assert not UimfFile(real_uimf).frame_grouping().grouped
+    files rather than only against a fixture written not to have them.
+
+    Stated as the equivalence rather than as "no real file is grouped", which is what it
+    said until `MAINSPRING_SMOKE_UIMF` was pointed at a clockwork acquisition and it
+    failed: the lab's own real files are written through `mainspring.uimf.writer` and do
+    carry the grouping, and `GlobalParams.written_by` is the same stamp that tells the
+    two apart everywhere else in this layer.
+    """
+    file = UimfFile(real_uimf)
+    assert file.frame_grouping().grouped == bool(file.global_params().written_by)
+
+
+# --- the chromatogram's two whole-file answers (task 31) ------------------------------
+
+
+def test_frame_totals_are_the_files_own_tic_column(synthetic_uimf):
+    """One grouped query against the arithmetic the fixture wrote.
+
+    `SyntheticFile.tic` sums the `TIC` values it put in the rows, so this compares the
+    reader's grouping with the writer's intent and not with another copy of the reader.
+    """
+    totals = UimfFile(synthetic_uimf.path).frame_totals()
+    assert set(totals) == set(synthetic_uimf.frames)
+    for frame in synthetic_uimf.frames:
+        assert totals[frame] == pytest.approx(synthetic_uimf.tic(frame))
+
+
+def test_frame_totals_agree_with_the_decoded_frame(synthetic_uimf):
+    """The cheap source against the expensive one, which is the whole bet this makes.
+
+    The stored `TIC` column is exact on every row of every file we have (lab record,
+    task 03), so a total taken from it has to equal the total of the points the decoder
+    produces -- which is what lets the panel draw a chromatogram without reading a blob.
+    """
+    file = UimfFile(synthetic_uimf.path)
+    totals = file.frame_totals()
+    for frame in synthetic_uimf.frames:
+        decoded = float(file.read_frame(frame).intensity.sum(dtype=np.float64))
+        assert totals[frame] == pytest.approx(decoded)
+
+
+def test_frame_totals_narrow_to_the_tail(tmp_path):
+    """`since` is what a live poll asks with: a finished frame's total never changes."""
+    spec = write_synthetic_uimf(tmp_path / "tail.uimf", frames=4, scans=8, bins=512)
+    file = UimfFile(spec.path)
+    assert set(file.frame_totals(since=3)) == {3, 4}
+    assert file.frame_totals(since=3)[4] == pytest.approx(file.frame_totals()[4])
+    assert file.frame_totals(since=99) == {}
+
+
+def test_start_times_are_read_when_the_writer_set_them(tmp_path):
+    """A file whose frames really are spaced out in time, which a clockwork run is."""
+    spec = write_synthetic_uimf(
+        tmp_path / "timed.uimf", frames=4, scans=8, bins=512,
+        start_time_step_minutes=0.01,
+    )
+    times = UimfFile(spec.path).frame_start_times()
+    assert times == {f: pytest.approx(spec.start_time_minutes(f)) for f in spec.frames}
+
+
+def test_start_times_are_present_and_meaningless_by_default(synthetic_uimf):
+    """The trap the time axis exists to survive.
+
+    `FrameSpec.start_time_minutes` defaults to 0.0 and the writer stores it on every
+    frame, so this file answers with a value for every frame and says nothing with any
+    of them. The reader reports what is there; deciding whether it is a clock is the
+    caller's, and `chromatogram.elapsed_minutes` is where that decision is made.
+    """
+    times = UimfFile(synthetic_uimf.path).frame_start_times()
+    assert set(times) == set(synthetic_uimf.frames)
+    assert set(times.values()) == {0.0}
+
+
+def test_start_times_come_off_the_legacy_column_too(tmp_path):
+    """The 2011 table calls it `StartTime`, and PNNL's Sarc excerpt is one of those.
+
+    Without the `_LEGACY_FRAME_NAMES` row this returned nothing on exactly the writers
+    whose answer is interesting, and the info panel listed the same quantity under two
+    spellings depending on which table the file had.
+    """
+    spec = write_synthetic_uimf(
+        tmp_path / "legacy-times.uimf", frames=3, scans=8, bins=512,
+        legacy_only=True, start_time_step_minutes=0.5,
+    )
+    file = UimfFile(spec.path)
+    assert file.is_legacy_only
+    assert file.frame_start_times() == {
+        f: pytest.approx(spec.start_time_minutes(f)) for f in spec.frames
+    }
+    assert "StartTimeMinutes" in file.frame_params(1).extra
+
+
+def test_start_times_are_empty_on_a_file_that_has_none(real_uimf):
+    """Two of PNNL's three excerpts record none at all, and the lab's sample records
+    none: an empty answer is the common case and must not be an exception."""
+    times = UimfFile(real_uimf).frame_start_times()
+    assert isinstance(times, dict)
+    assert all(isinstance(value, float) for value in times.values())
+
+
+def test_frame_totals_match_a_real_files_own_column(real_uimf):
+    """The same comparison on whatever real files this clone has, which is where a
+    writer that puts something unexpected in `TIC` would show up."""
+    file = UimfFile(real_uimf)
+    totals = file.frame_totals()
+    assert set(totals) == set(file.frame_numbers())
+    for frame in file.frame_numbers():
+        _, _, _, tic = file.scan_summary(frame)
+        assert totals[frame] == pytest.approx(float(tic.sum()))
