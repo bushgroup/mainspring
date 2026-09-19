@@ -91,6 +91,7 @@ from ..uimf import (
     GlobalParams,
     LiveState,
     SparseFrame,
+    hot_write_ahead_log,
     is_local_path,
     summed_companion,
 )
@@ -1200,6 +1201,24 @@ class MainWindow(QMainWindow):
         """
         return self._offered_path
 
+    def _unmerged_log_notice(self) -> str:
+        """What to add to the open line when part of this run is still in a `-wal`.
+
+        Said once, on the line that reports the open, because the moment to hear it is
+        before the operator copies the run off the instrument: the viewer is reading the
+        whole of it either way, and the file on its own is either short or empty, with
+        nothing in it to say so (lab record, task 29).
+
+        Worded for both files that can be in this state. A run still being acquired is
+        one of them, and telling that operator their run was not closed would be wrong;
+        what is true of both is that the data is in two files and they travel together.
+        """
+        log = hot_write_ahead_log(self._path) if self._path else None
+        if log is None:
+            return ""
+        return (f". Part of this run is in {os.path.basename(log)} and not yet in"
+                f" {os.path.basename(self._path or '')}, so copy both files together")
+
     def _clear_offer(self) -> None:
         """Take the offer down. Whatever the operator does next answers it."""
         self._offered_path = None
@@ -1520,6 +1539,7 @@ class MainWindow(QMainWindow):
             elapsed_ms = (time.perf_counter() - self._open_started) * 1000.0
             self._show_status(
                 f"{self._frame_message} -- opened in {elapsed_ms:.0f} ms"
+                + self._unmerged_log_notice()
             )
             # After the open line and not before it: a launched follow says either
             # "Following <file>" or why it cannot, and that is the sentence worth

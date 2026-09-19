@@ -37,6 +37,7 @@ from .reader import (
     GlobalParams,
     LiveState,
     UimfFile,
+    hot_write_ahead_log,
     is_local_path,
     summed_companion,
 )
@@ -78,6 +79,7 @@ __all__ = [
     "decode_frame_blobs",
     "decode_intensities",
     "encode_intensities",
+    "hot_write_ahead_log",
     "is_local_path",
     "numba_available",
     "profile",

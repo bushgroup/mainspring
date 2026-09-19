@@ -51,6 +51,30 @@ A file the instrument is still writing opens the same way, and the `Follow` cont
 it up to date as the run continues. See [Following a file being
 acquired](#following-a-file-being-acquired).
 
+### Runs that are in two files
+
+A run whose software did not close the file leaves two files behind, `260918_BK_003.uimf` and
+`260918_BK_003.uimf-wal`, with the newest frames in the second one. A power cut on the instrument
+PC leaves a run in this state, and so does a run that is still being acquired. The viewer reads
+the pair and shows the whole acquisition, so this changes nothing about what is on screen. It
+changes what you have to copy, and the status bar says so on the line that reports the open:
+`Part of this run is in 260918_BK_003.uimf-wal and not yet in 260918_BK_003.uimf, so copy both
+files together`.
+
+Copying the `.uimf` on its own discards whatever was still in the log, and nothing reports the
+loss. A 400 frame run cut off mid-write gave a file that opened without complaint and held 385 of
+those frames. A run cut off earlier than that gives a file with no frames in it at all. Move the
+two together, always.
+
+Reading the pair does not merge them. The viewer opens files read-only and leaves both of them
+byte for byte as it found them, so the `-wal` stays beside the `.uimf` for as long as nothing
+writes to the run.
+
+The one place the pair will not open is a folder you can read but cannot write to, such as a
+share mounted read-only. Reading a log means writing an index file next to the database, so the
+viewer reports `unable to open database file` and then names the log and the remedy, which is to
+copy both files somewhere you can write to and open the copy.
+
 ## The window
 
 ![The mainspring window, showing a PNNL test file with the colour scale set to log](images/window.png)

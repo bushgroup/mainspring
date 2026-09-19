@@ -494,6 +494,136 @@ def main() -> int:
                      lambda: uimf_writer.UimfWriter(path, uimf_writer.GlobalSpec(bins=64)))
 
     # --------------------------------------------------------------------------------
+    section("a database left with a hot write-ahead log")
+    # What an instrument PC looks like after a power cut: `UimfWriter.close` never ran,
+    # so nothing checkpointed, and the reboot removed the `-shm` index. Built here by
+    # killing a writer with `os._exit` and then copying the database and its `-wal`
+    # somewhere fresh *without* the `-shm`, which is the only way to get the cold case
+    # deterministically -- a writer killed on this machine in this boot leaves a valid
+    # index behind, and a reader that attaches to one is not being asked the question
+    # (lab record, task 29).
+    import hashlib
+    import shutil
+    import subprocess
+
+    from mainspring.uimf import hot_write_ahead_log
+
+    ABANDON = (
+        "import os, sys\n"
+        "import numpy as np\n"
+        "from mainspring.uimf import writer as w\n"
+        "path = sys.argv[1]\n"
+        "h = w.UimfWriter(path, w.GlobalSpec(bins=4096, instrument_name='SLIM3',\n"
+        "                                    detector_bits=14))\n"
+        "for n in (1, 2):\n"
+        "    h.add_frame(w.FrameSpec(scans=8, method_frame=1, repetition=n,\n"
+        "                            repetitions=2), frame=n)\n"
+        "    h.write_scans(n, [(1, np.array([50 * n]), np.array([3]))])\n"
+        "    h.finalise_frame(n, duration_s=0.5)\n"
+        "os._exit(0)\n"  # no close, so no checkpoint: the log stays hot
+    )
+
+    def fingerprint(path):
+        """Size and digest, for showing that reading a file did not rewrite it."""
+        with open(path, "rb") as handle:
+            data = handle.read()
+        return len(data), hashlib.sha256(data).hexdigest()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        killed = os.path.join(tmp, "cut.uimf")
+        subprocess.run([sys.executable, "-c", ABANDON, killed], check=True,
+                       capture_output=True)
+        check_true("a writer that never closed leaves a log with commits still in it",
+                   hot_write_ahead_log(killed) == killed + "-wal")
+
+        cold = os.path.join(tmp, "cold")
+        os.makedirs(cold)
+        rebooted = os.path.join(cold, "cut.uimf")
+        for suffix in ("", "-wal"):  # the `-shm` stays behind, as a reboot leaves it
+            shutil.copyfile(killed + suffix, rebooted + suffix)
+        before = (fingerprint(rebooted), fingerprint(rebooted + "-wal"))
+
+        recovered = UimfFile(rebooted)
+        check_true("and a read-only open of the pair replays it, frames and all",
+                   recovered.frame_numbers() == [1, 2]
+                   and [len(recovered.read_frame(n)) for n in (1, 2)] == [1, 1])
+        check_true("without rewriting either file it read",
+                   (fingerprint(rebooted), fingerprint(rebooted + "-wal")) == before)
+        check_true("the index it had to rebuild is the one thing it wrote",
+                   os.path.exists(rebooted + "-shm"))
+
+        # The reason any of this is worth a check: the database on its own is not the
+        # acquisition, and does not say so. Here it is too young to have been
+        # checkpointed once and has no tables at all; a longer run gives a file that
+        # opens and is silently short.
+        alone = os.path.join(tmp, "alone")
+        os.makedirs(alone)
+        shutil.copyfile(killed, os.path.join(alone, "cut.uimf"))
+        check_true("while the database copied without its log is not the run",
+                   hot_write_ahead_log(os.path.join(alone, "cut.uimf")) is None)
+        check_raises("and says nothing better than SQLite does about what is missing",
+                     sqlite3.DatabaseError,
+                     lambda: UimfFile(os.path.join(alone, "cut.uimf")).frame_numbers())
+
+    with tempfile.TemporaryDirectory() as tmp:
+        closed = os.path.join(tmp, "closed.uimf")
+        with uimf_writer.UimfWriter(closed, uimf_writer.GlobalSpec(bins=4096)) as handle:
+            handle.add_frame(uimf_writer.FrameSpec(scans=8))
+        check_true("a run that closed properly has no log to carry with it",
+                   hot_write_ahead_log(closed) is None)
+        # A read-only open of a WAL database creates a `-wal` of its own and, being
+        # read-only, leaves it behind empty. Size and not existence is what tells that
+        # one from a log holding an acquisition's last frames.
+        UimfFile(closed).frame_numbers()
+        check_true("and a log a reader left behind empty is not one either",
+                   hot_write_ahead_log(closed) is None)
+
+    # The one way the replay fails: it has to create the `-shm` beside the database, so
+    # a run copied logs-and-all to a folder the operator can read but not write cannot
+    # be opened at all. SQLite says `unable to open database file`, which is also what
+    # it says for a deleted file and an unmounted drive, so the reader adds the sentence
+    # that names the remedy.
+    def read_only_folder(directory):
+        """Grant this user read and execute only; True if the grant actually took."""
+        user = os.environ.get("USERNAME") or ""
+        if os.name != "nt" or not user:
+            return False
+        subprocess.run(["icacls", directory, "/inheritance:r", "/grant:r",
+                        f"{user}:(OI)(CI)(RX)"], check=False, capture_output=True)
+        canary = os.path.join(directory, "canary.tmp")
+        try:
+            with open(canary, "w"):
+                pass
+        except OSError:
+            return True
+        os.remove(canary)
+        return False
+
+    with tempfile.TemporaryDirectory() as tmp:
+        source = os.path.join(tmp, "share.uimf")
+        subprocess.run([sys.executable, "-c", ABANDON, source], check=True,
+                       capture_output=True)
+        locked = os.path.join(tmp, "readonly")
+        os.makedirs(locked)
+        for suffix in ("", "-wal"):
+            shutil.copyfile(source + suffix, os.path.join(locked, "share.uimf" + suffix))
+        if not read_only_folder(locked):
+            skip("a log that cannot be replayed is explained rather than quoted",
+                 "this user can write to a folder granted read and execute only")
+        else:
+            try:
+                message = ""
+                try:
+                    UimfFile(os.path.join(locked, "share.uimf")).frame_numbers()
+                except sqlite3.OperationalError as exc:
+                    message = str(exc)
+                check_true("a log that cannot be replayed is explained rather than quoted",
+                           "share.uimf-wal" in message and "copy" in message.lower())
+            finally:
+                subprocess.run(["icacls", locked, "/reset", "/t", "/c"], check=False,
+                               capture_output=True)
+
+    # --------------------------------------------------------------------------------
     section("following a file that is still being written")
     # The reader's half of it. The window's half -- the two controls, the rolling sum
     # and the launch route -- is a section of its own further down, after Qt is allowed
@@ -1061,6 +1191,32 @@ def main() -> int:
             window.close()
     finally:
         viewer_workers.POLL_INTERVAL_S = real_interval
+
+    # A run whose data is in two files, opened by hand rather than followed: the open
+    # line is where an operator is told, because the moment that matters is the one
+    # before they copy the run off the instrument and leave the log behind (lab record,
+    # task 29).
+    with tempfile.TemporaryDirectory() as tmp:
+        killed = os.path.join(tmp, "unclosed.uimf")
+        subprocess.run([sys.executable, "-c", ABANDON, killed], check=True,
+                       capture_output=True)
+        cold = os.path.join(tmp, "cold")
+        os.makedirs(cold)
+        rebooted = os.path.join(cold, "unclosed.uimf")
+        for suffix in ("", "-wal"):
+            shutil.copyfile(killed + suffix, rebooted + suffix)
+        window = MainWindow()
+        shown: list = []
+        window.frame_shown.connect(shown.append)
+        window.open_file(rebooted)
+        deadline = time.time() + 5.0
+        while not shown and time.time() < deadline:
+            qt_app.processEvents()
+            time.sleep(0.01)
+        check_true("a run left with a log opens, and the open line names the other file",
+                   bool(shown) and "unclosed.uimf-wal" in window.status_text()
+                   and "copy both files" in window.status_text())
+        window.close()
 
     # --------------------------------------------------------------------------------
     section("real files, if this clone has any")

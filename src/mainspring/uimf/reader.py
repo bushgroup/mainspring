@@ -76,6 +76,7 @@ __all__ = [
     "LiveState",
     "UimfFile",
     "connect",
+    "hot_write_ahead_log",
     "is_local_path",
     "summed_companion",
 ]
@@ -107,6 +108,63 @@ class FileGone(FileNotFoundError):
     """
 
 
+def hot_write_ahead_log(path: str | os.PathLike[str]) -> "str | None":
+    """The `-wal` beside this database that still holds commits, if there is one.
+
+    A WAL database is two files until something checkpoints it: `<name>.uimf` and
+    `<name>.uimf-wal`, the second holding every commit the first has not received yet.
+    A run that ends the way runs are meant to end has none, because `UimfWriter.close`
+    checkpoints and the log goes away; one left behind means the writer did not get to
+    close -- a power cut on a machine with no UPS, or an acquisition still in progress.
+
+    **Reading such a file is not the problem.** A `mode=ro` open replays the log, rebuilds
+    the `-shm` index a reboot removed, and answers with every committed frame, leaving
+    the database and the log unchanged; the one thing it writes is that index, beside
+    the file. **Copying it is the problem.** The database alone is a short file, or on a
+    run too young to have been checkpointed once, a file with no tables in it at all,
+    and neither says anything is missing (lab record, task 29). So this exists for one
+    kind of caller: one that can tell an operator the two files travel together.
+
+    Size rather than existence, because an ordinary read-only open of a checkpointed
+    file leaves a zero-length `-wal` of its own behind, and that one holds nothing.
+    `None` for every kind of no, as `summed_companion` gives `None` for every kind of
+    no: a caller deciding whether to say something has no use for the difference
+    between a log that is not there and a log that is empty.
+    """
+    log = os.fspath(os.path.abspath(path)) + "-wal"
+    try:
+        return log if os.path.getsize(log) > 0 else None
+    except OSError:
+        return None
+
+
+def _explain_open_failure(absolute: str, error: sqlite3.OperationalError) -> "str | None":
+    """Why an open failed, in a sentence an operator can act on, or `None` for no idea.
+
+    SQLite says `unable to open database file` for a database it cannot reach for any
+    reason, and one of those reasons is worth telling apart: replaying a write-ahead log
+    means creating the `-shm` index beside the database, so a file left with a hot log
+    in a folder that will not accept a new file cannot be read at all -- a run copied,
+    logs and all, to a share the operator has read access to. The remedy is to copy it
+    somewhere writable, which is not a thing anybody guesses from SQLite's wording.
+
+    Asked only of a failure, so the ordinary path pays nothing, and only of the exact
+    error code that failure raises: an open that failed while a hot log happened to be
+    beside the file, for some other reason entirely, keeps SQLite's own words.
+    """
+    if getattr(error, "sqlite_errorname", "") != "SQLITE_CANTOPEN":
+        return None
+    log = hot_write_ahead_log(absolute)
+    if log is None or not os.path.exists(absolute):
+        return None
+    return (
+        f"{error}: {os.path.basename(absolute)} has a write-ahead log beside it"
+        f" ({os.path.basename(log)}) that has not been merged into it, and reading one"
+        f" means creating an index file in the same folder. Copy both files somewhere"
+        f" you can write to and open the copy."
+    )
+
+
 @contextlib.contextmanager
 def connect(path: str | os.PathLike[str], busy_timeout_ms: int = BUSY_TIMEOUT_MS) -> Iterator[sqlite3.Connection]:
     """A short-lived read-only connection to a UIMF file, closed on the way out.
@@ -119,18 +177,35 @@ def connect(path: str | os.PathLike[str], busy_timeout_ms: int = BUSY_TIMEOUT_MS
     file is not there. The question is asked only after an open has already failed, so
     the ordinary path pays nothing for it, and it is asked of the same path the open
     used rather than of the one the caller passed.
+
+    **The open is lazy, so the failure arrives through the caller's first query.**
+    `sqlite3.connect` reaches the file only for a `mode=ro` URI naming one that is not
+    there; everything else -- a folder that will not take the `-shm` a write-ahead log
+    has to be replayed through, a file that is not a database -- surfaces from the
+    statement, which is why `_explain_open_failure` is asked around the `yield` as well
+    as around the connect. Only `SQLITE_CANTOPEN` is ever reworded; a busy timeout and
+    every other way a query can fail travel out as themselves.
     """
     absolute = os.fspath(os.path.abspath(path))
     uri = "file:" + absolute.replace("?", "%3f").replace("#", "%23") + "?mode=ro"
     try:
         conn = sqlite3.connect(uri, uri=True, timeout=busy_timeout_ms / 1000.0)
-    except sqlite3.OperationalError:
+    except sqlite3.OperationalError as exc:
         if not os.path.exists(absolute):
             raise FileGone(absolute) from None
+        explained = _explain_open_failure(absolute, exc)
+        if explained is not None:
+            raise sqlite3.OperationalError(explained) from exc
         raise
     try:
-        conn.execute(f"PRAGMA busy_timeout = {int(busy_timeout_ms)}")
-        yield conn
+        try:
+            conn.execute(f"PRAGMA busy_timeout = {int(busy_timeout_ms)}")
+            yield conn
+        except sqlite3.OperationalError as exc:
+            explained = _explain_open_failure(absolute, exc)
+            if explained is not None:
+                raise sqlite3.OperationalError(explained) from exc
+            raise
     finally:
         conn.close()
 

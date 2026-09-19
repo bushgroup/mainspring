@@ -17,11 +17,20 @@ stand-in and the same window, since both are ways of asking for what task 08 bui
 
 Task 28 adds the end of a run that does not keep its raw file: the followed file is
 deleted, and the window has to say so in words and offer the companion that survived.
+
+Task 29 adds the other end of the same file's life: a run whose writer never closed,
+left beside a write-ahead log nobody checkpointed. Built by killing a writer in a
+subprocess and copying what it left *without* the `-shm`, which is the only way to get
+the rebooted-instrument case rather than the same-boot one.
 """
 
 from __future__ import annotations
 
 import os
+import shutil
+import sqlite3
+import subprocess
+import sys
 
 import numpy as np
 import pytest
@@ -34,6 +43,7 @@ from mainspring.uimf import (
     LiveState,
     UimfFile,
     UimfWriter,
+    hot_write_ahead_log,
     is_local_path,
     summed_companion,
 )
@@ -973,3 +983,123 @@ def test_an_option_the_viewer_does_not_offer_is_an_error_and_never_a_file(monkey
     assert "rolling-sum" in capsys.readouterr().err  # what it does take
     assert viewer_main(["--help"]) == 0
     assert "--show" in capsys.readouterr().out
+
+
+# --- task 29: a run left with a hot write-ahead log -------------------------------------
+
+ABANDONED_WRITER = (
+    "import os, sys\n"
+    "import numpy as np\n"
+    "from mainspring.uimf import writer as w\n"
+    "path, count = sys.argv[1], int(sys.argv[2])\n"
+    "h = w.UimfWriter(path, w.GlobalSpec(bins=4096, detector_bits=14))\n"
+    "for n in range(1, count + 1):\n"
+    "    h.add_frame(w.FrameSpec(scans=8, method_frame=1, repetition=n,\n"
+    "                            repetitions=count), frame=n)\n"
+    "    h.write_scans(n, [(1, np.array([50 * n]), np.array([3]))])\n"
+    "    h.finalise_frame(n, duration_s=0.5)\n"
+    "os._exit(0)\n"  # no close, so no checkpoint: the log is left hot
+)
+
+
+def _abandoned(directory, frames=2):
+    """A database whose writer died without checkpointing: db, `-wal` and `-shm`."""
+    path = os.path.join(os.fspath(directory), "cut.uimf")
+    subprocess.run([sys.executable, "-c", ABANDONED_WRITER, path, str(frames)],
+                   check=True, capture_output=True)
+    return path
+
+
+def _rebooted(source, directory):
+    """The pair as a reboot leaves it: the database and its log, and no `-shm`.
+
+    Copied rather than read in place, because the `-shm` the killed writer left behind
+    is a valid index this machine built in this boot, and a reader that attaches to one
+    is not being asked the question (lab record, task 29).
+    """
+    path = os.path.join(os.fspath(directory), os.path.basename(source))
+    for suffix in ("", "-wal"):
+        shutil.copyfile(source + suffix, path + suffix)
+    return path
+
+
+def _bytes(path):
+    with open(path, "rb") as handle:
+        return handle.read()
+
+
+def test_a_run_left_with_a_hot_log_reads_and_is_not_rewritten(tmp_path):
+    """The power-cut case, which is the one the viewer was expected to fail.
+
+    A read-only open replays the log and answers with every committed frame, including
+    the ones the database file has never received, and it does that without touching
+    either file: the `-shm` it had to rebuild is the only thing written.
+    """
+    cold = tmp_path / "cold"
+    cold.mkdir()
+    path = _rebooted(_abandoned(tmp_path), cold)
+    assert hot_write_ahead_log(path) == path + "-wal"
+    before = (_bytes(path), _bytes(path + "-wal"))
+
+    handle = UimfFile(path)
+    assert handle.frame_numbers() == [1, 2]
+    assert [len(handle.read_frame(n)) for n in (1, 2)] == [1, 1]
+    assert (_bytes(path), _bytes(path + "-wal")) == before
+    assert os.path.exists(path + "-shm")
+
+
+def test_the_database_copied_without_its_log_is_not_the_run(tmp_path):
+    """Why the window says anything at all. Copying `<stem>.uimf` on its own is the
+    natural thing to select in a file manager, and it silently leaves behind whatever
+    the log still held: here the whole file, since nothing has checkpointed it once."""
+    alone = tmp_path / "alone"
+    alone.mkdir()
+    shutil.copyfile(_abandoned(tmp_path), alone / "cut.uimf")
+
+    assert hot_write_ahead_log(alone / "cut.uimf") is None
+    with pytest.raises(sqlite3.DatabaseError):
+        UimfFile(alone / "cut.uimf").frame_numbers()
+
+
+def test_only_a_log_with_something_in_it_counts(tmp_path, acquisition):
+    """Size and not existence. A read-only open of a WAL database creates a `-wal` of
+    its own and, being read-only, leaves it behind empty; a caller that asked about
+    existence would tell every reader that every file it had opened was in two."""
+    acquisition.frame()
+    acquisition.close()  # closing checkpoints, so there is nothing left to carry
+    assert hot_write_ahead_log(acquisition.path) is None
+
+    UimfFile(acquisition.path).frame_numbers()
+    assert hot_write_ahead_log(acquisition.path) is None
+    assert hot_write_ahead_log(tmp_path / "never-written.uimf") is None
+
+
+def test_the_open_line_says_when_a_run_is_in_two_files(qtbot, tmp_path):
+    """Once, on the line that reports the open, because the moment that matters is the
+    one before the operator copies the run off the instrument."""
+    cold = tmp_path / "cold"
+    cold.mkdir()
+    path = _rebooted(_abandoned(tmp_path), cold)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    painted: list = []
+    window.frame_shown.connect(painted.append)
+    window.open_file(path)
+    qtbot.waitUntil(lambda: bool(painted), timeout=5000)
+
+    said = window.status_text()
+    assert "cut.uimf-wal" in said and "copy both files together" in said
+
+
+def test_a_file_with_no_log_beside_it_says_nothing_extra(qtbot, acquisition):
+    """The ordinary open, which is nearly every open: no notice, no change."""
+    acquisition.frame()
+    acquisition.close()
+    window = MainWindow()
+    qtbot.addWidget(window)
+    painted: list = []
+    window.frame_shown.connect(painted.append)
+    window.open_file(acquisition.path)
+    qtbot.waitUntil(lambda: bool(painted), timeout=5000)
+
+    assert "-wal" not in window.status_text()
