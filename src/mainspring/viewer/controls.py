@@ -333,7 +333,11 @@ def _check_widget(widget: object, missing: "list[str]", seen: "set[int]") -> Non
     if _is_furniture(widget):
         return
     # A toolbar button *is* its action, and Qt copies the action's tooltip onto it.
-    if isinstance(widget, QAbstractButton) and widget.defaultAction() is not None:
+    # `defaultAction` is `QToolButton`'s alone, not `QAbstractButton`'s, so it is asked
+    # for rather than called: a plain `QPushButton` explains itself in its own right and
+    # has no action to inherit a sentence from.
+    default_action = getattr(widget, "defaultAction", None)
+    if callable(default_action) and default_action() is not None:
         return
     if not widget.toolTip().strip():
         missing.append(name_of(widget))

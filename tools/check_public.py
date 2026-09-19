@@ -177,7 +177,8 @@ def main() -> int:
 
     PUBLISHED = ("Calibration", "FrameSpec", "GlobalSpec", "SparseFrame", "UimfFile",
                  "UimfWriter", "encode_intensities", "sum_frames", "decode",
-                 "is_local_path", "LiveState")
+                 "is_local_path", "LiveState", "summed_companion", "FileGone",
+                 "SUMMED_SUFFIX")
     missing = [name for name in PUBLISHED if not hasattr(mainspring.uimf, name)]
     check_true(f"mainspring.uimf still exports what the acquisition side imports"
                f"{' (missing ' + ', '.join(missing) + ')' if missing else ''}",
@@ -215,6 +216,14 @@ def main() -> int:
                 uimf_writer.REPETITION, uimf_writer.REPETITIONS, uimf_writer.FRAME_COMPLETE)
                == ("MainspringWriter", "MainspringDetectorBits", "MainspringMethodFrame",
                    "MainspringRepetition", "MainspringRepetitions", "MainspringFrameComplete"))
+    # The companion's name is a convention between two programs, so it is pinned as a
+    # string for the same reason the six parameter names are: renaming the constant is
+    # free, renaming the string leaves a viewer unable to find the file an operator's
+    # data ended up in (lab record, task 28).
+    check_true(f"the summed companion is still named {mainspring.uimf.SUMMED_SUFFIX!r}",
+               mainspring.uimf.SUMMED_SUFFIX == ".summed.uimf")
+    check_true("and a deleted file still raises something a caller can catch as missing",
+               issubclass(mainspring.uimf.FileGone, FileNotFoundError))
     check_true("the reader still offers the live-following entry points",
                all(callable(getattr(mainspring.uimf.UimfFile, name, None))
                    for name in ("refresh", "is_provisional", "read_frame", "frame_numbers")))
@@ -561,7 +570,46 @@ def main() -> int:
                 and polled.provisional == frozenset({2}),
             )
 
-        check_true("a path on a local drive may be followed", is_local_path(path))
+        # The run ends, and with `keep_raw = false` the acquisition software deletes
+        # the raw file it has just replaced. Everything below is after the writer's
+        # `with` has closed, which is the real order: clockwork closes both files and
+        # then removes the raw one.
+        from mainspring.uimf import FileGone, summed_companion
+
+        check_true("a raw file with no companion beside it has nothing to offer",
+                   summed_companion(path) is None)
+        companion = path[: -len(".uimf")] + ".summed.uimf"
+        with uimf_writer.UimfWriter(companion, uimf_writer.GlobalSpec(bins=4096)) as fold:
+            fold.add_frame(uimf_writer.FrameSpec(scans=8, method_frame=1, repetition=1))
+            fold.finalise_frame(1, duration_s=0.5)
+        check_true("once the fold has written one, the raw file's companion is found",
+                   summed_companion(path) == companion)
+        check_true("and a companion is not its own companion",
+                   summed_companion(companion) is None)
+
+        # The delete itself is the check. On Windows a reader holding the file open
+        # turns `os.remove` into a `PermissionError`, so this passing is the
+        # one-connection-per-call rule being kept -- asserted here rather than assumed,
+        # because nothing else in the suite would notice if a connection started
+        # outliving a call (lab record, task 28).
+        removed = True
+        try:
+            os.remove(path)
+        except OSError:
+            removed = False
+        check_true("the raw file can be deleted although a reader has been polling it",
+                   removed and not os.path.exists(path))
+
+        vanished = None
+        try:
+            live.refresh()
+        except BaseException as exc:  # noqa: BLE001 -- the type is what is being checked
+            vanished = exc
+        check_true(f"a poll of a file that has been deleted says so, rather than"
+                   f" reporting sqlite ({type(vanished).__name__})",
+                   isinstance(vanished, FileGone))
+
+        check_true("a path on a local drive may be followed", is_local_path(companion))
         check_true("a network path may not, because a write-ahead log is not shared over one",
                    not is_local_path(r"\\instrument\runs\today.uimf"))
 
@@ -943,6 +991,74 @@ def main() -> int:
                            not window._follow_mode.isEnabled()
                            and not window._rolling_sum_spin.isEnabled())
                 window.close()
+
+        # The end of a run that does not keep its raw file. A scene of its own because
+        # the writer has to close before the file can be deleted, which is the real
+        # order: the acquisition software closes both files and then removes the raw one
+        # (lab record, task 28).
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "run.uimf")
+            companion = os.path.join(tmp, "run.summed.uimf")
+            with uimf_writer.UimfWriter(path, uimf_writer.GlobalSpec(bins=4096)) as handle:
+                console = ConsoleStub(path)
+                handle.add_frame(uimf_writer.FrameSpec(scans=8))
+                console.acquire_frame(1, [(s, np.array([100 + s, 900]), np.array([4, 7]))
+                                          for s in range(6)])
+                handle.finalise_frame(1, duration_s=0.5)
+            with uimf_writer.UimfWriter(companion, uimf_writer.GlobalSpec(bins=4096)) as fold:
+                fold.add_frame(uimf_writer.FrameSpec(scans=8))
+                console_2 = ConsoleStub(companion)
+                console_2.acquire_frame(1, [(s, np.array([100 + s, 900]), np.array([4, 7]))
+                                            for s in range(6)])
+                fold.finalise_frame(1, duration_s=0.5)
+
+            window = MainWindow()
+            window.follow_when_opened()
+            window.open_file(path)
+            check_true("a window follows the raw file the acquisition wrote",
+                       settled(lambda: window.following))
+
+            # Retried rather than attempted once, and the retry is the finding. Nothing
+            # outlives a call -- the reader section above deletes the file on the first
+            # attempt -- but a poll *in flight* holds the file for as long as its query
+            # takes, and Windows will not delete a file anyone has open. So the delete
+            # lands between polls, and at this interval, a fiftieth of the real one,
+            # that takes a try or two. It is also the shape of the bug on the other
+            # side: the acquisition software removes the raw file once, inside a
+            # suppressed `OSError`, so a collision there turns `keep_raw = false` into a
+            # silent no-op (lab record, task 28).
+            tries, deadline = 0, time.time() + 10
+            while True:
+                tries += 1
+                try:
+                    os.remove(path)
+                    break
+                except OSError:
+                    if time.time() > deadline:
+                        break
+                    qt_app.processEvents()
+                    time.sleep(0.001)
+            check_true(f"the run ending takes the raw file, and the follow stops with it"
+                       f" (deleted on try {tries})",
+                       not os.path.exists(path) and settled(lambda: not window.following))
+            check_true(f"the window says so in words rather than in sqlite's"
+                       f" ({window.status_text()!r})",
+                       "run.uimf is no longer there" in window.status_text()
+                       and "database" not in window.status_text().lower())
+            check_true(f"and offers the summed companion that survived"
+                f" ({window._offer.text()!r})",
+                os.path.normcase(str(window.companion_offer))
+                == os.path.normcase(companion)
+                and window._offer.text() == "Open run.summed.uimf")
+            check_true("without having opened it: the frames on screen have not moved",
+                       os.path.normcase(window._path) == os.path.normcase(path))
+
+            window._offer.click()
+            check_true("clicking the offer opens the companion, and takes the offer down",
+                       settled(lambda: os.path.normcase(str(window._path))
+                               == os.path.normcase(companion))
+                       and window.companion_offer is None)
+            window.close()
     finally:
         viewer_workers.POLL_INTERVAL_S = real_interval
 

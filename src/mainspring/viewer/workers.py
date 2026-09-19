@@ -56,6 +56,7 @@ from PySide6.QtCore import QThread, Signal
 
 from ..uimf import (
     DisplayAxes,
+    FileGone,
     FrameGrouping,
     LiveState,
     RasterResult,
@@ -295,13 +296,21 @@ class LoadWorker(QThread):
     look found. The types and the grouping are `None` unless the frame list actually
     *grew*, because neither can change while it does not and re-reading the grouping is
     43 ms against the poll's own 11 ms (lab record, task 17)."""
-    follow_stopped = Signal(str)
-    """A poll raised, and following has been switched off; the message.
+    follow_stopped = Signal(str, bool)
+    """A poll raised, and following has been switched off: the message, and whether the
+    file itself has gone.
 
     Its own signal rather than `failed`, because a failing poll is the one failure that
     repeats: the file has been moved, deleted or unmounted, and a viewer that reported
     that once a second until someone noticed would be worse than one that stops and says
-    so. The window puts its own toggle back with this."""
+    so. The window puts its own toggle back with this.
+
+    The flag is `FileGone` and nothing else, because a file that is not there is the one
+    end a *successful* run has: a run that does not keep its raw file deletes it at the
+    close, and the operator should read that as the run ending rather than as SQLite
+    failing to open something. What to say about it, and what to offer instead, is the
+    window's (lab record, task 28); what cannot be worked out there is which of the two
+    happened, since by then there is nothing left to ask."""
     failed = Signal(str)
     """An open or a decode raised; the message, never the exception object itself."""
 
@@ -368,7 +377,7 @@ class LoadWorker(QThread):
                     self._poll()
                 except Exception as exc:  # noqa: BLE001 -- a poll must not kill the thread
                     self._poll_interval = None
-                    self.follow_stopped.emit(str(exc))
+                    self.follow_stopped.emit(str(exc), isinstance(exc, FileGone))
                 continue
             if kind == "stop":
                 return

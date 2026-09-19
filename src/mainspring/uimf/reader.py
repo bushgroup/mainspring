@@ -25,6 +25,16 @@ and which of those frames may still be growing. Two queries, whatever the frame 
 because a question asked once per frame is what a five-thousand-frame acquisition
 cannot afford (lab record, tasks 08 and 17).
 
+**An acquisition writes two files, and the one that is followed is the one that may go
+away.** `<stem>.uimf` is the raw file, `<stem>.summed.uimf` the companion the fold
+writes; a run that does not keep its raw file deletes it at the end, once the companion
+exists. `summed_companion` is the whole of what this layer knows about the pair, and
+`FileGone` is what a read of a file that has been deleted raises instead of SQLite's own
+wording for it. That the delete can land at all, mid-follow, is the one-connection-per-
+call rule paying off in a way nobody designed for: a reader that held the file open
+would turn the acquisition software's `os.remove` into a `PermissionError` on Windows
+(lab record, task 28).
+
 Parameter values are TEXT in the modern tables and typed by `ParamDataType`, so
 `GlobalParams` and `FrameParams` name the handful the viewer needs, coerced, and keep
 everything else as raw strings in `extra` -- the info panel shows whatever a file
@@ -58,6 +68,8 @@ from .writer import (
 __all__ = [
     "BUSY_TIMEOUT_MS",
     "PROVISIONAL_WINDOW_S",
+    "SUMMED_SUFFIX",
+    "FileGone",
     "FrameParams",
     "FrameGrouping",
     "GlobalParams",
@@ -65,6 +77,7 @@ __all__ = [
     "UimfFile",
     "connect",
     "is_local_path",
+    "summed_companion",
 ]
 
 BUSY_TIMEOUT_MS = 250
@@ -80,6 +93,20 @@ question exactly instead. Deliberately generous, because the cost of being wrong
 is one uncached frame."""
 
 
+class FileGone(FileNotFoundError):
+    """The file was there when it was opened, and is not there now.
+
+    A `FileNotFoundError`, so a caller that already handles one keeps working, but a
+    class of its own because a poll has to tell this apart from every other way a read
+    can fail. SQLite says `unable to open database file` for a database that was
+    deleted, one that was unmounted and one whose permissions changed, and a run that
+    does not keep its raw file deletes it at the end -- which is an ordinary end to an
+    acquisition rather than a fault in the file. Only the caller that knows it was
+    following a run can say which sentence a person should read, and it can only say it
+    if the reader has told these two apart first (lab record, task 28).
+    """
+
+
 @contextlib.contextmanager
 def connect(path: str | os.PathLike[str], busy_timeout_ms: int = BUSY_TIMEOUT_MS) -> Iterator[sqlite3.Connection]:
     """A short-lived read-only connection to a UIMF file, closed on the way out.
@@ -87,9 +114,20 @@ def connect(path: str | os.PathLike[str], busy_timeout_ms: int = BUSY_TIMEOUT_MS
     Read-only through a `file:...?mode=ro` URI rather than by good intentions: an
     accidental write to an acquisition in progress is unrecoverable. The caller is
     expected to run one query and let go -- see the module docstring on why.
+
+    Raises `FileGone` rather than SQLite's own wording when the open failed and the
+    file is not there. The question is asked only after an open has already failed, so
+    the ordinary path pays nothing for it, and it is asked of the same path the open
+    used rather than of the one the caller passed.
     """
-    uri = "file:" + os.fspath(os.path.abspath(path)).replace("?", "%3f").replace("#", "%23") + "?mode=ro"
-    conn = sqlite3.connect(uri, uri=True, timeout=busy_timeout_ms / 1000.0)
+    absolute = os.fspath(os.path.abspath(path))
+    uri = "file:" + absolute.replace("?", "%3f").replace("#", "%23") + "?mode=ro"
+    try:
+        conn = sqlite3.connect(uri, uri=True, timeout=busy_timeout_ms / 1000.0)
+    except sqlite3.OperationalError:
+        if not os.path.exists(absolute):
+            raise FileGone(absolute) from None
+        raise
     try:
         conn.execute(f"PRAGMA busy_timeout = {int(busy_timeout_ms)}")
         yield conn
@@ -134,6 +172,40 @@ def is_local_path(path: str | os.PathLike[str]) -> bool:
     except (AttributeError, OSError):  # pragma: no cover -- not Windows after all
         return True
     return kind in _LOCAL_DRIVE_TYPES
+
+
+SUMMED_SUFFIX = ".summed.uimf"
+"""What a raw file's summed companion is called. An acquisition writes two files, and
+this is the naming convention between them, so it is pinned as a string the way the six
+parameter names are: renaming the constant costs nothing, renaming the string is a
+viewer that can no longer find the file an operator's data ended up in."""
+
+
+def summed_companion(path: str | os.PathLike[str]) -> "str | None":
+    """The `<stem>.summed.uimf` beside a raw file, if one is on disk now.
+
+    A clockwork run writes `<stem>.uimf`, one frame per ion mobility experiment, and
+    from the first fold onwards `<stem>.summed.uimf`, one frame per method frame. The
+    raw file is the one that exists first and grows during the run, so it is the one
+    that gets followed -- and with `keep_raw = false` in the method it is deleted when
+    the run closes, once the companion exists to have replaced it. The viewer then has
+    a window open on a file that is not there and no route to the one that holds the
+    data, which is what this answers (lab record, task 28).
+
+    `None` for every kind of no, rather than an exception for some of them: a path that
+    is not a `.uimf` file, a path that is already a companion, and a raw file with no
+    companion beside it are all "there is nothing to offer", and a caller deciding
+    whether to offer a button has no use for the difference.
+
+    One helper rather than a `raw_path`/`companion_path` pair, because only one
+    direction is ever asked. The file that goes away is the raw one; nothing follows a
+    companion and then loses it.
+    """
+    stem, extension = os.path.splitext(os.path.abspath(os.fspath(path)))
+    if extension.lower() != ".uimf" or stem.lower().endswith(".summed"):
+        return None
+    candidate = stem + SUMMED_SUFFIX
+    return candidate if os.path.isfile(candidate) else None
 
 
 @dataclass(frozen=True)

@@ -30,12 +30,15 @@ from .decode import decode_frame_blobs, decode_intensities, encode_intensities, 
 from .frame import SparseFrame, sum_frames
 from .raster import DisplayAxes, RasterResult, profile, rasterise
 from .reader import (
+    SUMMED_SUFFIX,
+    FileGone,
     FrameGrouping,
     FrameParams,
     GlobalParams,
     LiveState,
     UimfFile,
     is_local_path,
+    summed_companion,
 )
 from .writer import (
     DETECTOR_BITS,
@@ -55,9 +58,11 @@ __all__ = [
     "METHOD_FRAME",
     "REPETITION",
     "REPETITIONS",
+    "SUMMED_SUFFIX",
     "WRITER_STAMP",
     "Calibration",
     "DisplayAxes",
+    "FileGone",
     "FrameCache",
     "FrameGrouping",
     "FrameParams",
@@ -79,4 +84,5 @@ __all__ = [
     "rasterise",
     "scan_axis_ms",
     "sum_frames",
+    "summed_companion",
 ]

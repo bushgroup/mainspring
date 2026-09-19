@@ -14,6 +14,9 @@ not that a method returns.
 The last two sections are task 26's: the rolling sum over the newest finished frames,
 and the launch route another program starts the viewer by. Both are the same acquisition
 stand-in and the same window, since both are ways of asking for what task 08 built.
+
+Task 28 adds the end of a run that does not keep its raw file: the followed file is
+deleted, and the window has to say so in words and offer the companion that survived.
 """
 
 from __future__ import annotations
@@ -25,12 +28,14 @@ import pytest
 
 from mainspring import interface
 from mainspring.uimf import (
+    FileGone,
     FrameSpec,
     GlobalSpec,
     LiveState,
     UimfFile,
     UimfWriter,
     is_local_path,
+    summed_companion,
 )
 from mainspring.viewer import app as viewer_app
 from mainspring.viewer.app import Launch, parse_arguments
@@ -263,6 +268,57 @@ def test_a_file_with_no_completion_marker_falls_back_to_its_mtime(tmp_path, monk
     assert settled.final == (1, 2, 3)
 
 
+def test_a_deleted_file_reads_as_gone_rather_than_as_sqlite_being_unhappy(acquisition):
+    """A run that does not keep its raw file deletes it at the close, which is an
+    ordinary end to an acquisition. SQLite has one message for that, for a corrupt file
+    and for an unreadable one, so the reader is what tells them apart."""
+    acquisition.frame()
+    live = UimfFile(acquisition.path)
+    assert live.refresh().frames == (1,)
+
+    acquisition.close()  # the acquisition software closes both files, then removes one
+    os.remove(acquisition.path)
+
+    with pytest.raises(FileGone):
+        live.refresh()
+    with pytest.raises(FileNotFoundError):
+        live.refresh()  # catchable as the ordinary thing it is, as well as as itself
+
+
+def test_nothing_holds_the_followed_file_open_between_calls(acquisition):
+    """The delete landing at all is the never-do rule paying off in a way nobody
+    designed for. Windows refuses to delete a file any process has open, so a reader
+    that kept a connection across polls would turn the acquisition software's
+    `os.remove` into a `PermissionError` and `keep_raw = false` into a silent no-op.
+
+    Asserted rather than assumed: nothing else in the suite would notice if a connection
+    started outliving a call.
+    """
+    acquisition.frame()
+    live = UimfFile(acquisition.path)
+    live.refresh()
+    live.read_frame(1)
+    live.frame_grouping()
+    acquisition.close()
+
+    os.remove(acquisition.path)  # raises PermissionError on Windows if anything is open
+    assert not os.path.exists(acquisition.path)
+
+
+def test_the_summed_companion_is_the_one_beside_the_raw_file(tmp_path):
+    """`<stem>.summed.uimf` beside `<stem>.uimf`, and only when it is really there."""
+    raw = tmp_path / "run.uimf"
+    raw.write_bytes(b"")
+    assert summed_companion(raw) is None  # the fold has not written one yet
+
+    companion = tmp_path / "run.summed.uimf"
+    companion.write_bytes(b"")
+    assert summed_companion(raw) == os.path.abspath(companion)
+    assert summed_companion(companion) is None  # a companion is not its own
+    assert summed_companion(tmp_path / "notes.txt") is None
+    assert summed_companion(tmp_path / "never-written.uimf") is None
+
+
 def test_a_network_path_is_not_a_path_a_file_can_be_followed_on(tmp_path):
     """WAL coordinates its readers and its writer through shared memory that only
     exists when both are on the same machine, so a share is refused for *following*.
@@ -481,6 +537,130 @@ def test_a_poll_that_keeps_failing_stops_following_instead_of_repeating(followin
     assert not window._follow_action.isChecked()
     assert not window._follow_mode.isEnabled()
     assert "gone away" in window.status_text()
+    # A poll that failed for any other reason still reads the way it always did: the
+    # message is the exception's, and there is nothing to offer instead of the file.
+    assert window.companion_offer is None
+
+
+def _remove_between_polls(path: str, qtbot) -> int:
+    """Delete `path`, retrying until no poll is in flight. Returns the tries it took.
+
+    Nothing outlives a call, which is what makes the delete possible at all. But a poll
+    *in flight* holds the file for as long as its query takes, and Windows will not
+    delete a file any process has open -- so at this suite's interval, a twentieth of
+    the real one, the delete takes a try or two. The acquisition software's own removal
+    is a single attempt inside a suppressed `OSError`, which is the other half of this
+    and is that repository's to fix (lab record, task 28).
+    """
+    for tries in range(1, 2001):
+        try:
+            os.remove(path)
+            return tries
+        except OSError:
+            qtbot.wait(1)
+    raise AssertionError(f"{path} was still held open after {tries} tries")
+
+
+def _fold(raw_path: str) -> str:
+    """Write the summed companion a run's fold would have left beside its raw file."""
+    companion = raw_path[: -len(".uimf")] + ".summed.uimf"
+    folded = Acquisition(companion)
+    folded.frame()
+    folded.close()
+    return companion
+
+
+def _run_ends_discarding_its_raw_file(acquisition, qtbot, *, fold: bool = True) -> str:
+    """The close of a run with `keep_raw = false`: both files closed, the raw one gone.
+
+    In that order, because it is the real one -- the acquisition software closes what it
+    has open before it removes anything, and a raw file its own writer still held could
+    not be deleted either.
+    """
+    companion = _fold(acquisition.path) if fold else ""
+    acquisition.close()
+    _remove_between_polls(acquisition.path, qtbot)
+    return companion
+
+
+def test_a_run_that_discards_its_raw_file_says_so_and_offers_the_companion(
+        following_window, qtbot):
+    """The whole point of task 28. The operator watching a run should read that the file
+    went, not sqlite's wording for a file it cannot open, and should be given the file
+    their data actually ended up in."""
+    window, acquisition, _ = following_window
+    companion = _run_ends_discarding_its_raw_file(acquisition, qtbot)
+
+    qtbot.waitUntil(lambda: not window.following, timeout=5000)
+    said = window.status_text()
+    assert os.path.basename(acquisition.path) in said
+    assert "is no longer there" in said
+    assert "database" not in said.lower() and "sqlite" not in said.lower()
+    assert os.path.normcase(str(window.companion_offer)) == os.path.normcase(companion)
+    assert window._offer.text() == f"Open {os.path.basename(companion)}"
+
+
+def test_the_companion_is_offered_and_not_opened(following_window, qtbot):
+    """Offered rather than opened, because opening it would change which frames are on
+    screen while the operator was looking somewhere else (Matt, 2026-09-18)."""
+    window, acquisition, painted = following_window
+    raw = acquisition.path
+    _run_ends_discarding_its_raw_file(acquisition, qtbot)
+    qtbot.waitUntil(lambda: not window.following, timeout=5000)
+
+    assert window._path == raw
+    drawn = len(painted)
+    qtbot.wait(150)  # several poll intervals: nothing is watching and nothing repaints
+    assert len(painted) == drawn
+
+
+def test_clicking_the_offer_opens_the_companion_and_takes_it_down(following_window,
+                                                                 qtbot):
+    """A shortcut past the file dialog, not a second way of opening a file: it goes
+    through `open_file`, so everything else about the open is unchanged."""
+    window, acquisition, painted = following_window
+    companion = _run_ends_discarding_its_raw_file(acquisition, qtbot)
+    qtbot.waitUntil(lambda: not window.following, timeout=5000)
+
+    drawn = len(painted)
+    window._offer.click()
+    qtbot.waitUntil(lambda: len(painted) > drawn, timeout=5000)
+
+    assert os.path.normcase(window._path) == os.path.normcase(companion)
+    assert window.companion_offer is None
+    assert window._offer.isHidden()
+
+
+def test_a_discarded_raw_file_with_no_companion_still_says_what_happened(
+        following_window, qtbot):
+    """A run cut short before its first fold leaves no companion at all. There is still
+    a sentence to read; there is simply nothing to offer."""
+    window, acquisition, _ = following_window
+    _run_ends_discarding_its_raw_file(acquisition, qtbot, fold=False)
+
+    qtbot.waitUntil(lambda: not window.following, timeout=5000)
+    assert "is no longer there" in window.status_text()
+    assert window.companion_offer is None
+    assert window._offer.isHidden()
+
+
+def test_opening_another_file_takes_down_an_offer_nobody_answered(following_window,
+                                                                 qtbot, tmp_path):
+    """The offer belongs to one run's ending. Whatever the operator opens next answers
+    it, including a file they chose themselves."""
+    window, acquisition, painted = following_window
+    _run_ends_discarding_its_raw_file(acquisition, qtbot)
+    qtbot.waitUntil(lambda: window.companion_offer is not None, timeout=5000)
+
+    other = Acquisition(tmp_path / "other.uimf")
+    other.frame()
+    drawn = len(painted)
+    window.open_file(other.path)
+    qtbot.waitUntil(lambda: len(painted) > drawn, timeout=5000)
+    other.close()
+
+    assert window.companion_offer is None
+    assert window._offer.isHidden()
 
 
 def test_following_does_not_reset_a_frame_type_filter_the_user_set(following_window, qtbot):

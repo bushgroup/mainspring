@@ -399,6 +399,22 @@ A frame whose completion was lost to a power failure reads as unfinished for goo
 honest rather than a defect, because such a frame may well be short. Its data are intact and
 every frame before it reads as complete.
 
+### When the run ends and the file goes
+
+A method that does not keep its raw file deletes that file when the run closes, once the summed
+companion beside it exists to have replaced it. The raw file is the one that grows during a run
+and so the one you were following, which means a successful run ends by making the file on screen
+disappear.
+
+The viewer stops following and says so by name, for example `Stopped following: 260918_BK_003.uimf
+is no longer there`. Everything already read stays on screen, and beside that message a button
+offers the companion that survived, `Open 260918_BK_003.summed.uimf`. Nothing repaints until you
+click it. The companion holds one frame per method frame rather than one per repetition, so it is
+the file your data ended up in and it is today's file shape.
+
+A run cut short before its first fold leaves no companion. The message is the same and there is
+nothing to offer alongside it.
+
 ### What cannot be followed
 
 `Follow` is refused on a file that is not on a drive attached to this machine, and the status bar
@@ -422,7 +438,9 @@ Both unit systems appear because they answer different questions and neither can
 from the other by eye. The intensity is read back out of the image on screen rather than
 recomputed, so it describes what you are looking at.
 
-In the middle are the open and frame messages, and anything else the viewer has to say.
+In the middle are the open and frame messages, and anything else the viewer has to say. A button
+appears beside them when a run you were following ends by discarding its raw file, offering the
+summed companion that survived.
 
 On the right is the peak of each projection: where the mass spectrum peaks and how high, and
 the same for the arrival-time distribution. Each is named by the axis it is on, so the two

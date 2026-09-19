@@ -78,6 +78,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QProgressDialog,
+    QPushButton,
     QSpinBox,
     QToolBar,
 )
@@ -91,6 +92,7 @@ from ..uimf import (
     LiveState,
     SparseFrame,
     is_local_path,
+    summed_companion,
 )
 from . import fonts, labels, theme
 from .controls import (
@@ -285,6 +287,20 @@ class MainWindow(QMainWindow):
         )
         self._status = QLabel("")
         describe(self._status, "What the viewer last did, and what the frame on screen is.")
+        # Beside the message rather than in a dialog, and only when there is something
+        # to offer. A run that does not keep its raw file deletes it at the close, so
+        # the message this sits next to is nearly always the last thing a followed
+        # acquisition says; the operator is looking at the status bar already, and the
+        # frames on screen must not change until they say so (Matt, 2026-09-18).
+        self._offer = QPushButton("")
+        describe(
+            self._offer,
+            "Open the summed companion of the file that was being followed. A run that"
+            " does not keep its raw file removes it when the run ends, leaving this one.",
+        )
+        self._offer.hide()
+        self._offer.clicked.connect(self._on_offer_clicked)
+        self._offered_path: "str | None" = None
         self._peaks = QLabel("")
         describe(
             self._peaks,
@@ -292,7 +308,12 @@ class MainWindow(QMainWindow):
             " over the range in view on the other axis.",
         )
         self.statusBar().addWidget(self._readout, 0)
-        self.statusBar().addWidget(self._status, 1)
+        # The message no longer takes the slack, so that the button can sit against its
+        # right-hand end rather than across the bar from it. Nothing else moves: the
+        # peaks readout and the progress bar are permanent widgets and stay on the right
+        # whether or not anything here stretches.
+        self.statusBar().addWidget(self._status, 0)
+        self.statusBar().addWidget(self._offer, 0)
         self.statusBar().addPermanentWidget(self._peaks)
         self.statusBar().addPermanentWidget(self._busy)
         # After all three owners exist and before the menus are built: the application
@@ -786,6 +807,7 @@ class MainWindow(QMainWindow):
         record, task 15).
         """
         self._open_started = time.perf_counter()
+        self._clear_offer()
         # Following is about one acquisition, so it does not survive into the next file:
         # a second file opened from the dialog is nearly always a finished one, and a
         # poll left running on it would be lock traffic against nothing.
@@ -959,6 +981,7 @@ class MainWindow(QMainWindow):
             self._show_status(refusal)
             return
         self._enable_follow_controls(True)
+        self._clear_offer()
         self._live_sum_frames = ()
         self._worker.set_follow(True)
         self._show_status(f"Following {os.path.basename(self._path)}")
@@ -1119,12 +1142,21 @@ class MainWindow(QMainWindow):
         self._apply_type_filter()  # the range grows; the frame on screen stays put
         self._act_on_live_state(state)
 
-    def _on_follow_stopped(self, message: str) -> None:
+    def _on_follow_stopped(self, message: str, gone: bool) -> None:
         """The poll raised and the worker gave up on it; put the toggle back.
 
         A file moved or unmounted mid-run fails every poll, so the alternative is an
         error a second until someone looks. The file stays open and everything already
         read stays on screen: only the watching stops.
+
+        `gone` is the one failure that is not a fault. A run that does not keep its raw
+        file deletes it at the close, so the last thing a followed acquisition does is
+        make the file being followed disappear, and the operator should read that as the
+        run having ended rather than as a sqlite message about a file the window still
+        believes is open. The sentence names the file; the companion that survived, if
+        there is one, is offered as a button and not opened, because the frames on
+        screen must not change without the operator saying so (Matt, 2026-09-18, and
+        lab record, task 28).
         """
         if not self.following:
             return
@@ -1134,7 +1166,56 @@ class MainWindow(QMainWindow):
         self._enable_follow_controls(False)
         self._live = None
         self._live_sum_frames = ()
-        self._show_status(f"Stopped following: {message}")
+        if not gone:
+            self._show_status(f"Stopped following: {message}")
+            return
+        name = os.path.basename(self._path) if self._path else "the file"
+        self._show_status(f"Stopped following: {name} is no longer there")
+        self._offer_companion()
+
+    def _offer_companion(self) -> None:
+        """Put `Open <stem>.summed.uimf` beside the status message, if there is one.
+
+        Asked of the disk at the moment the offer is made rather than remembered from
+        the open: the companion is written from the first fold onwards, so a run cut
+        short before one has no companion at all, and a run that reached the end has one
+        that was not there when the raw file was opened.
+        """
+        companion = summed_companion(self._path) if self._path else None
+        self._offered_path = companion
+        if companion is None:
+            self._offer.hide()
+            return
+        self._offer.setText(f"Open {os.path.basename(companion)}")
+        self._offer.show()
+
+    @property
+    def companion_offer(self) -> "str | None":
+        """The summed companion being offered beside the status message, if any.
+
+        The read side of `_offer_companion`, for the reason `status_text` is the read
+        side of `_show_status`: a check asks the window what it is saying rather than
+        reaching into a widget, and `isVisible` is not the question -- a child of a
+        window that was never shown is not visible whatever it was told to do.
+        """
+        return self._offered_path
+
+    def _clear_offer(self) -> None:
+        """Take the offer down. Whatever the operator does next answers it."""
+        self._offered_path = None
+        self._offer.hide()
+
+    def _on_offer_clicked(self) -> None:
+        """Open the companion, by the same route `File > Open` takes.
+
+        Nothing special about the open: the offer is a shortcut past the file dialog and
+        not a second way of opening a file, so keep-ranges, the frame spinner and a
+        failure all behave exactly as they would have for a file chosen by hand.
+        """
+        path, self._offered_path = self._offered_path, None
+        self._offer.hide()
+        if path is not None:
+            self.open_file(path)
 
     def _act_on_live_state(self, state: LiveState) -> None:
         """The `Show` half of a poll: leave the view alone, chase it, or total it up."""
