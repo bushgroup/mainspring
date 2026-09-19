@@ -175,6 +175,33 @@ def main() -> int:
     # GUI, which is the whole reason they are not in the window (lab record, task 27).
     check_true("the launch words are readable with no Qt loaded",
                bool(interface.SHOW_WORDS) and interface.OPTION_FOLLOW == "--follow")
+    # Nothing in this check may read the pointer a real acquisition publishes. This
+    # workstation is an instrument PC, where that file can genuinely name a run in
+    # progress, and a viewer scene below would then open somebody's acquisition and
+    # follow it. Pointed at a path in the temporary directory that nothing creates; the
+    # one scene that wants a pointer writes its own over this (lab record, task 32).
+    os.environ[interface.LIVE_POINTER_ENV] = os.path.join(
+        tempfile.gettempdir(), "mainspring-check-public", interface.LIVE_POINTER_NAME
+    )
+    # The pointer travels the same road as the words and has to survive the same
+    # journey: the program that publishes a run in progress is the acquisition side,
+    # whose own layering forbids it a GUI import, so the schema has to be writable and
+    # readable here, with no Qt loaded, or it is not an interface (lab record, task 32).
+    with tempfile.TemporaryDirectory() as scratch:
+        pointer = os.path.join(scratch, interface.LIVE_POINTER_NAME)
+        interface.write_live_pointer(os.path.join(scratch, "run.uimf"),
+                                     writer="check_public", path=pointer)
+        published = interface.read_live_pointer(pointer)
+        check_true("a run pointer round trips with no Qt loaded",
+                   published is not None
+                   and published.path == os.path.join(scratch, "run.uimf")
+                   and published.writer == "check_public")
+        interface.clear_live_pointer(pointer)
+        check_true("and clearing it leaves nothing for a viewer to find",
+                   interface.read_live_pointer(pointer) is None)
+        check_true("a pointer that is not there is absence rather than an error",
+                   interface.read_live_pointer(os.path.join(scratch, "nothing.json"))
+                   is None)
 
     # --------------------------------------------------------------------------------
     section("the published surface")
@@ -236,6 +263,24 @@ def main() -> int:
                mainspring.uimf.SUMMED_SUFFIX == ".summed.uimf")
     check_true("and a deleted file still raises something a caller can catch as missing",
                issubclass(mainspring.uimf.FileGone, FileNotFoundError))
+    # The pointer's names, on the same footing as the launch words: the acquisition side
+    # imports them to publish the run it is writing, so a rename here is a run the
+    # viewer stops finding on every machine that already has an installed clockwork
+    # (lab record, task 32).
+    POINTED = ("LIVE_POINTER_ENV", "LIVE_POINTER_NAME", "LIVE_POINTER_VERSION",
+               "LivePointer", "clear_live_pointer", "live_pointer_path",
+               "read_live_pointer", "write_live_pointer")
+    unpublished = [name for name in POINTED if not hasattr(interface, name)]
+    check_true(f"mainspring.interface still offers the run pointer"
+               f"{' (missing ' + ', '.join(unpublished) + ')' if unpublished else ''}",
+               not unpublished)
+    # The file name is a convention between two programs and is compared as a literal
+    # for the reason `SUMMED_SUFFIX` is: renaming the constant costs nothing, renaming
+    # the string leaves each program looking in a place the other does not write.
+    check_true(f"the pointer is still called {interface.LIVE_POINTER_NAME!r} and stamped"
+               f" version {interface.LIVE_POINTER_VERSION}",
+               interface.LIVE_POINTER_NAME == "live-run.json"
+               and interface.LIVE_POINTER_VERSION == 1)
     check_true("the reader still offers the live-following entry points",
                all(callable(getattr(mainspring.uimf.UimfFile, name, None))
                    for name in ("refresh", "is_provisional", "read_frame", "frame_numbers")))
@@ -1378,6 +1423,45 @@ def main() -> int:
                    bool(shown) and "unclosed.uimf-wal" in window.status_text()
                    and "copy both files" in window.status_text())
         window.close()
+
+    # `Live` on a window that has never been given a path: the acquisition software
+    # publishes the run it is writing and the viewer finds it, which is the whole of
+    # task 32. Nothing here types a file name (lab record, task 32).
+    with tempfile.TemporaryDirectory() as tmp:
+        os.environ[interface.LIVE_POINTER_ENV] = os.path.join(tmp, "live-run.json")
+        running = os.path.join(tmp, "260919_BK_001.uimf")
+        with uimf_writer.UimfWriter(running, uimf_writer.GlobalSpec(bins=4096)) as handle:
+            console = ConsoleStub(running)
+            handle.add_frame(uimf_writer.FrameSpec(scans=8))
+            console.acquire_frame(1, [(s, np.array([100 + s, 900]), np.array([4, 7]))
+                                      for s in range(6)])
+            handle.finalise_frame(1, duration_s=0.5)
+            interface.write_live_pointer(running, writer="check_public")
+
+            interface.clear_live_pointer()
+            window = MainWindow()
+            window._follow_action.setChecked(True)
+            check_true("with nothing open and nothing acquiring, Live has nothing to do",
+                       not window.following
+                       and "Nothing is being acquired" in window.status_text())
+
+            interface.write_live_pointer(running, writer="check_public")
+            window._follow_action.setChecked(True)
+            deadline = time.time() + 5.0
+            while not window.following and time.time() < deadline:
+                qt_app.processEvents()
+                time.sleep(0.01)
+            check_true(f"and with a run published, it opens that run and follows it"
+                       f" ({os.path.basename(str(window._path))})",
+                       window.following
+                       and os.path.normcase(str(window._path)) == os.path.normcase(running))
+            check_true(f"saying which file it found and why ({window.status_text()!r})",
+                       "the run being acquired now" in window.status_text())
+            window.stop_following()
+            check_true("and it stops looking when Live goes off",
+                       not window._live_timer.isActive())
+            window.close()
+        interface.clear_live_pointer()
 
     # --------------------------------------------------------------------------------
     section("real files, if this clone has any")

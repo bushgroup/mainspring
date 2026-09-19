@@ -31,6 +31,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import time
 
 import numpy as np
 import pytest
@@ -389,11 +390,19 @@ def test_follow_is_refused_on_a_path_that_is_not_a_local_drive(qtbot, monkeypatc
 
 
 def test_follow_is_refused_before_a_file_is_open(qtbot):
+    """With nothing open, nothing acquiring and nowhere to look, `Live` says so.
+
+    The refusal survived task 32, which gave `Live` two other places to find a file: the
+    pointer and the folder of the file already open. With no pointer and no file there
+    is neither, and the wording says both halves rather than only the one it used to
+    (`_live_target`).
+    """
     window = MainWindow()
     qtbot.addWidget(window)
     window._follow_action.setChecked(True)
     assert not window.following
-    assert "Open a file" in window.status_text()
+    assert "Nothing is being acquired" in window.status_text()
+    assert "no file open" in window.status_text()
 
 
 def test_following_grows_the_frame_axis_without_moving_the_view(following_window, qtbot):
@@ -1249,3 +1258,336 @@ def test_restrict_to_view_is_switched_off_while_a_run_is_followed(
     window._follow_action.setChecked(False)
     assert box.isEnabled()
     assert "Live" not in box.toolTip()
+
+
+# --- task 32: Live tracks the run the acquisition software is writing ----------------
+
+@pytest.fixture
+def pointer(tmp_path, monkeypatch):
+    """The pointer file this test may publish a run in, isolated from the real one.
+
+    `conftest._isolated_live_pointer` already redirects every test; this names the same
+    redirection so a test that writes a pointer has the path in hand.
+    """
+    where = tmp_path / "pointer" / "live-run.json"
+    monkeypatch.setenv(interface.LIVE_POINTER_ENV, str(where))
+    return where
+
+
+def test_a_pointer_round_trips_through_the_schema_both_programs_read(pointer, tmp_path):
+    """What clockwork writes is what mainspring reads, because it is the same function.
+
+    The whole reason the schema is in `mainspring.interface`: the acquisition software
+    imports the writer rather than retyping the JSON, so the two cannot disagree about
+    a field name (lab record, tasks 27 and 32).
+    """
+    run = tmp_path / "260919_BK_001.uimf"
+    run.write_bytes(b"")
+
+    assert interface.read_live_pointer() is None
+    written = interface.write_live_pointer(run, writer="clockwork",
+                                           started="2026-09-19T10:31:00")
+    assert written == str(pointer)
+
+    published = interface.read_live_pointer()
+    assert published == interface.LivePointer(
+        path=str(run), writer="clockwork", started="2026-09-19T10:31:00"
+    )
+
+    interface.clear_live_pointer()
+    assert interface.read_live_pointer() is None
+    interface.clear_live_pointer()  # idempotent: nothing to remove is not a failure
+
+
+def test_the_pointer_answers_none_for_every_kind_of_absence(pointer):
+    """A viewer polling for a run that has not started must not raise, ever.
+
+    Each of these is a real state: the file missing before the first run, one caught
+    half-written on a filesystem that did not honour the rename, one from a schema this
+    version does not know, and one whose path is missing, blank or not a string.
+    """
+    pointer.parent.mkdir(parents=True, exist_ok=True)
+    assert interface.read_live_pointer() is None  # no file at all
+
+    for content in (
+        "{not json",
+        "[]",
+        '"a string"',
+        '{"version": 99, "path": "D:/data/x.uimf"}',
+        '{"version": 1}',
+        '{"version": 1, "path": ""}',
+        '{"version": 1, "path": "   "}',
+        '{"version": 1, "path": 7}',
+    ):
+        pointer.write_text(content, encoding="utf-8")
+        assert interface.read_live_pointer() is None, content
+
+    pointer.write_text('{"version": 1, "path": "D:/data/x.uimf"}', encoding="utf-8")
+    found = interface.read_live_pointer()
+    assert found is not None and found.writer == "" and found.started == ""
+
+
+def test_the_pointer_is_renamed_into_place_rather_than_written_in_place(pointer,
+                                                                        tmp_path,
+                                                                        monkeypatch):
+    """A reader looking every two seconds must never see half a pointer.
+
+    Checked at the moment of the rename: the target does not exist yet, and what is on
+    disk beside it is the partial file under a name no reader looks for.
+    """
+    seen: list = []
+    real_replace = os.replace
+
+    def watching_replace(src, dst):
+        seen.append((os.path.exists(dst),
+                     sorted(p.name for p in pointer.parent.iterdir())))
+        real_replace(src, dst)
+
+    monkeypatch.setattr(interface.os, "replace", watching_replace)
+    interface.write_live_pointer(tmp_path / "run.uimf")
+
+    assert seen == [(False, ["live-run.json.partial"])]
+    assert interface.read_live_pointer() is not None
+
+
+def test_the_pointer_lives_under_the_users_own_directory_by_default(monkeypatch):
+    """Where the two programs agree to look when nothing overrides it."""
+    monkeypatch.delenv(interface.LIVE_POINTER_ENV, raising=False)
+    monkeypatch.setenv("LOCALAPPDATA", os.path.join("C:", os.sep, "Users", "bk"))
+    where = interface.live_pointer_path()
+    assert os.path.basename(where) == interface.LIVE_POINTER_NAME == "live-run.json"
+    assert os.path.basename(os.path.dirname(where)) == "mainspring"
+
+
+def test_a_pointer_to_a_file_that_is_gone_or_stale_is_not_followed(tmp_path, monkeypatch):
+    """The guard against a pointer nobody took away: a crash, or a run cleared up.
+
+    The file has to be there, and it has to look like something being written, which
+    means touched recently or holding a write-ahead log a writer has not closed.
+    """
+    from mainspring.viewer import main_window as mw
+
+    assert not mw.live_candidate(str(tmp_path / "never-existed.uimf"))
+
+    stale = tmp_path / "yesterday.uimf"
+    stale.write_bytes(b"x")
+    long_ago = time.time() - mw.LIVE_STALE_S - 60
+    os.utime(stale, (long_ago, long_ago))
+    assert not mw.live_candidate(str(stale))
+
+    # The same file with the same date, now with a log beside it that still holds
+    # commits: a writer that never closed, which is task 29's rebooted instrument.
+    monkeypatch.setattr(mw, "hot_write_ahead_log", lambda path: f"{path}-wal")
+    assert mw.live_candidate(str(stale))
+
+    fresh = tmp_path / "now.uimf"
+    fresh.write_bytes(b"x")
+    assert mw.live_candidate(str(fresh))
+
+
+def test_a_pointer_onto_a_share_is_another_machines_business(tmp_path, monkeypatch):
+    """Following means reading a WAL database another process writes, which needs both
+    on one machine. A pointer naming a share was published by an operator elsewhere."""
+    from mainspring.viewer import main_window as mw
+
+    run = tmp_path / "run.uimf"
+    run.write_bytes(b"x")
+    monkeypatch.setattr(mw, "is_local_path", lambda path: False)
+    assert not mw.live_candidate(str(run))
+
+
+def test_the_folder_fallback_skips_the_summed_companion(tmp_path):
+    """A run writes two files and the companion is written at the end, so by date it is
+    nearly always the newest thing in the directory. It is also the finished one."""
+    from mainspring.viewer.main_window import newest_run_in
+
+    raw = tmp_path / "260919_BK_001.uimf"
+    raw.write_bytes(b"x")
+    (tmp_path / "260919_BK_001.summed.uimf").write_bytes(b"x")
+    (tmp_path / "notes.txt").write_text("not a run", encoding="utf-8")
+    long_ago = time.time() - 30
+    os.utime(raw, (long_ago, long_ago))
+
+    assert newest_run_in(str(tmp_path)) == str(raw)
+    assert newest_run_in(str(tmp_path / "no-such-folder")) is None
+
+
+def test_live_opens_the_run_the_pointer_names(qtbot, acquisition, quick_poll, pointer,
+                                              tmp_path):
+    """`Live` with another file open moves to the run being acquired, and says why.
+
+    The point of the whole task: nobody types a path. The window is sitting on a
+    finished acquisition, the pointer names the one in progress, and turning `Live` on
+    opens it and follows it as one act.
+    """
+    finished = Acquisition(tmp_path / "yesterday.uimf")
+    finished.frame()
+    finished.close()
+    acquisition.frame()
+    interface.write_live_pointer(acquisition.path, writer="clockwork")
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    painted: list = []
+    window.frame_shown.connect(painted.append)
+    window.open_file(finished.path)
+    qtbot.waitUntil(lambda: bool(painted), timeout=5000)
+
+    window._follow_action.setChecked(True)
+    qtbot.waitUntil(lambda: window.following, timeout=5000)
+    assert window._path == acquisition.path
+    assert "the run being acquired now" in window.status_text()
+
+
+def test_live_finds_the_run_with_no_file_open_at_all(qtbot, acquisition, quick_poll,
+                                                     pointer):
+    """A viewer left open overnight, and a run started in the morning.
+
+    The refusal `Live` used to give with nothing open now applies only when there is
+    nothing to find: a pointer is somewhere to look, so the window opens what it names.
+    """
+    acquisition.frame()
+    interface.write_live_pointer(acquisition.path, writer="clockwork")
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._follow_action.setChecked(True)
+    qtbot.waitUntil(lambda: window.following, timeout=5000)
+    assert window._path == acquisition.path
+
+
+def test_live_moves_itself_to_the_next_run_when_one_starts(qtbot, acquisition,
+                                                           quick_poll, pointer,
+                                                           tmp_path):
+    """The timer, which is what makes `Live` mean what it says.
+
+    A viewer following one run and the next one starting: the window goes with it,
+    without anyone touching the toolbar, and it never says it stopped following on the
+    way. Auto-switching is allowed here although task 28 refused it for the summed
+    companion, because `Live` is the operator asking to see whatever is being acquired.
+    """
+    acquisition.frame()
+    interface.write_live_pointer(acquisition.path, writer="clockwork")
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._live_timer.setInterval(20)
+    painted: list = []
+    window.frame_shown.connect(painted.append)
+    window._follow_action.setChecked(True)
+    qtbot.waitUntil(lambda: window.following and bool(painted), timeout=5000)
+    assert window._path == acquisition.path
+
+    nextrun = Acquisition(tmp_path / "next.uimf")
+    try:
+        nextrun.frame()
+        interface.write_live_pointer(nextrun.path, writer="clockwork")
+        qtbot.waitUntil(lambda: window._path == nextrun.path, timeout=5000)
+        qtbot.waitUntil(lambda: window.following, timeout=5000)
+    finally:
+        nextrun.close()
+    assert "the run being acquired now" in window.status_text()
+
+
+def test_a_pointer_nobody_took_away_leaves_the_open_file_alone(qtbot, acquisition,
+                                                               quick_poll, pointer,
+                                                               tmp_path):
+    """A crashed run's pointer must not drag a window off the file somebody is reading.
+
+    The file it names is there but has not been written to for longer than
+    `LIVE_STALE_S`, which no acquisition ever manages.
+    """
+    from mainspring.viewer import main_window as mw
+
+    crashed = tmp_path / "crashed.uimf"
+    crashed.write_bytes(b"x")
+    long_ago = time.time() - mw.LIVE_STALE_S - 60
+    os.utime(crashed, (long_ago, long_ago))
+    interface.write_live_pointer(crashed, writer="clockwork")
+
+    acquisition.frame()
+    window = MainWindow()
+    qtbot.addWidget(window)
+    painted: list = []
+    window.frame_shown.connect(painted.append)
+    window.open_file(acquisition.path)
+    qtbot.waitUntil(lambda: bool(painted), timeout=5000)
+
+    window._follow_action.setChecked(True)
+    assert window.following
+    assert window._path == acquisition.path
+
+
+def test_the_folder_fallback_waits_for_a_file_to_actually_grow(qtbot, acquisition,
+                                                               quick_poll, tmp_path):
+    """No pointer, so the newest run in the folder -- but only once it has moved.
+
+    What makes `Live` work on a file clockwork did not write. The first look only
+    records the size and the date; a second look that finds them changed is what says a
+    file is being written now rather than merely being the newest thing there.
+    """
+    acquisition.frame()
+    window = MainWindow()
+    qtbot.addWidget(window)
+    painted: list = []
+    window.frame_shown.connect(painted.append)
+    window.open_file(acquisition.path)
+    qtbot.waitUntil(lambda: bool(painted), timeout=5000)
+
+    beside = Acquisition(tmp_path / "zz-beside.uimf")
+    try:
+        beside.frame()
+        window._follow_action.setChecked(True)
+        assert window.following
+        assert window._path == acquisition.path  # newest, but not yet seen to grow
+
+        window._live_timer.setInterval(20)
+        beside.frame()
+        qtbot.waitUntil(lambda: window._path == beside.path, timeout=5000)
+        qtbot.waitUntil(lambda: window.following, timeout=5000)
+        assert "the newest run in this folder" in window.status_text()
+    finally:
+        beside.close()
+
+
+def test_a_file_touched_once_beside_the_open_one_is_never_followed(qtbot, acquisition,
+                                                                   quick_poll, tmp_path):
+    """The other half of the growth rule, and the half that protects a reader.
+
+    An archive folder somebody drops a file into, or a copy that lands while a run is
+    being studied: newer than everything, and never written to again.
+    """
+    acquisition.frame()
+    window = MainWindow()
+    qtbot.addWidget(window)
+    painted: list = []
+    window.frame_shown.connect(painted.append)
+    window.open_file(acquisition.path)
+    qtbot.waitUntil(lambda: bool(painted), timeout=5000)
+
+    dropped = Acquisition(tmp_path / "zz-dropped.uimf")
+    dropped.frame()
+    dropped.close()
+
+    window._live_timer.setInterval(20)
+    window._follow_action.setChecked(True)
+    assert window.following
+    qtbot.wait(200)  # many ticks, each finding the same size and the same date
+    assert window._path == acquisition.path
+
+
+def test_the_search_stops_with_the_following_it_serves(qtbot, acquisition, quick_poll):
+    """`Live` off means `Live` off: no timer, and no memory of what the folder held."""
+    acquisition.frame()
+    window = MainWindow()
+    qtbot.addWidget(window)
+    painted: list = []
+    window.frame_shown.connect(painted.append)
+    window.open_file(acquisition.path)
+    qtbot.waitUntil(lambda: bool(painted), timeout=5000)
+
+    window._follow_action.setChecked(True)
+    assert window._live_timer.isActive()
+    window._follow_action.setChecked(False)
+    assert not window._live_timer.isActive()
+    assert window._growth == {}

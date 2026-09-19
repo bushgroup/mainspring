@@ -51,7 +51,8 @@ viewer reads one frame and rasterises it to the size of the window rather than l
 file. Paging to another frame costs about 5 milliseconds however far into the file it is.
 
 A file the instrument is still writing opens the same way, and the `Live` control then keeps
-it up to date as the run continues. See [Following a file being
+it up to date as the run continues. `Live` will also find that run for you, so watching an
+acquisition needs no file name at all. See [Following a file being
 acquired](#following-a-file-being-acquired).
 
 ### Runs that are in two files
@@ -361,9 +362,10 @@ takes about 20 seconds, so use `Sum method frame` when one experiment is what yo
 
 ### Live
 
-Watches the open file for what the instrument writes to it, once a second, and keeps the frame
-spinner, the type filter and the repetition count in step with what is there. `Show`, beside it,
-decides what following does with each new frame. Both are covered in [Following a file being
+Finds the run being acquired, opens it if it is not the file on screen already, and watches it
+for what the instrument writes, once a second, keeping the frame spinner, the type filter and the
+repetition count in step with what is there. `Show`, beside it, decides what following does with
+each new frame. Both are covered in [Following a file being
 acquired](#following-a-file-being-acquired).
 
 ### Show
@@ -380,10 +382,14 @@ number, and the number you set is remembered between sessions.
 
 ## Following a file being acquired
 
-To watch a run as it happens, open the file the acquisition is writing and turn on `Live`. The
-viewer then asks the file once a second what has been added to it. Nothing about the acquisition
-changes: every read is a separate read-only connection that is opened, used and closed, which is
-what keeps the viewer out of the writers' way.
+To watch a run as it happens, turn on `Live`. The viewer finds the run being acquired, opens it if
+it is not already the file on screen, and then asks it once a second what has been added to it.
+Nothing about the acquisition changes: every read is a separate read-only connection that is
+opened, used and closed, which is what keeps the viewer out of the writers' way.
+
+`Live` finds the run two ways, described in [Which run `Live`
+follows](#which-run-live-follows). You can also hand it the file yourself by opening that file
+first, which is what the third way amounts to.
 
 Each poll costs about 10 milliseconds of query on a file of 5,000 frames, and a frame becomes
 visible within 3 milliseconds of the software that wrote it saying it is finished. The second
@@ -417,6 +423,35 @@ nothing new costs one query and no reading.
 
 The zoom, the color levels and every other setting are untouched by any of this. Following
 changes which frame is on screen, never how it is drawn.
+
+### Which run `Live` follows
+
+`Live` looks in two places every two seconds, and takes the first answer it gets.
+
+The first is a pointer the acquisition software publishes, a small file naming the run it is
+writing. The lab's own acquisition software writes it when a run starts and removes it when the
+run ends, so the answer is exact and it knows when there is no longer one. `Live` opens that run
+and says which file it found and why, for example `Following 260919_BK_001.uimf, the run being
+acquired now`.
+
+The second is the folder the file on screen came from. `Live` takes the newest acquisition there,
+skipping the summed companions, and follows it once it has seen the file grow between two looks.
+Two looks means a file nobody is writing to is never followed however new it is, which is what
+keeps `Live` on the run rather than on whatever was copied into the folder last. This is the
+route for acquisition software that publishes no pointer, and it needs a file from that folder
+open to know where to look.
+
+Where neither answers, `Live` follows the file already open, which is what it has always done.
+With nothing open and nothing being acquired it says so and stays off.
+
+A run that starts while `Live` is on is opened and followed as it starts, so a viewer left on at
+the bench moves from one acquisition to the next by itself. Nothing about the view is carried
+over. The frame you were on, the zoom and the color levels belong to the run that just ended, and
+the new run opens the way any file opens.
+
+A pointer left behind by a crash names a file that has stopped growing. `Live` ignores one whose
+file is missing, is on another machine, or has gone five minutes without being written to and
+holds no unmerged write-ahead log.
 
 ### Starting the viewer on a run in progress
 
@@ -477,8 +512,9 @@ says so. Following means reading a database while another process writes it, and
 processes coordinate through shared memory that only exists when both are on the same machine.
 Opening and reading a file over a share is unaffected. It is only following one that is refused.
 
-Following is also switched off whenever another file is opened, and it is not remembered between
-sessions. It describes one acquisition rather than a way of working.
+Following is switched off whenever you open another file yourself, and it is not remembered
+between sessions. It describes one acquisition rather than a way of working. A file `Live` opens
+for itself is the exception, since it opened that file in order to go on following.
 
 ## The status bar
 

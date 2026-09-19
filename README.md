@@ -12,12 +12,14 @@ instrument writes UIMF.
 
 ## Status
 
-Version 1.5.0. The reader layer, the viewer, and the Windows installer are written and
+Version 1.6.0. The reader layer, the viewer, and the Windows installer are written and
 verified, and the development record lives in a private companion repository. This release
-adds the chromatogram, a panel that plots the total signal in every frame of a file against
-the time the instrument recorded for it, so that the shape of a run is visible while the run
-is happening. Highlight a span of it to read what that span holds, and sum it into the heat
-map in one click. The [user guide](docs/user-guide.md) covers all of it.
+gives the `Live` control its full meaning: it finds the run being acquired and follows it,
+without anyone typing a path, and moves to the next run when one starts. The release before it
+added the chromatogram, a panel that plots the total signal in every frame of a file against the
+time the instrument recorded for it, so that the shape of a run is visible while the run is
+happening. Highlight a span of it to read what that span holds, and sum it into the heat map in
+one click. The [user guide](docs/user-guide.md) covers all of it.
 
 The reader reproduces every scan's stored total ion current and base peak intensity exactly
 on the four files it has been tested against, which were written by four different versions
@@ -68,6 +70,10 @@ of the viewer's own `Show` box. A file that cannot be followed, one on a network
 opens anyway and the status bar says why it is not being followed. An option the viewer
 does not offer is an error rather than a file by that name, and the process exits 2 without
 opening a window.
+
+The `Live` control in the window needs no file name. It finds the run being acquired, from a
+pointer the acquisition software publishes or from the newest growing acquisition in the folder
+the open file came from, opens it and follows it, and moves to the next run when one starts.
 
 ## Reading a file from Python
 

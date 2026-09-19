@@ -95,8 +95,9 @@ from PySide6.QtWidgets import (
 )
 
 from .. import __version__
-from ..interface import SHOW_WORDS
+from ..interface import SHOW_WORDS, read_live_pointer
 from ..uimf import (
+    SUMMED_SUFFIX,
     DisplayAxes,
     FrameGrouping,
     FrameParams,
@@ -217,8 +218,134 @@ to `FOLLOW_MODES` without a word for it fail at import rather than quietly drop 
 command line."""
 
 
+LIVE_CHECK_MS = 2000
+"""How often `Live` looks for the run being acquired, in milliseconds.
+
+A `QTimer` on the window and deliberately not the load worker's poll: this is a stat and
+a short read of a small text file, nowhere near SQLite, and the one-second poll budget is
+for asking the open file what has been written to it (`notes/live-viewing.md`). Two
+seconds because the thing it is watching for -- a run starting -- happens once every few
+minutes at most, and two seconds of latency on it is invisible to an operator who has
+just pressed Acquire."""
+
+LIVE_STALE_S = 300.0
+"""How long a file may go unwritten and still be taken for a run in progress, in seconds.
+
+The guard against a pointer nobody took away: a power cut, or an acquisition program
+killed between its start and the `finally` that clears the pointer. Five minutes is
+generous on purpose. A run writes a frame about once a second, so a real acquisition
+never comes close to it, and the damage of the two mistakes is not symmetric -- firing
+early abandons a run somebody is watching, firing late costs one confusing `Live`
+session on a file that is not growing. A hot write-ahead log counts as written whatever
+the clock says, since a log with commits in it is a writer that has not closed."""
+
+
 def _frame_type_name(frame_type: int) -> str:
     return _FRAME_TYPE_NAMES.get(int(frame_type), f"Type {frame_type}")
+
+
+def _same_file(one: "str | None", other: "str | None") -> bool:
+    """Whether two paths name the same file, as far as this can be known cheaply.
+
+    Case-insensitively on Windows and after resolving `.` and `..`, which is what
+    separates "the pointer names the file already open" from "the pointer names a
+    different file and `Live` should move". Not `os.path.samefile`: that wants both files
+    to exist and to be stat-able, and one of the two being gone is exactly the case this
+    has to answer rather than raise on.
+    """
+    if one is None or other is None:
+        return one is other
+    return os.path.normcase(os.path.abspath(one)) == os.path.normcase(os.path.abspath(other))
+
+
+def run_marks(path: str) -> "tuple[float, int] | None":
+    """When a run on disk was last written to and how big it is, log included.
+
+    **A run is two files while it is being acquired.** clockwork creates the database in
+    WAL mode, so a frame committed during a run lands in `<name>.uimf-wal` and the
+    database itself is not touched again until something checkpoints it -- which is
+    `UimfWriter.close`, at the end. A viewer that judged a file by its own date and size
+    would therefore see every clockwork run in progress as a file nothing had happened to
+    since the moment it was created, and see it lose to any finished file beside it.
+
+    The newer of the two dates and the sum of the two sizes, which is what both callers
+    want: `newest_run_in` ranks by the first and `MainWindow._growing` compares the pair.
+    `None` for a file that cannot be stat-ed at all, which a missing log is not.
+    """
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return None
+    try:
+        log = os.stat(f"{path}-wal")
+    except OSError:
+        return stat.st_mtime, stat.st_size
+    return max(stat.st_mtime, log.st_mtime), stat.st_size + log.st_size
+
+
+def live_candidate(path: str) -> bool:
+    """Whether the file a pointer names is one `Live` should move to.
+
+    Three questions, and each one is a way a *pointer* can be wrong rather than a way a
+    file can be bad. **It has to be there**, because a pointer outlives the file it names
+    when a run is cleared up. **It has to be on this machine**, because following means
+    reading a WAL database while another process writes it and WAL coordinates the two
+    through shared memory that only exists locally (`is_local_path`) -- a pointer on a
+    share is one some other machine's operator published. **It has to look like something
+    being written**: modified inside `LIVE_STALE_S`, or carrying a write-ahead log with
+    commits in it, which is what a file an open writer holds looks like.
+
+    That last one is a loose test on purpose, because a pointer is an explicit claim by
+    the program doing the acquiring and what is being guarded against is only a claim
+    nobody withdrew -- a crash. The folder fallback has no such claim behind it and is
+    held to a stricter rule (`MainWindow._growing`).
+
+    A refusal here is silent and is meant to be: the file is not offered, so `Live`
+    falls through to the next thing in its order rather than saying no to something
+    nobody asked for.
+    """
+    marks = run_marks(path)
+    if marks is None:
+        return False
+    if not is_local_path(path):
+        return False
+    if time.time() - marks[0] <= LIVE_STALE_S:
+        return True
+    return hot_write_ahead_log(path) is not None
+
+
+def newest_run_in(folder: str) -> "str | None":
+    """The most recently written `.uimf` in `folder` that is not a summed companion.
+
+    The fallback for a writer that publishes no pointer, which is every writer but
+    clockwork. **Companions are skipped** because a run writes two files and the one
+    that grows during it is the raw one; the companion is written at the end, so by
+    modification time it is nearly always the newest thing in the directory and would
+    win every time it existed.
+
+    Ranked by `run_marks` rather than by the database's own date, so that a run being
+    acquired into a WAL file is not judged by a database nothing has written to since it
+    was created.
+
+    `None` rather than an exception on a folder that cannot be read, and an entry that
+    cannot be stat-ed is skipped rather than failing the scan: this runs off a timer
+    against a directory the instrument is writing into, where a file can be created and
+    renamed between the listing and the question.
+    """
+    newest: "str | None" = None
+    newest_at = -1.0
+    try:
+        entries = list(os.scandir(folder))
+    except OSError:
+        return None
+    for entry in entries:
+        name = entry.name.lower()
+        if not name.endswith(".uimf") or name.endswith(SUMMED_SUFFIX):
+            continue
+        marks = run_marks(entry.path)
+        if marks is not None and marks[0] > newest_at:
+            newest, newest_at = entry.path, marks[0]
+    return newest
 
 
 def _follow_modes_for(*, grouped: bool) -> "list[str]":
@@ -275,6 +402,16 @@ class MainWindow(QMainWindow):
         self._live_sum_frames: tuple[int, ...] = ()
         self._launch_follow = False
         self._launch_show: str | None = None
+        # A switch from one run to the next is an open, and an open stops following;
+        # this is what tells the two apart, so that the window does not announce a stop
+        # it is in the middle of undoing. `_live_found` is the sentence the new file
+        # arrives with, held from the moment it is chosen to the moment it is on screen.
+        self._live_switching = False
+        self._live_found = ""
+        # What the folder fallback saw last time it looked, by path: the size and date
+        # a file had two seconds ago, which is what `_growing` compares against. Cleared
+        # when the search stops, since a file's size from an hour ago answers nothing.
+        self._growth: dict[str, tuple[float, int]] = {}
         # Whether anything has been drawn at all, and whether anything of *this* file
         # has. Both are about the same question -- is there a view worth keeping -- and
         # they differ on a file that was opened before it had a frame in it, which is
@@ -379,6 +516,13 @@ class MainWindow(QMainWindow):
         self._status_timer.setSingleShot(True)
         self._status_timer.setInterval(STATUS_HOLD_MS)
         self._status_timer.timeout.connect(self._release_status)
+        # What gives `Live` its name: while it is on, this looks for the run being
+        # acquired and moves the window to it. A timer on the window rather than work
+        # for the load worker, because what it does is a stat and a short text read and
+        # the worker's second is for asking SQLite (`_check_live_target`, task 32).
+        self._live_timer = QTimer(self)
+        self._live_timer.setInterval(LIVE_CHECK_MS)
+        self._live_timer.timeout.connect(self._check_live_target)
         # Beside the message rather than in a dialog, and only when there is something
         # to offer. A run that does not keep its raw file deletes it at the close, so
         # the message this sits next to is nearly always the last thing a followed
@@ -828,7 +972,8 @@ class MainWindow(QMainWindow):
         self._follow_action = make_action(
             self,
             "Live",
-            tip="Watch this file for frames the instrument is still writing.",
+            tip="Follow the run being acquired now, opening it if it is not the file on"
+                " screen, and keep up with the frames written to it.",
             checkable=True,
             checked=False,
             toggled=self._on_follow_toggled,
@@ -994,8 +1139,12 @@ class MainWindow(QMainWindow):
         self.chromatogram.clear()
         # Following is about one acquisition, so it does not survive into the next file:
         # a second file opened from the dialog is nearly always a finished one, and a
-        # poll left running on it would be lock traffic against nothing.
+        # poll left running on it would be lock traffic against nothing. A `Live` switch
+        # is the exception and passes straight through, having asked for this open in
+        # order to go on following (`_switch_live_to`).
         self.stop_following()
+        if not self._live_switching:
+            self._live_found = ""
         self._path = path
         self._shown_this_file = False
         self._opened_from_command_line = from_command_line
@@ -1182,14 +1331,29 @@ class MainWindow(QMainWindow):
             self._live_sum_frames = ()
             self._worker.set_follow(False)
             self.chromatogram.set_restrict_enabled(True)
-            if self._path is not None:
-                self._show_status(
-                    f"Stopped following {os.path.basename(self._path)}"
-                )
+            if not self._live_switching:
+                self._live_timer.stop()
+                self._growth.clear()
+                self._live_found = ""
+                if self._path is not None:
+                    self._show_status(
+                        f"Stopped following {os.path.basename(self._path)}"
+                    )
+            return
+        # Which file, before anything else: `Live` is the operator asking to see whatever
+        # is being acquired, and the file that happens to be open is only the last of the
+        # three answers to that (`_live_target`). A target somewhere else is an open, and
+        # this toggle comes back through here once it has landed.
+        target = self._live_target()
+        if target is not None and not _same_file(target[0], self._path):
+            self._follow_action.blockSignals(True)
+            self._follow_action.setChecked(False)
+            self._follow_action.blockSignals(False)
+            self._switch_live_to(*target)
             return
         refusal = None
         if self._path is None or self._global is None:
-            refusal = "Open a file before following it"
+            refusal = ("Nothing is being acquired, and there is no file open to follow")
         elif not is_local_path(self._path):
             refusal = ("This file is not on a local drive, and a file being written can"
                        " only be followed from the machine writing it")
@@ -1216,7 +1380,117 @@ class MainWindow(QMainWindow):
         if not self.chromatogram.isHidden() and self._global is not None:
             self._worker.request_chromatogram()
         self._worker.set_follow(True)
-        self._show_status(f"Following {os.path.basename(self._path)}")
+        self._live_timer.start()
+        # A file the window chose for itself says so, once. "Following X" is the answer
+        # to a click on a file the operator was already looking at; a window that moved
+        # on its own owes the operator the reason it moved, and the two reasons carry
+        # different weight (`_live_target`).
+        found, self._live_found = self._live_found, ""
+        name = os.path.basename(self._path)
+        self._show_status(f"Following {name}, {found}" if found else f"Following {name}")
+
+    def _live_target(self) -> "tuple[str, str] | None":
+        """The file `Live` should be on, and how it was found. `None` for nothing to follow.
+
+        The resolution order, which is the whole of task 32:
+
+        1. **The pointer** the acquisition software publishes, if it passes
+           `live_candidate`. Exact, and it knows when a run ends, because the program
+           writing the file is the one that wrote the pointer.
+        2. **The newest run in the folder of the file already open**, if it is on this
+           machine and is growing. What makes `Live` work on a file clockwork did not
+           write: PNNL's software publishes no pointer, and an operator who has opened
+           one run of a session is standing in the directory the next one lands in
+           (Matt, 2026-09-19, who chose the open file's folder over a folder setting).
+        3. **The file already open**, which is what `Live` meant before this existed.
+
+        The second half of each answer is a phrase, not decoration: a window that moves
+        itself has to say why it moved, and "the run being acquired now" and "the newest
+        run in this folder" are different claims with different amounts of confidence
+        behind them.
+        """
+        pointed = read_live_pointer()
+        if pointed is not None and live_candidate(pointed.path):
+            return pointed.path, "the run being acquired now"
+        folder = os.path.dirname(os.path.abspath(self._path)) if self._path else ""
+        if folder:
+            newest = newest_run_in(folder)
+            # `_growing` is asked whatever the rest of the condition decides, so that
+            # the file's size and date are on record for the next look even on the tick
+            # that finds nothing to do with them.
+            if (newest is not None and is_local_path(newest)) and self._growing(newest) \
+                    and not _same_file(newest, self._path):
+                return newest, "the newest run in this folder"
+        if self._path is None:
+            return None
+        return self._path, ""
+
+    def _growing(self, path: str) -> bool:
+        """Whether `path` has been written to since the last look, two seconds ago.
+
+        The folder fallback's whole guard, and a stricter one than the pointer's
+        (`live_candidate`), because nothing here is anybody's claim that a run is in
+        progress: it is the newest file in a directory, which on an instrument PC is
+        just as likely to be the run that finished ten minutes ago, a file somebody
+        copied in, or the sample that opened this window. Only a file whose size or date
+        actually **moved between two looks** is being written now, and that is true of
+        every writer rather than only of one that keeps a write-ahead log.
+
+        Two looks means the answer is always no the first time, which costs one tick of
+        the timer -- two seconds, against a run that lasts minutes. A file touched once
+        and then left alone never says yes at all, which is the point.
+        """
+        key = os.path.normcase(os.path.abspath(path))
+        now = run_marks(path)
+        if now is None:
+            self._growth.pop(key, None)
+            return False
+        before = self._growth.get(key)
+        self._growth[key] = now
+        return before is not None and now != before
+
+    def _check_live_target(self) -> None:
+        """The timer: has the run being acquired become a different file?
+
+        Three things are left alone rather than interrupted. An **open already in
+        flight** is one this has usually just asked for itself, and re-resolving against
+        a `_path` whose file is not on screen yet would start a second open of it. A
+        **sum with a progress dialog up** is the user waiting on an answer about this
+        file, and taking the file away underneath it would be answering a question they
+        did not ask. A **switch already happening** is this method's own work, since
+        `open_file` runs the window through a stop and a restart.
+        """
+        if self._opening or self._live_switching or self._sum_dialog is not None:
+            return
+        target = self._live_target()
+        if target is None or _same_file(target[0], self._path):
+            return
+        self._switch_live_to(*target)
+
+    def _switch_live_to(self, path: str, found: str) -> None:
+        """Open `path` and follow it, as one act.
+
+        **Through `open_file` and `follow_when_opened`**, which is the route another
+        program's `--follow` already takes (lab record, task 26), rather than anything
+        that re-points the worker in place: an open clears the cache, resets the frame
+        list, the grouping and the type filter, and re-arms the poll on the new file, and
+        every one of those has to happen. What is added here is only that the window
+        remembers it was following, in which `Show` mode, and that it chose this file
+        rather than being handed it.
+
+        `_live_switching` covers the moment in between, where `open_file` stops a follow
+        that is about to be started again: without it the status bar would say it had
+        stopped following the run it is in the act of moving to.
+        """
+        show = self._follow_mode.currentText()
+        self._live_found = found
+        self._live_switching = True
+        try:
+            self.stop_following()
+            self.open_file(path)
+        finally:
+            self._live_switching = False
+        self.follow_when_opened(show=show)
 
     def _enable_follow_controls(self, enabled: bool) -> None:
         """`Show` and the frame count beside it live and die with the poll.
@@ -1293,9 +1567,17 @@ class MainWindow(QMainWindow):
         A window whose first file did not open is a window with `File > Open` in front
         of it, and the file the user chooses there is their own choice rather than the
         one a program asked to follow.
+
+        A `Live` switch whose open failed ends the same way, and the search ends with
+        it: the timer was left running across the switch because the follow it belongs
+        to was coming back, and here it is not.
         """
         self._launch_follow = False
         self._launch_show = None
+        self._live_found = ""
+        if not self.following:
+            self._live_timer.stop()
+            self._growth.clear()
 
     def stop_following(self) -> None:
         """Turn Follow off, if it is on, by the same route the user would. Idempotent."""
@@ -1407,6 +1689,12 @@ class MainWindow(QMainWindow):
         self._follow_action.setChecked(False)
         self._follow_action.blockSignals(False)
         self._enable_follow_controls(False)
+        # The search for a run stops with the following it was serving. A poll that
+        # failed is a state the operator has to act on, and a window that went looking
+        # for the next acquisition by itself would take the message away.
+        self._live_timer.stop()
+        self._growth.clear()
+        self._live_found = ""
         self._live = None
         self._live_sum_frames = ()
         if not gone:

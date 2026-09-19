@@ -49,6 +49,37 @@ def _isolated_qsettings(tmp_path):
 
 
 @pytest.fixture(autouse=True)
+def _isolated_live_pointer(tmp_path):
+    """No test reads or writes the pointer a real acquisition would publish.
+
+    `Live` resolves the run in progress through `mainspring.interface.live_pointer_path`,
+    which is a per-user file under `%LOCALAPPDATA%` (lab record, task 32). This session's
+    workstation is the instrument PC, so that file can genuinely be there and name a real
+    acquisition, and a suite that read it would pass or fail depending on whether someone
+    was running the rig. Redirected per test for the reason `QSettings` is, and autouse
+    for the same reason: a window built by any viewer test resolves a target the moment
+    `Live` is touched.
+
+    **By hand rather than with `monkeypatch`.** Naming that fixture from an autouse one
+    puts it in front of every test in the suite, and the whole run then dies partway
+    through with an access violation inside pyqtgraph's `GraphicsView` constructor -- on
+    every run, at the same test, and never with the *same* environment variable set by
+    the four lines below instead. So it is the fixture and not the redirection, whatever
+    the interaction with pytest-qt's teardown turns out to be, and a save and a restore
+    do not need it (lab record, task 32).
+    """
+    from mainspring.interface import LIVE_POINTER_ENV
+
+    previous = os.environ.get(LIVE_POINTER_ENV)
+    os.environ[LIVE_POINTER_ENV] = str(tmp_path / "live-run.json")
+    yield
+    if previous is None:
+        os.environ.pop(LIVE_POINTER_ENV, None)
+    else:
+        os.environ[LIVE_POINTER_ENV] = previous
+
+
+@pytest.fixture(autouse=True)
 def _restore_the_default_palette():
     """No test leaves a plot palette on the process.
 

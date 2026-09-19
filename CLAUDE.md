@@ -28,7 +28,8 @@ you are reading this file *without* that import, you have a public clone — the
   names and the reader's `refresh`, `LiveState`, `is_provisional` and `is_local_path` are a
   contract: changing one is a minor bump at least, and the acquisition side is built against the
   candidate before the tag moves. `tools/check_public.py` pins the surface against a literal list;
-  the `--follow` and `--show` words another program types live in Qt-free `mainspring.interface`.
+  the words another program types and the pointer it publishes the run in progress in are both
+  Qt-free `mainspring.interface`, pinned there and named as a literal where a filename is.
 - **Every control the user can touch explains itself.** Build actions and toolbar widgets through
   `mainspring.viewer.controls` (`make_action`, `add_labelled`, `describe`), which requires a
   one-sentence tooltip; `tip=None` is a deliberate, reviewable waiver. `controls.unexplained()`
