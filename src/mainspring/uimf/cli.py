@@ -5,7 +5,7 @@ machine with no GUI stack is likely to run. Three modes, all writing to stdout:
 
     uimf-info FILE                 parameters, frame list, per-frame scan counts
     uimf-info FILE --verify        decode every scan and compare with the stored columns
-    uimf-info FILE --bench         time the decode and the raster, numba and pure
+    uimf-info FILE --bench         time decode, encode and raster, numba and pure
 
 `--verify` is the reader's acceptance test in the field, not merely a developer tool:
 `TIC` and `BPI` are exact ground truth on every row, and a file whose blobs do not
@@ -30,7 +30,7 @@ import time
 import numpy as np
 
 from .calib import Calibration
-from .decode import decode_frame_blobs, numba_available
+from .decode import decode_frame_blobs, encode_frame_blobs, numba_available
 from .raster import DisplayAxes, profile, rasterise
 from .reader import UimfFile, connect
 
@@ -40,6 +40,10 @@ MZ_TOLERANCE_BINS = 3.0
 """How far apart the implied `BPI_MZ` bins of one file may be, around their own median,
 before `--verify` calls it a failure. Three is what the worst writer we have costs
 (lab record, task 01); a real decode error moves this by thousands."""
+
+_PURE_ENCODE_POINTS = 250_000
+"""How many points `--bench` times the pure encoder on: about a second of it, where the
+whole of a beam-on summed frame would be ten minutes (lab record, task 33)."""
 
 
 def main(argv: "list[str] | None" = None) -> int:
@@ -52,7 +56,7 @@ def main(argv: "list[str] | None" = None) -> int:
     parser.add_argument("--verify", action="store_true",
                         help="decode every scan and compare with the stored columns")
     parser.add_argument("--bench", action="store_true",
-                        help="time the decode and the rasteriser on one frame")
+                        help="time the decode, the encode and the rasteriser on one frame")
     parser.add_argument("--frame", type=int, default=None, metavar="N",
                         help="restrict --verify and --bench to one frame")
     parser.add_argument("--mz-tolerance-bins", type=float, default=MZ_TOLERANCE_BINS,
@@ -321,6 +325,24 @@ def _bench(uimf: UimfFile, only: int | None) -> dict:
     timings["points"] = len(frame)
     timings["frame_nbytes"] = frame.nbytes
     timings["read_frame_ms"] = _time(lambda: uimf.read_frame(number))
+
+    # The encode `UimfWriter.write_scans` runs, over the frame just read. The pure
+    # encoder is minutes on a summed frame, so it is timed on the leading scans only and
+    # the count it covered is reported beside it.
+    dtype = frame.intensity.dtype
+    if numba_available():
+        encode_frame_blobs(frame.scan_start, frame.bin_index, frame.intensity, dtype,
+                           backend="numba")  # warm
+        timings["encode_numba_ms"] = _time(lambda: encode_frame_blobs(
+            frame.scan_start, frame.bin_index, frame.intensity, dtype, backend="numba"))
+    leading = int(np.searchsorted(frame.scan_start, _PURE_ENCODE_POINTS, side="right"))
+    leading = max(1, min(leading, frame.scans))
+    head = frame.scan_start[:leading + 1]
+    timings["encode_pure_points"] = int(head[-1])
+    timings["encode_pure_ms"] = _time(lambda: encode_frame_blobs(
+        head, frame.bin_index[:head[-1]], frame.intensity[:head[-1]], dtype,
+        backend="pure"))
+
     for width, height in ((800, 600), (1600, 1000)):
         timings[f"raster_{width}x{height}_ms"] = _time(
             lambda w=width, h=height: rasterise(frame, axes, x_range, y_range, w, h))
@@ -348,7 +370,10 @@ def _print_bench(bench: dict) -> None:
           f" {bench['points']} points, {bench['frame_nbytes'] / 1e6:.1f} MB in memory")
     for key, value in bench.items():
         if key.endswith("_ms"):
-            print(f"    {key[:-3]:24s} {value:8.2f} ms")
+            note = ""
+            if key == "encode_pure_ms" and bench["encode_pure_points"] < bench["points"]:
+                note = f"  (the first {bench['encode_pure_points']} points only)"
+            print(f"    {key[:-3]:24s} {value:8.2f} ms{note}")
     if not bench["numba"]:
         print("    (numba is not installed; the viewer would run the pure path)")
 

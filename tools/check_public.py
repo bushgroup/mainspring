@@ -296,8 +296,9 @@ def main() -> int:
 
     # --------------------------------------------------------------------------------
     section("the intensity codec")
-    # Only tests write UIMF files, so the encoder exists to make the synthetic fixture
-    # possible; the decoder is what the viewer runs, and the two must be inverses.
+    # The decoder is what the viewer runs and the encoder what every summed companion is
+    # written with; the two must be inverses, and each has a compiled backend that must
+    # give the pure one's answer exactly (lab record, task 33).
     check_true("ADC is int32", decode.dtype_for("ADC") == np.dtype("<i4"))
     check_true("TDC is int16", decode.dtype_for("TDC") == np.dtype("<i2"))
     check_true("FOLDED is float32", decode.dtype_for("FOLDED") == np.dtype("<f4"))
@@ -341,6 +342,21 @@ def main() -> int:
                  ValueError, lambda: decode.lzf_decompress(blob[:-1]))
     check_true(f"the compiled decode path is {'available' if decode.numba_available() else 'absent, so the pure path runs'}",
                decode.numba_available() in (True, False))
+    # Byte for byte, not "a valid stream": a companion written with numba and one written
+    # without it must be the same file. A spectrum of runs and repeats, so the kernels'
+    # back-reference path is exercised as well as the literal one, in all three types.
+    codec_rng = np.random.default_rng(33)
+    agree = []
+    for type_name in ("ADC", "TDC", "FOLDED"):
+        dtype = decode.dtype_for(type_name)
+        points = np.sort(codec_rng.choice(200000, size=3000, replace=False))
+        values = np.where(np.arange(points.size) % 50 < 25, 7,
+                          codec_rng.integers(1, 3000, size=points.size)).astype(dtype)
+        agree.append(decode.encode_intensities(points, values, dtype, backend="auto")
+                     == decode.encode_intensities(points, values, dtype, backend="pure"))
+    check_true("the encoder's backends write the same bytes in all three element types"
+               f"{'' if decode.numba_available() else ' (numba absent: both are pure)'}",
+               all(agree))
 
     # --------------------------------------------------------------------------------
     section("a synthetic UIMF file")

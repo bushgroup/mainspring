@@ -65,6 +65,7 @@ def test_bench_times_the_decode_and_the_raster(synthetic_uimf, capsys):
     assert main([synthetic_uimf.path, "--bench"]) == 0
     out = capsys.readouterr().out
     assert "decode_pure" in out and "raster_800x600" in out and "profile_x" in out
+    assert "encode_pure" in out
 
 
 def test_json_carries_the_provenance_stamp(synthetic_uimf, tmp_path, capsys):

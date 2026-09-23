@@ -52,7 +52,7 @@ from typing import Iterable, Iterator, Mapping
 import numpy as np
 
 from .calib import Calibration
-from .decode import dtype_for, encode_intensities
+from .decode import dtype_for, encode_frame_blobs, encode_intensities
 from .frame import SparseFrame
 
 __all__ = [
@@ -674,13 +674,22 @@ class UimfWriter:
         Nothing here is on the acquisition path: during a real run it is the console that
         fills this table. This is what the fold writes the summed companion with, and
         what the test fixture writes everything with.
+
+        The scans are gathered a few million points at a time and each batch is checked,
+        summarised and encoded as one CSR block (`decode.encode_frame_blobs`), rather than
+        scan by scan: a beam-on summed frame is 20,000 scans of 7,000 points, and ten
+        small numpy calls a scan was seconds of it (lab record, task 33). The rows are
+        the ones `_scan_row`, the scan-at-a-time reference, would make, and a scan that
+        fails a check is reported by it, with the message it has always given. A bin
+        index or intensity that is not one-dimensional is refused outright.
         """
         self._require_open()
         frame = int(frame)
         dtype = dtype_for(self.globals.tof_intensity_type)
         calibration = self._calibration_for(frame)
-        rows = [self._scan_row(frame, scan, bin_index, intensity, dtype, calibration)
-                for scan, bin_index, intensity in scans]
+        rows: list[tuple] = []
+        for chunk in _chunked(frame, scans, dtype, _WRITE_CHUNK_POINTS):
+            rows.extend(self._scan_rows(frame, chunk, dtype, calibration))
         if not rows:
             return 0
         with self._transaction():
@@ -936,6 +945,81 @@ class UimfWriter:
             bin_width_ns=float(self.globals.bin_width_ns), done=slope > 0.0,
         )
 
+    def _scan_rows(
+        self,
+        frame: int,
+        chunk: list[tuple[int, np.ndarray, np.ndarray]],
+        dtype: np.dtype,
+        calibration: Calibration,
+    ) -> list[tuple]:
+        """`_scan_row` over a batch of scans at once, with the same rows as the result.
+
+        The checks find the first scan in the batch that fails any of them and hand it to
+        `_scan_row`, so the error is the one that scan would have raised on its own and
+        no earlier scan's. The summaries are whole-batch numpy for the integer types. A
+        float32 frame keeps a sum per scan, because numpy sums float32 pairwise and a
+        batch-wide cumulative sum would round differently from the reference.
+        """
+        scan_numbers = [scan for scan, _, _ in chunk]
+        sizes = [bin_index.size for _, bin_index, _ in chunk]
+        counts = np.array(sizes, dtype=np.int64)
+        mismatched = [k for k, (_, bin_index, intensity) in enumerate(chunk)
+                      if bin_index.size != intensity.size]
+        first_bad = mismatched[0] if mismatched else len(chunk)
+        good = chunk[:first_bad]
+        starts = np.zeros(len(good) + 1, dtype=np.int64)
+        np.cumsum(counts[:first_bad], out=starts[1:])
+        bins = (np.concatenate([b for _, b, _ in good]) if good
+                else np.empty(0, dtype=np.int64))
+        values = (np.concatenate([v for _, _, v in good]) if good
+                  else np.empty(0, dtype=dtype))
+
+        occupied = np.flatnonzero(counts[:first_bad] > 0)
+        lo = starts[occupied]
+        hi = starts[occupied + 1] - 1
+        outside = occupied[(bins[lo] < 0) | (bins[hi] >= int(self.globals.bins))]
+        if outside.size:
+            first_bad = min(first_bad, int(outside[0]))
+        if bins.size > 1:
+            falling = np.diff(bins) <= 0
+            boundary = starts[1:-1]
+            boundary = boundary[(boundary > 0) & (boundary < bins.size)] - 1
+            falling[boundary] = False
+            where = np.flatnonzero(falling)
+            if where.size:
+                first_bad = min(first_bad, int(np.searchsorted(starts, where[0], "right")) - 1)
+        if first_bad < len(chunk):
+            scan, bin_index, intensity = chunk[first_bad]
+            self._scan_row(frame, scan, bin_index, intensity, dtype, calibration)
+            raise AssertionError(  # pragma: no cover -- the reference raises above
+                f"frame {frame} scan {scan}: the batch check and _scan_row disagree")
+
+        blobs = encode_frame_blobs(starts, bins, values, dtype)
+        bpi: list = [0] * len(chunk)
+        bpi_mz: list = [0.0] * len(chunk)
+        total: list = [0] * len(chunk)
+        if occupied.size:
+            if dtype.kind in "iu":
+                peak = np.maximum.reduceat(values, lo)
+                at_peak = np.flatnonzero(values == np.repeat(peak, counts[occupied]))
+                owner = np.searchsorted(starts, at_peak, "right") - 1
+                argmax = at_peak[np.flatnonzero(np.diff(owner, prepend=-1))]
+                running = np.concatenate(([0], np.cumsum(values, dtype=np.int64)))
+                sums = (running[hi + 1] - running[lo]).tolist()
+            else:
+                argmax = np.array([lo_k + int(np.argmax(values[lo_k:hi_k + 1]))
+                                   for lo_k, hi_k in zip(lo.tolist(), hi.tolist())],
+                                  dtype=np.int64)
+                sums = [values[lo_k:hi_k + 1].sum().item()
+                        for lo_k, hi_k in zip(lo.tolist(), hi.tolist())]
+            peaks = values[argmax].tolist()
+            mzs = np.asarray(calibration.mz(bins[argmax].astype(np.float64))).tolist()
+            for k, p, m, t in zip(occupied.tolist(), peaks, mzs, sums):
+                bpi[k], bpi_mz[k], total[k] = p, float(m), t
+        return [(frame, scan, n, b, m, t, blob)
+                for scan, n, b, m, t, blob
+                in zip(scan_numbers, sizes, bpi, bpi_mz, total, blobs)]
+
     def _scan_row(
         self,
         frame: int,
@@ -945,6 +1029,13 @@ class UimfWriter:
         dtype: np.dtype,
         calibration: Calibration,
     ) -> tuple:
+        """One scan's row, scan at a time: the reference `_scan_rows` is held to.
+
+        `write_scans` no longer calls it except to raise a failing scan's error, which
+        keeps the checks and their messages in one place. `tests/test_writer.py` compares
+        the two row for row, and `encode_intensities(..., backend="pure")` makes this the
+        whole pure-Python writer.
+        """
         bin_index = np.asarray(bin_index, dtype=np.int64)
         intensity = np.asarray(intensity, dtype=dtype)
         if bin_index.size != intensity.size:
@@ -959,7 +1050,7 @@ class UimfWriter:
         if bin_index.size > 1 and np.any(np.diff(bin_index) <= 0):
             raise ValueError(f"frame {frame} scan {scan}: bins are not ascending")
 
-        blob = encode_intensities(bin_index, intensity, dtype)
+        blob = encode_intensities(bin_index, intensity, dtype, backend="pure")
         if intensity.size:
             argmax = int(np.argmax(intensity))
             bpi = intensity[argmax].item()
@@ -970,6 +1061,41 @@ class UimfWriter:
         if dtype.kind in "iu":
             bpi, total = int(bpi), int(total)
         return (frame, int(scan), int(bin_index.size), bpi, bpi_mz, total, blob)
+
+
+_WRITE_CHUNK_POINTS = 1 << 22
+"""How many points `write_scans` gathers before checking and encoding them as a block.
+
+Four million points is 50 MB of working arrays for int32, a fifth of a second of
+encoding: large enough that the per-block overhead is nothing, small enough that a
+2.3 GB summed frame never needs its own RLZ stream held twice."""
+
+
+def _chunked(
+    frame: int,
+    scans: Iterable[tuple[int, np.ndarray, np.ndarray]],
+    dtype: np.dtype,
+    limit: int,
+) -> Iterator[list[tuple[int, np.ndarray, np.ndarray]]]:
+    """`write_scans`' input as batches of at least `limit` points, each scan converted."""
+    batch: list[tuple[int, np.ndarray, np.ndarray]] = []
+    points = 0
+    for scan, bin_index, intensity in scans:
+        scan = int(scan)
+        bin_index = np.asarray(bin_index, dtype=np.int64)
+        intensity = np.asarray(intensity, dtype=dtype)
+        if bin_index.ndim != 1 or intensity.ndim != 1:
+            raise ValueError(
+                f"frame {frame} scan {scan}: bin index and intensity must be"
+                " one-dimensional"
+            )
+        batch.append((scan, bin_index, intensity))
+        points += bin_index.size
+        if points >= limit:
+            yield batch
+            batch, points = [], 0
+    if batch:
+        yield batch
 
 
 def _by_param_id(

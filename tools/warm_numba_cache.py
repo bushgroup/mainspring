@@ -4,7 +4,10 @@ A fresh process pays 2.5-4.7 s compiling the four decode kernels when no on-disk
 cache exists yet -- a machine's first-ever launch -- against 0.9-1.4 s once one does
 (`notes/reader-layer.md`, task 04). That first-launch cost cannot be moved into the
 render or decode path, only paid somewhere else: here, at build time, instead of by
-the first researcher who opens a file.
+the first researcher who opens a file. The three encode kernels behind
+`UimfWriter.write_scans` are warmed with them (lab record, task 33), so that the first
+fold after an install does not pay for its own compile either; a program that installs
+the wheel and writes files keeps its own warm-up and should call the encode too.
 
 Writes compiled kernels for every intensity dtype the format uses (ADC int32, TDC
 int16, FOLDED float32; `decode.INTENSITY_DTYPES`) to `packaging/numba_cache_seed/`,
@@ -43,18 +46,27 @@ def main() -> int:
         print("numba is not importable in this environment; nothing to warm.")
         return 1
 
-    # One compiled specialisation per element type: _k_rlz_fill's output array is
-    # dtype-specific, so each of the three the format uses needs its own compile.
+    # One compiled specialisation per element type: _k_rlz_fill's output array and the
+    # encode kernels' intensity and stream arrays are dtype-specific, so each of the three
+    # the format uses needs its own compile, in both directions. The encode is called
+    # through encode_frame_blobs with an int64 row pointer and bin index, the types
+    # UimfWriter.write_scans hands it, so the specialisation warmed is the one it runs.
     for type_name in sorted(decode.INTENSITY_DTYPES):
         dtype = decode.dtype_for(type_name)
         bin_index = np.array([0, 3, 500, 4096], dtype=np.int64)
         intensity = np.array([1, 2, 3, 4], dtype=dtype)
-        blob = decode.encode_intensities(bin_index, intensity, dtype)
+        scan_start = np.array([0, 0, bin_index.size], dtype=np.int64)
+        empty, blob = decode.encode_frame_blobs(
+            scan_start, bin_index, intensity, dtype, backend="numba"
+        )
+        assert empty == b"" and blob == decode.encode_intensities(
+            bin_index, intensity, dtype, backend="pure"
+        )
         counts, bins_out, values_out = decode.decode_frame_blobs(
             [blob, None, blob], dtype=dtype
         )
         assert values_out.dtype == dtype and int(counts.sum()) == 2 * bin_index.size
-        print(f"warmed {type_name} ({dtype})")
+        print(f"warmed {type_name} ({dtype}), encode and decode")
 
     written = [
         os.path.join(dirpath, name)

@@ -12,14 +12,13 @@ instrument writes UIMF.
 
 ## Status
 
-Version 1.6.0. The reader layer, the viewer, and the Windows installer are written and
+Version 1.7.0. The reader layer, the viewer, and the Windows installer are written and
 verified, and the development record lives in a private companion repository. This release
-gives the `Live` control its full meaning: it finds the run being acquired and follows it,
-without anyone typing a path, and moves to the next run when one starts. The release before it
-added the chromatogram, a panel that plots the total signal in every frame of a file against the
-time the instrument recorded for it, so that the shape of a run is visible while the run is
-happening. Highlight a span of it to read what that span holds, and sum it into the heat map in
-one click. The [user guide](docs/user-guide.md) covers all of it.
+makes writing a UIMF file from Python 25 times faster: a summed frame of 139 million points from
+a real acquisition, which took ten minutes to write, now takes 24 seconds, and the file written
+is identical to the byte. The release before it gave the `Live` control its full meaning: it
+finds the run being acquired and follows it, without anyone typing a path, and moves to the next
+run when one starts. The [user guide](docs/user-guide.md) covers all of it.
 
 The reader reproduces every scan's stored total ion current and base peak intensity exactly
 on the four files it has been tested against, which were written by four different versions
@@ -91,7 +90,8 @@ A frame is held as the points that exist rather than as a dense array of scans b
 time-of-flight bins, which on the Bush lab's instrument would be 2.3 GB for a single frame.
 `mainspring.uimf` imports without Qt, so a pipeline that installs mainspring for the reader
 does not pull a graphical stack onto a machine that has no use for one. Installing the
-optional `fast` extra adds numba, which compiles the decoder and is worth a factor of 25.
+optional `fast` extra adds numba, which compiles the decoder and the encoder: reading a frame
+becomes 25 times faster and encoding one 80 times faster, with the same bytes either way.
 
 ## Requirements
 

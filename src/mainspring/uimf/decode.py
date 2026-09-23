@@ -17,13 +17,23 @@ LZF is Marc Lehmann's liblzf as PNNL's `CLZF2.cs` carries it: a control byte `c`
 `((c & 31) << 8 | next) + 1` behind the output cursor. Back-references may overlap the
 bytes they are still producing, so a copy is byte-at-a-time.
 
-**The encoder is pure Python and stays that way** -- only tests write UIMF files, so it
-exists to make the synthetic fixture possible and nothing more. **The decoder has two
-backends that must agree byte for byte**: a vectorised numpy path that is the reference,
-and a numba kernel over a whole frame's blobs at once, which is what the viewer runs.
-Reading a frame is the one place where the difference between them decides whether a
-gesture feels immediate, so `decode_frame_blobs` is written frame-at-a-time rather than
-scan-at-a-time and numba is imported only when something asks for it.
+**Both directions have two backends that must agree byte for byte.** Decoding has a
+vectorised numpy path that is the reference and a numba kernel over a whole frame's blobs
+at once, which is what the viewer runs: reading a frame is where the difference decides
+whether a gesture feels immediate. Encoding has `rlz_encode` and `lzf_compress`, pure
+Python and the reference, and numba kernels over a whole frame's scans at once
+(`encode_frame_blobs`), which is what `UimfWriter.write_scans` runs. The encoder was
+written for the test fixture alone; it became production when the acquisition side's
+fold started writing every summed companion through it, and a beam-on fold spent 94% of
+its ten minutes in the pure `lzf_compress` (lab record, task 33). Both kernel sets are
+written frame-at-a-time rather than scan-at-a-time, and numba is imported only when
+something asks for it.
+
+The encode kernels are not a different compressor that happens to be valid. They
+reproduce the pure encoder's output exactly -- same hash, same match rule, same quirk
+that position 0 of a stream can never be matched -- so a file written with numba and a
+file written without it are the same bytes, and a byte comparison against a stored blob
+stays a meaningful test of either.
 """
 
 from __future__ import annotations
@@ -38,6 +48,7 @@ __all__ = [
     "decode_frame_blobs",
     "decode_intensities",
     "dtype_for",
+    "encode_frame_blobs",
     "encode_intensities",
     "lzf_compress",
     "lzf_decompress",
@@ -52,6 +63,9 @@ INTENSITY_DTYPES: dict[str, np.dtype] = {
     "FOLDED": np.dtype("<f4"),
 }
 """`TOFIntensityType` to element type. All four files of task 01 are `ADC`."""
+
+_FAST_DTYPES = tuple(INTENSITY_DTYPES.values())
+"""The element types the encode kernels are compiled for; anything else encodes pure."""
 
 
 def dtype_for(tof_intensity_type: str | None) -> np.dtype:
@@ -71,7 +85,7 @@ def dtype_for(tof_intensity_type: str | None) -> np.dtype:
         ) from None
 
 
-# --- encoding (used by the synthetic writer; see tests/synthetic.py) ---------------
+# --- encoding: the pure path, which is also the reference ---------------------------
 
 _HLOG = 14
 _HSIZE = 1 << _HLOG
@@ -221,10 +235,130 @@ def encode_intensities(
     bin_index: np.ndarray,
     intensity: np.ndarray,
     dtype: np.dtype | str = "<i4",
+    backend: str = "auto",
 ) -> bytes:
-    """A sparse spectrum as a stored `Frame_Scans.Intensities` blob: RLZ, then LZF."""
+    """A sparse spectrum as a stored `Frame_Scans.Intensities` blob: RLZ, then LZF.
+
+    `backend` is as for `decode_frame_blobs`; every backend returns the same bytes. One
+    spectrum at a time is the convenient call; a whole frame is `encode_frame_blobs`.
+    """
+    if backend not in BACKENDS:
+        raise ValueError(f"unknown backend {backend!r}; one of {BACKENDS}")
+    if backend != "pure":
+        bin_index = np.asarray(bin_index, dtype=np.int64)
+        scan_start = np.array([0, bin_index.size], dtype=np.int64)
+        return encode_frame_blobs(scan_start, bin_index, intensity, dtype, backend)[0]
     stream = rlz_encode(bin_index, intensity, dtype)
     return lzf_compress(stream.tobytes())
+
+
+def _compilable(
+    bin_index: np.ndarray, intensity: np.ndarray, dtype: np.dtype
+) -> np.ndarray | None:
+    """`intensity` as `dtype` when the kernels would give the pure encoder's answer for it,
+    otherwise None.
+
+    The pure encoder goes through Python numbers, so a value the element type cannot hold
+    is an `OverflowError` there and an int that float32 must round is rounded once. A cast
+    here would wrap the first silently and could round the second differently, so anything
+    that does not survive the cast unchanged goes to the pure path and meets whatever it
+    meets there today. So do a byte order other than the machine's, which numba cannot
+    compile, an element type the format does not use, and anything that is not 1-D.
+    """
+    if dtype not in _FAST_DTYPES or not dtype.isnative:
+        return None
+    if bin_index.ndim != 1 or np.ndim(intensity) != 1:
+        return None
+    values = np.asarray(intensity)
+    if values.dtype == dtype:
+        return values
+    if values.dtype.kind not in "biuf":
+        return None
+    cast = values.astype(dtype)
+    with np.errstate(invalid="ignore"):
+        if not np.array_equal(cast, values):
+            return None
+    return cast
+
+
+def encode_frame_blobs(
+    scan_start: np.ndarray,
+    bin_index: np.ndarray,
+    intensity: np.ndarray,
+    dtype: np.dtype | str = "<i4",
+    backend: str = "auto",
+) -> list[bytes]:
+    """Every scan of a CSR frame as its stored blob, `b""` for an empty scan.
+
+    The inverse of `decode_frame_blobs`, laid out like `SparseFrame`: the points of scan
+    `s` are `bin_index[scan_start[s]:scan_start[s + 1]]`, ascending within the scan, with
+    the parallel `intensity`. With numba this is three passes over contiguous memory --
+    size the RLZ streams, write them, compress them -- in one call that releases the GIL,
+    and every blob is the pure encoder's to the byte: `tests/test_decode.py` holds the
+    two against each other, and against every blob of a real summed file when the clone
+    has one.
+
+    Memory is the RLZ stream plus a compression buffer of about the same size, on top of
+    the input, for the whole of what is passed. `UimfWriter.write_scans` passes a few
+    million points at a time rather than a frame.
+    """
+    if backend not in BACKENDS:
+        raise ValueError(f"unknown backend {backend!r}; one of {BACKENDS}")
+    dtype = np.dtype(dtype)
+    kernels = _kernels() if backend in ("auto", "numba") else None
+    if backend == "numba" and kernels is None:
+        raise RuntimeError("the numba backend was asked for and numba is not importable")
+
+    scan_start = np.asarray(scan_start, dtype=np.int64)
+    bin_index = np.asarray(bin_index, dtype=np.int64)
+    scans = scan_start.size - 1
+    values = None if kernels is None else _compilable(bin_index, intensity, dtype)
+    if values is None:
+        intensity = np.asarray(intensity)
+        return [
+            encode_intensities(bin_index[scan_start[s]:scan_start[s + 1]],
+                               intensity[scan_start[s]:scan_start[s + 1]], dtype, "pure")
+            for s in range(scans)
+        ]
+    if bin_index.shape != values.shape:
+        raise ValueError("bin_index and intensity must have the same shape")
+    if bin_index.size > 1:
+        falling = np.diff(bin_index) <= 0
+        # A step down between the last point of one scan and the first of the next is
+        # the CSR layout, not a disorder.
+        boundary = scan_start[1:-1]
+        boundary = boundary[(boundary > 0) & (boundary < bin_index.size)] - 1
+        falling[boundary] = False
+        if falling.any():
+            raise ValueError("bin_index must be strictly increasing")
+
+    if dtype.kind == "i":
+        max_skip = int(np.iinfo(dtype).max)
+    else:
+        max_skip = 1 << 24  # as rlz_encode: exactly representable in float32
+
+    sizes = np.empty(scans, dtype=np.int64)
+    kernels.rlz_encode_sizes(bin_index, scan_start, max_skip, sizes)
+    elem_off = np.zeros(scans + 1, dtype=np.int64)
+    np.cumsum(sizes, out=elem_off[1:])
+    stream = np.empty(int(elem_off[-1]), dtype=dtype)
+    kernels.rlz_encode_fill(bin_index, values, scan_start, max_skip, elem_off, stream)
+
+    src = stream.view(np.uint8)
+    src_off = elem_off * dtype.itemsize
+    # LZF's worst case is a literal run of 32 bytes per 33 written, plus the one
+    # placeholder control byte the compressor writes before it knows it will not need it.
+    nbytes = np.diff(src_off)
+    capacity = nbytes + (nbytes >> 5) + 2
+    dst_off = np.zeros(scans + 1, dtype=np.int64)
+    np.cumsum(capacity, out=dst_off[1:])
+    dst = np.empty(int(dst_off[-1]), dtype=np.uint8)
+    lengths = np.empty(scans, dtype=np.int64)
+    htab = np.zeros(_HSIZE, dtype=np.int64)
+    kernels.lzf_compress(src, src_off, dst, dst_off, lengths, htab)
+
+    ends = (dst_off[:-1] + lengths).tolist()
+    return [dst[a:b].tobytes() for a, b in zip(dst_off[:-1].tolist(), ends)]
 
 
 # --- decoding: the pure path, which is also the reference ---------------------------
@@ -370,14 +504,18 @@ def _kernels():
         lzf_expand=compiled(_k_lzf_expand),
         rlz_count=compiled(_k_rlz_count),
         rlz_fill=compiled(_k_rlz_fill),
+        rlz_encode_sizes=compiled(_k_rlz_encode_sizes),
+        rlz_encode_fill=compiled(_k_rlz_encode_fill),
+        lzf_compress=compiled(_k_lzf_compress),
     )
     return _KERNELS
 
 
-# The four kernels below are module-level plain Python, so that numba can cache their
-# compilation against this file and so that they read as the format's rules rather than
-# as numba. They are not the pure fallback -- these loops would be glacial in the
-# interpreter, and the vectorised functions above are what runs without numba.
+# The seven kernels below -- four to decode, three to encode -- are module-level plain
+# Python, so that numba can cache their compilation against this file and so that they
+# read as the format's rules rather than as numba. They are not the pure fallback: these
+# loops would be glacial in the interpreter, and the functions above are what runs
+# without numba.
 
 
 def _k_lzf_sizes(src, src_off, sizes):
@@ -480,6 +618,137 @@ def _k_rlz_fill(values, elem_off, bins, out_start, out_bins, out_intensity):
                     out_intensity[o] = value
                     o += 1
                 position += 1
+
+
+def _k_rlz_encode_sizes(bin_index, scan_start, max_skip, sizes):
+    """Stream length of each scan: one entry per point, and one per `max_skip` of gap."""
+    for i in range(sizes.size):
+        cursor = 0
+        count = 0
+        for j in range(scan_start[i], scan_start[i + 1]):
+            gap = bin_index[j] - cursor
+            if gap > 0:
+                count += (gap + max_skip - 1) // max_skip
+            count += 1
+            cursor = bin_index[j] + 1
+        sizes[i] = count
+
+
+def _k_rlz_encode_fill(bin_index, intensity, scan_start, max_skip, elem_off, stream):
+    """`rlz_encode`'s walk, scan `i`'s stream written from `elem_off[i]`."""
+    for i in range(scan_start.size - 1):
+        o = elem_off[i]
+        cursor = 0
+        for j in range(scan_start[i], scan_start[i + 1]):
+            gap = bin_index[j] - cursor
+            while gap > 0:
+                step = min(gap, max_skip)
+                stream[o] = -step
+                o += 1
+                gap -= step
+            stream[o] = intensity[j]
+            o += 1
+            cursor = bin_index[j] + 1
+
+
+def _k_lzf_compress(src, src_off, dst, dst_off, lengths, htab):
+    """`lzf_compress` on every stream, stream `i` written from `dst_off[i]`.
+
+    Line for line the pure function, with one difference that changes no output: the
+    hash table is shared across streams and holds absolute positions in `src`, so it is
+    zeroed once per call rather than once per stream. An entry left by an earlier stream
+    is behind this one's start, and the pure function's `ref > 0` test -- which is also
+    what makes its own initial zeros mean "empty" -- is here `ref > 0` after subtracting
+    the start, which rejects both.
+    """
+    for i in range(lengths.size):
+        s0 = src_off[i]
+        n = src_off[i + 1] - s0
+        base = dst_off[i]
+        if n == 0:
+            lengths[i] = 0
+            continue
+        o = base
+        dst[o] = 0  # placeholder control byte for the run that starts here
+        o += 1
+        lit = 0
+        iidx = 0
+        if n > 2:
+            hval = (np.int64(src[s0]) << 8) | np.int64(src[s0 + 1])
+            while iidx < n - 2:
+                hval = ((hval << 8) | np.int64(src[s0 + iidx + 2])) & 0xFFFFFFFF
+                hslot = ((hval >> 10) - hval * 5) & 16383
+                ref = htab[hslot] - s0
+                htab[hslot] = s0 + iidx
+                off = iidx - ref - 1
+                if (
+                    off < 8192
+                    and iidx + 4 < n
+                    and ref > 0
+                    and src[s0 + ref] == src[s0 + iidx]
+                    and src[s0 + ref + 1] == src[s0 + iidx + 1]
+                    and src[s0 + ref + 2] == src[s0 + iidx + 2]
+                ):
+                    length = 2
+                    maxlen = min(n - iidx - length, 264)
+                    if lit:
+                        dst[o - lit - 1] = lit - 1
+                        lit = 0
+                    else:
+                        o -= 1
+                    while True:
+                        length += 1
+                        if length >= maxlen or src[s0 + ref + length] != src[s0 + iidx + length]:
+                            break
+                    length -= 2
+                    iidx += 1
+                    if length < 7:
+                        dst[o] = (off >> 8) + (length << 5)
+                        o += 1
+                    else:
+                        dst[o] = (off >> 8) + (7 << 5)
+                        dst[o + 1] = length - 7
+                        o += 2
+                    dst[o] = off & 0xFF
+                    dst[o + 1] = 0  # placeholder for the next literal run
+                    o += 2
+                    iidx += length + 1
+                    if iidx >= n - 2:
+                        break
+                    iidx -= length + 1
+                    while True:
+                        hval = ((hval << 8) | np.int64(src[s0 + iidx + 2])) & 0xFFFFFFFF
+                        hslot = ((hval >> 10) - hval * 5) & 16383
+                        htab[hslot] = s0 + iidx
+                        iidx += 1
+                        if length == 0:
+                            break
+                        length -= 1
+                else:
+                    dst[o] = src[s0 + iidx]
+                    o += 1
+                    iidx += 1
+                    lit += 1
+                    if lit == 32:
+                        dst[o - lit - 1] = lit - 1
+                        lit = 0
+                        dst[o] = 0
+                        o += 1
+        while iidx < n:
+            dst[o] = src[s0 + iidx]
+            o += 1
+            iidx += 1
+            lit += 1
+            if lit == 32:
+                dst[o - lit - 1] = lit - 1
+                lit = 0
+                dst[o] = 0
+                o += 1
+        if lit:
+            dst[o - lit - 1] = lit - 1
+        else:
+            o -= 1
+        lengths[i] = o - base
 
 
 def decode_frame_blobs(

@@ -499,6 +499,117 @@ def test_a_scan_that_would_not_decode_is_refused(tmp_path, scan):
             writer.write_scans(1, [scan])
 
 
+def test_a_scan_that_is_not_one_dimensional_is_refused(tmp_path):
+    with UimfWriter(tmp_path / "flat.uimf", GlobalSpec(bins=4096)) as writer:
+        writer.add_frame(a_frame())
+        with pytest.raises(ValueError, match="one-dimensional"):
+            writer.write_scans(1, [(0, np.array([[1, 2]]), np.array([[1, 2]]))])
+
+
+# --- the batched rows against the scan-at-a-time reference ---------------------------------
+#
+# `write_scans` checks, summarises and encodes a few million points at a time; `_scan_row`
+# does one scan and is the reference (lab record, task 33). The rows must be the same
+# values of the same Python types, since SQLite stores the type with the value.
+
+
+def reference_and_batched(tmp_path, scans, intensity_type, limit):
+    from mainspring.uimf import writer as uimf_writer
+    from mainspring.uimf.decode import dtype_for
+
+    dtype = dtype_for(intensity_type)
+    with UimfWriter(tmp_path / f"rows-{intensity_type}.uimf",
+                    GlobalSpec(bins=4096, tof_intensity_type=intensity_type)) as writer:
+        frame = writer.add_frame(a_frame(scans=len(scans)))
+        calibration = writer._calibration_for(frame)
+        reference = [writer._scan_row(frame, s, b, v, dtype, calibration)
+                     for s, b, v in scans]
+        batched = []
+        for chunk in uimf_writer._chunked(frame, scans, dtype, limit):
+            batched.extend(writer._scan_rows(frame, chunk, dtype, calibration))
+    return reference, batched
+
+
+def varied_scans(dtype, count=40, bins=4096, seed=16):
+    """Empty scans, explicit zeros, a tied base peak and a one-point scan among them."""
+    rng = np.random.default_rng(seed)
+    scans = []
+    for scan in range(count):
+        size = 0 if scan % 7 == 3 else (1 if scan % 11 == 5 else int(rng.integers(2, 300)))
+        bin_index = np.sort(rng.choice(bins, size=size, replace=False))
+        intensity = rng.integers(0, 500, size=size).astype(dtype)
+        if size > 3 and scan % 4 == 0:
+            intensity[[1, size - 1]] = intensity.max() + 1  # tie: the first one is the peak
+        if dtype.kind == "f":
+            intensity = intensity + np.float32(0.25)
+        scans.append((scan, bin_index, intensity))
+    return scans
+
+
+@pytest.mark.parametrize("intensity_type", ["ADC", "TDC", "FOLDED"])
+@pytest.mark.parametrize("limit", [1, 100, 1 << 22])
+def test_the_batched_rows_are_the_reference_rows(tmp_path, intensity_type, limit):
+    from mainspring.uimf.decode import dtype_for
+
+    scans = varied_scans(dtype_for(intensity_type))
+    reference, batched = reference_and_batched(tmp_path, scans, intensity_type, limit)
+    assert batched == reference
+    for ours, theirs in zip(batched, reference):
+        assert [type(x) for x in ours] == [type(x) for x in theirs]
+
+
+@pytest.mark.parametrize("bad", [
+    (np.array([1, 2]), np.array([1])),
+    (np.array([-1, 4]), np.array([1, 2])),
+    (np.array([7, 99999]), np.array([1, 2])),
+    (np.array([5, 5]), np.array([1, 2])),
+    (np.array([9, 3]), np.array([1, 2])),
+])
+def test_a_bad_scan_in_a_batch_is_reported_as_the_reference_reports_it(tmp_path, bad):
+    """The first failing scan of the batch, with the message `_scan_row` gives it, and
+    never a later scan's, although the batch checks each rule across all of them."""
+    good = [(k, np.array([k, k + 10]), np.array([3, 4])) for k in range(5)]
+    later = (9, np.array([30, 20]), np.array([1, 2]))  # a disorder, after the bad scan
+    scans = good + [(6, *bad)] + [later]
+    with UimfWriter(tmp_path / "bad.uimf", GlobalSpec(bins=4096)) as writer:
+        frame = writer.add_frame(a_frame())
+        with pytest.raises(ValueError) as reference:
+            writer._scan_row(frame, 6, np.asarray(bad[0]), np.asarray(bad[1], dtype="<i4"),
+                             np.dtype("<i4"), writer._calibration_for(frame))
+        with pytest.raises(ValueError) as batched:
+            writer.write_scans(frame, scans)
+    assert str(batched.value) == str(reference.value)
+    assert "scan 6" in str(batched.value)
+
+
+def test_a_file_written_without_numba_is_the_same_file(tmp_path, monkeypatch):
+    """What makes the kernels safe to ship: the fold's companion does not depend on
+    whether the machine that wrote it had numba."""
+    from mainspring.uimf import decode
+
+    def rows(path):
+        conn = sqlite3.connect(path)
+        try:
+            return conn.execute(
+                "SELECT FrameNum, ScanNum, NonZeroCount, BPI, BPI_MZ, TIC, Intensities,"
+                " typeof(BPI), typeof(BPI_MZ), typeof(TIC) FROM Frame_Scans"
+                " ORDER BY ScanNum").fetchall()
+        finally:
+            conn.close()
+
+    scans = varied_scans(np.dtype("<i4"), count=60)
+    paths = []
+    for name in ("compiled", "pure"):
+        if name == "pure":
+            monkeypatch.setattr(decode, "_kernels", lambda: None)
+        path = tmp_path / f"{name}.uimf"
+        with UimfWriter(path, GlobalSpec(bins=4096)) as writer:
+            writer.add_frame(a_frame(scans=60))
+            writer.write_scans(1, scans)
+        paths.append(path)
+    assert rows(paths[0]) == rows(paths[1])
+
+
 def test_a_closed_writer_says_so(tmp_path):
     writer = UimfWriter(tmp_path / "closed.uimf", GlobalSpec(bins=64))
     writer.close()

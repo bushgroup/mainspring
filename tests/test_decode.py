@@ -1,13 +1,15 @@
 """The blob path, both directions: the encoder against the format, then the round trip.
 
-Only tests write UIMF files, so `encode_intensities` exists to make the synthetic
-fixture possible (lab record, task 02) and is checked here against the format as
+`encode_intensities` is what every summed companion the acquisition side folds is
+written with (lab record, task 33), and is checked here against the format as
 `notes/uimf-format.md` states it -- by an independent walk of the stream, not by asking
 the encoder whether it agrees with itself.
 
 The decoder is then checked three ways: it undoes the encoder; its two backends produce
 identical arrays, on synthetic blobs and on every blob of every real file this clone
-has; and it refuses a malformed stream instead of returning a short one.
+has; and it refuses a malformed stream instead of returning a short one. Last, the two
+encode backends are held to each other byte for byte, and the compiled one to every blob
+of a real file mainspring wrote.
 """
 
 from __future__ import annotations
@@ -272,3 +274,197 @@ def test_the_two_backends_agree_blob_by_blob_on_a_real_file(real_uimf):
 
 def test_numba_available_is_a_bool_either_way():
     assert decode.numba_available() in (True, False)
+
+
+# --- the two encode backends ----------------------------------------------------------
+#
+# The compiled encoder is held to the pure one byte for byte, never to "a valid stream":
+# a file written with numba and one written without it must be the same file (lab
+# record, task 33).
+
+needs_numba = pytest.mark.skipif(not decode.numba_available(), reason="numba is not installed")
+
+
+def compiled_lzf(payload: bytes) -> bytes:
+    """The LZF kernel on one raw byte stream, of any length, bypassing the RLZ stage."""
+    src = np.frombuffer(payload, dtype=np.uint8)
+    n = src.size
+    dst = np.empty(n + (n >> 5) + 2, dtype=np.uint8)
+    lengths = np.empty(1, dtype=np.int64)
+    decode._kernels().lzf_compress(
+        src, np.array([0, n], dtype=np.int64), dst, np.array([0, dst.size], dtype=np.int64),
+        lengths, np.zeros(1 << 14, dtype=np.int64))
+    return dst[:int(lengths[0])].tobytes()
+
+
+def random_spectrum(rng, dtype, size=None):
+    dtype = np.dtype(dtype)
+    size = int(rng.integers(0, 3000)) if size is None else size
+    span = int(rng.choice([size + 1, 4 * size + 8, 114688, 253888]))
+    bins = np.sort(rng.choice(max(span, size), size=size, replace=False))
+    if dtype.kind == "f":
+        values = rng.choice([0.0, 0.5, 1.0, 3.25, 1e6, 7.0], size=size)
+    else:
+        values = rng.integers(0, int(rng.choice([2, 60, 30000])), size=size)
+    return bins, values.astype(dtype)
+
+
+@needs_numba
+@pytest.mark.parametrize("intensity_type", ["ADC", "TDC", "FOLDED"])
+def test_the_encode_backends_agree_on_random_spectra(intensity_type):
+    dtype = decode.dtype_for(intensity_type)
+    rng = np.random.default_rng(33)
+    for _ in range(150):
+        bins, values = random_spectrum(rng, dtype)
+        assert (decode.encode_intensities(bins, values, dtype, "numba")
+                == decode.encode_intensities(bins, values, dtype, "pure"))
+
+
+@needs_numba
+def test_the_encode_backends_agree_where_every_point_is_the_same():
+    """A summed frame's flat stretches are long back-references, the path a literal-heavy
+    random spectrum hardly reaches."""
+    for size in (1, 2, 3, 9, 264, 265, 5000):
+        bins = np.arange(size)
+        values = np.full(size, 7, dtype="<i4")
+        assert (decode.encode_intensities(bins, values, "<i4", "numba")
+                == decode.encode_intensities(bins, values, "<i4", "pure"))
+
+
+@needs_numba
+@pytest.mark.parametrize("payload", [
+    b"",
+    b"\x00",
+    b"ab",
+    b"abc",
+    b"abcd",
+    b"abcab",
+    bytes(range(256)) * 3,
+    b"A" * 100000,                                   # a match as long as the format allows
+    b"xyz" * 20 + b"q",                              # a match that runs to the last bytes
+    b"q" + b"xyz" * 20,
+    b"abcdefgh" * 2000,
+    bytes(range(256)) * 40 + bytes(range(256)),      # repeats 8192+ bytes back: out of reach
+    b"\x01\x02\x03" + bytes(9000) + b"\x01\x02\x03",
+], ids=lambda p: f"{len(p)}B")
+def test_the_compiled_lzf_matches_the_reference_on_raw_streams(payload):
+    assert compiled_lzf(payload) == decode.lzf_compress(payload)
+
+
+@needs_numba
+def test_the_compiled_lzf_matches_the_reference_on_random_streams():
+    rng = np.random.default_rng(3333)
+    for _ in range(300):
+        n = int(rng.integers(0, 5000))
+        alphabet = int(rng.choice([2, 4, 16, 256]))
+        payload = rng.integers(0, alphabet, size=n, dtype=np.uint8).tobytes()
+        assert compiled_lzf(payload) == decode.lzf_compress(payload)
+    for n in range(0, 40):
+        assert compiled_lzf(bytes(range(n))) == decode.lzf_compress(bytes(range(n)))
+
+
+@pytest.mark.parametrize("backend", ["pure", "auto"])
+def test_an_empty_scan_encodes_to_nothing(backend):
+    assert decode.encode_intensities(np.array([], dtype=np.int64),
+                                     np.array([], dtype="<i4"), "<i4", backend) == b""
+    blobs = decode.encode_frame_blobs(np.array([0, 0, 2, 2]), np.array([3, 9]),
+                                      np.array([1, 2], dtype="<i4"), "<i4", backend)
+    assert blobs[0] == blobs[2] == b"" and blobs[1] != b""
+
+
+@needs_numba
+@pytest.mark.parametrize("gap", [32766, 32767, 32768, 65534, 65535, 65536, 200000])
+def test_a_gap_beyond_the_int16_skip_splits_the_same_way(gap):
+    bins = np.array([0, gap, gap + 1, 2 * gap + 5])
+    values = np.array([5, 6, 7, 8], dtype="<i2")
+    assert (decode.encode_intensities(bins, values, "<i2", "numba")
+            == decode.encode_intensities(bins, values, "<i2", "pure"))
+
+
+@pytest.mark.parametrize("backend", ["pure", "auto"])
+def test_encode_frame_blobs_is_encode_intensities_scan_by_scan(backend):
+    rng = np.random.default_rng(34)
+    counts = rng.integers(0, 400, size=60)
+    counts[::5] = 0
+    pieces = [random_spectrum(rng, "<i4", int(c)) for c in counts]
+    scan_start = np.concatenate(([0], np.cumsum(counts)))
+    bins = np.concatenate([b for b, _ in pieces])
+    values = np.concatenate([v for _, v in pieces])
+    blobs = decode.encode_frame_blobs(scan_start, bins, values, "<i4", backend)
+    assert blobs == [decode.encode_intensities(b, v, "<i4", "pure") for b, v in pieces]
+
+
+@needs_numba
+def test_one_scan_leaves_nothing_behind_for_the_next():
+    """The kernel shares its hash table across a frame's scans, and a stale entry is only
+    harmless if it is recognised as stale: the same scan must encode the same way
+    whatever came before it."""
+    bins = np.arange(0, 3000, 3)
+    values = (np.arange(bins.size) % 17 + 1).astype("<i4")
+    alone = decode.encode_intensities(bins, values, "<i4", "pure")
+    scan_start = np.arange(0, 5 * bins.size + 1, bins.size)
+    blobs = decode.encode_frame_blobs(scan_start, np.tile(bins, 5), np.tile(values, 5),
+                                      "<i4", "numba")
+    assert blobs == [alone] * 5
+
+
+@pytest.mark.parametrize("backend", ["pure", "auto"])
+def test_an_intensity_given_in_a_wider_type_encodes_as_its_value(backend):
+    bins = np.array([1, 5, 9])
+    as_int64 = np.array([1, 70000, 3], dtype=np.int64)
+    assert (decode.encode_intensities(bins, as_int64, "<i4", backend)
+            == decode.encode_intensities(bins, as_int64.astype("<i4"), "<i4", "pure"))
+
+
+@pytest.mark.parametrize("backend", ["pure", "auto"])
+def test_a_value_the_element_type_cannot_hold_is_refused_either_way(backend):
+    with pytest.raises(OverflowError):
+        decode.encode_intensities(np.array([1, 2]), np.array([1, 40000]), "<i2", backend)
+
+
+@pytest.mark.parametrize("backend", ["pure", "auto"])
+def test_both_encode_backends_refuse_an_unsorted_index(backend):
+    with pytest.raises(ValueError, match="increasing"):
+        decode.encode_intensities(np.array([5, 1]), np.array([1, 2]), "<i4", backend)
+    with pytest.raises(ValueError, match="increasing"):
+        decode.encode_frame_blobs(np.array([0, 3]), np.array([1, 4, 4]),
+                                  np.array([1, 2, 3], dtype="<i4"), "<i4", backend)
+
+
+def test_a_new_scan_starting_lower_is_not_a_disorder():
+    blobs = decode.encode_frame_blobs(np.array([0, 2, 4]), np.array([50, 60, 1, 2]),
+                                      np.array([1, 2, 3, 4], dtype="<i4"))
+    assert len(blobs) == 2
+
+
+def test_an_unknown_encode_backend_is_refused():
+    with pytest.raises(ValueError, match="backend"):
+        decode.encode_intensities(np.array([1]), np.array([1]), backend="fortran")
+    with pytest.raises(ValueError, match="backend"):
+        decode.encode_frame_blobs(np.array([0, 1]), np.array([1]), np.array([1]),
+                                  backend="fortran")
+
+
+@needs_numba
+def test_every_blob_of_a_file_we_wrote_encodes_back_to_itself(real_uimf):
+    """The identity on a real acquisition, not on blobs made up here: decode what a
+    mainspring writer stored, encode it again with the kernels, and get the stored bytes.
+    Only a file mainspring wrote can pass -- PNNL's writer leaves explicit zeros in its
+    streams, which decode away, so re-encoding its blobs differs legitimately."""
+    import sqlite3
+
+    from mainspring.uimf.reader import UimfFile
+
+    source = UimfFile(real_uimf)
+    if not source.global_params().written_by.startswith("mainspring"):
+        pytest.skip("not written by mainspring; its blobs differ from ours by design")
+    dtype = source.global_params().dtype
+    conn = sqlite3.connect("file:" + real_uimf.replace("\\", "/") + "?mode=ro", uri=True)
+    try:
+        blobs = [bytes(row[0] or b"") for row in conn.execute(
+            "SELECT Intensities FROM Frame_Scans ORDER BY FrameNum, ScanNum LIMIT 4000")]
+    finally:
+        conn.close()
+    counts, bins, values = decode.decode_frame_blobs(blobs, dtype, backend="numba")
+    scan_start = np.concatenate(([0], np.cumsum(counts)))
+    assert decode.encode_frame_blobs(scan_start, bins, values, dtype, "numba") == blobs
