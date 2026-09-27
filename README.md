@@ -12,13 +12,14 @@ instrument writes UIMF.
 
 ## Status
 
-Version 1.8.0. The reader layer, the viewer, and the Windows installer are written and
+Version 1.9.0. The reader layer, the viewer, and the Windows installer are written and
 verified, and the development record lives in a private companion repository. This release
-makes writing a UIMF file from Python 25 times faster: a summed frame of 139 million points from
-a real acquisition, which took ten minutes to write, now takes 24 seconds, and the file written
-is identical to the byte. The release before it gave the `Live` control its full meaning: it
-finds the run being acquired and follows it, without anyone typing a path, and moves to the next
-run when one starts. The [user guide](docs/user-guide.md) covers all of it.
+halves the time to fold a real acquisition of 100 repetitions into its summed file, from 66
+seconds to 32. Adding the repetitions together takes 4 seconds instead of 24 and gives the same
+numbers to the last bit, and the writer can now choose a larger database page for the summed
+file, which writes it 5 seconds sooner at the same size. The file written is identical, row for
+row, to the one the slower code wrote. The release before it recorded in each file how the run
+that wrote it ended. The [user guide](docs/user-guide.md) covers all of it.
 
 The reader reproduces every scan's stored total ion current and base peak intensity exactly
 on the four files it has been tested against, which were written by four different versions
