@@ -153,6 +153,33 @@ def test_the_journal_mode_can_be_asked_for_explicitly(tmp_path):
         conn.close()
 
 
+def test_the_page_size_is_sqlites_unless_asked_for(tmp_path):
+    """The raw file keeps SQLite's page, which the console appends to as well; a summed
+    companion may ask for a larger one, and is still a WAL file that reads back."""
+    def page_and_mode(path):
+        conn = sqlite3.connect(str(path))
+        try:
+            return (conn.execute("PRAGMA page_size").fetchone()[0],
+                    conn.execute("PRAGMA journal_mode").fetchone()[0])
+        finally:
+            conn.close()
+
+    plain = tmp_path / "plain.uimf"
+    UimfWriter(plain, GlobalSpec(bins=64)).close()
+    assert page_and_mode(plain) == (4096, "wal")
+
+    companion = tmp_path / "companion.uimf"
+    with UimfWriter(companion, GlobalSpec(bins=64), page_size=8192) as writer:
+        frame = writer.add_frame(FrameSpec(scans=4))
+        writer.write_scans(frame, [(1, np.array([2, 5]), np.array([3, 4], dtype=np.int32))])
+    assert page_and_mode(companion) == (8192, "wal")
+    assert UimfFile(companion).read_frame(frame).scan(1)[1].tolist() == [3, 4]
+
+    for bad in (1000, 256, 131072):
+        with pytest.raises(ValueError, match="page_size"):
+            UimfWriter(tmp_path / f"bad{bad}.uimf", GlobalSpec(bins=64), page_size=bad)
+
+
 # --- round trips through the reader ---------------------------------------------------
 
 

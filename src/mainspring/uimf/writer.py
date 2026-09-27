@@ -561,6 +561,14 @@ class UimfWriter:
 
     Creating only. A file that already exists is refused unless `overwrite` says so:
     silently truncating a previous acquisition is not a thing to do by accident.
+
+    `page_size` is the database's page size in bytes, fixed at creation, and by default
+    SQLite's own (4096). It is for the summed companion, which nothing but this writer
+    ever writes: a beam-on companion's blobs run to tens of kilobytes, each an overflow
+    chain of pages, and at 8192 its insert, commit and checkpoint took 6.5 s rather
+    than 11 s for a file of the same size (lab record, task 34). Larger pages are faster
+    still and cost a quarter more disk. The raw file the console appends to is left at
+    the default: its page size is the console's as much as ours.
     """
 
     def __init__(
@@ -572,9 +580,16 @@ class UimfWriter:
         journal_mode: str = "wal",
         overwrite: bool = False,
         busy_timeout_ms: int = WRITER_BUSY_TIMEOUT_MS,
+        page_size: int | None = None,
     ) -> None:
         if tables not in ("both", "modern", "legacy"):
             raise ValueError(f"tables must be both, modern or legacy, not {tables!r}")
+        if page_size is not None and (
+            int(page_size) != page_size or not 512 <= page_size <= 65536
+            or page_size & (page_size - 1)
+        ):
+            raise ValueError(
+                f"page_size must be a power of two from 512 to 65536, not {page_size!r}")
         self.path = os.path.abspath(os.fspath(path))
         self.globals = globals_
         self.modern = tables in ("both", "modern")
@@ -598,6 +613,10 @@ class UimfWriter:
         )
         try:
             self._conn.execute(f"PRAGMA busy_timeout = {self.busy_timeout_ms}")
+            # Before the journal mode and the first table: a WAL database cannot change
+            # its page size, and an empty one takes it from the first page written.
+            if page_size is not None:
+                self._conn.execute(f"PRAGMA page_size = {int(page_size)}")
             mode = self._conn.execute(f"PRAGMA journal_mode = {journal_mode}").fetchone()[0]
             if str(mode).lower() != journal_mode.lower():
                 raise OSError(
