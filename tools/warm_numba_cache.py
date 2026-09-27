@@ -41,6 +41,13 @@ def main() -> int:
     if not os.path.isfile(EXE):
         print(f"{EXE} does not exist; build it first (tools/build_exe.ps1).")
         return 1
+    # Inno Setup rounds every file's modification time down to an even second
+    # (`TimeStampRounding`, default 2), and numba compares the stamp exactly, so a seed
+    # written against 14:21:02.50 is stale on an install dated 14:21:02.00 (lab record,
+    # task 34). Rounding the executable first makes the installer's rounding a no-op.
+    st = os.stat(EXE)
+    even = float(int(st.st_mtime) // 2 * 2)
+    os.utime(EXE, (st.st_atime, even))
     shutil.rmtree(SEED_DIR, ignore_errors=True)
     os.makedirs(SEED_DIR)
     # The executable is windowed, so it has no console to report to; the exit status and
@@ -57,8 +64,23 @@ def main() -> int:
     if missing or stray:
         print(f"seed incomplete: missing {missing or 'nothing'}, unexpected {stray or 'nothing'}")
         return 1
-    print(f"{len(names)} cache files for {len(KERNELS)} kernels in {folder}")
+    stamps = {_stamp_of(os.path.join(folder, n)) for n in names if n.endswith(".nbi")}
+    want = (os.stat(EXE).st_mtime, os.stat(EXE).st_size)
+    if stamps != {want}:
+        print(f"seed stamped {sorted(stamps)}, but the executable is {want}")
+        return 1
+    print(f"{len(names)} cache files for {len(KERNELS)} kernels in {folder}, stamped {want}")
     return 0
+
+
+def _stamp_of(index_path: str) -> tuple:
+    """The executable stamp numba pickled into one index file, as it reads it back."""
+    import pickle
+
+    with open(index_path, "rb") as fh:
+        pickle.load(fh)  # numba's version
+        stamp, _ = pickle.loads(fh.read())
+    return tuple(stamp)
 
 
 if __name__ == "__main__":
