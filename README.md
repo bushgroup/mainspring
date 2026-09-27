@@ -12,14 +12,13 @@ instrument writes UIMF.
 
 ## Status
 
-Version 1.9.0. The reader layer, the viewer, and the Windows installer are written and
+Version 1.10.0. The reader layer, the viewer, and the Windows installer are written and
 verified, and the development record lives in a private companion repository. This release
-halves the time to fold a real acquisition of 100 repetitions into its summed file, from 66
-seconds to 32. Adding the repetitions together takes 4 seconds instead of 24 and gives the same
-numbers to the last bit, and the writer can now choose a larger database page for the summed
-file, which writes it 5 seconds sooner at the same size. The file written is identical, row for
-row, to the one the slower code wrote. The release before it recorded in each file how the run
-that wrote it ended. The [user guide](docs/user-guide.md) covers all of it.
+makes the installed viewer keep one cache of compiled code, wherever it is started from, and
+arrive with that cache already filled. Before it, the viewer compiled its decoding code again
+the first time it was started from each new folder, which costs a few seconds, and the
+precompiled copy shipped in every installer was never used. The release before it halved the
+time to fold a real acquisition of 100 repetitions into its summed file, from 66 seconds to 32. The [user guide](docs/user-guide.md) covers all of it.
 
 The reader reproduces every scan's stored total ion current and base peak intensity exactly
 on the four files it has been tested against, which were written by four different versions
