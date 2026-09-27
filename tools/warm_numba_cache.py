@@ -6,8 +6,9 @@ cache exists yet -- a machine's first-ever launch -- against 0.9-1.4 s once one 
 render or decode path, only paid somewhere else: here, at build time, instead of by
 the first researcher who opens a file. The three encode kernels behind
 `UimfWriter.write_scans` are warmed with them (lab record, task 33), so that the first
-fold after an install does not pay for its own compile either; a program that installs
-the wheel and writes files keeps its own warm-up and should call the encode too.
+fold after an install does not pay for its own compile either, and so is the kernel
+behind `sum_frames` (lab record, task 34); a program that installs the wheel and folds
+files keeps its own warm-up and should call the encode and a two-frame sum too.
 
 Writes compiled kernels for every intensity dtype the format uses (ADC int32, TDC
 int16, FOLDED float32; `decode.INTENSITY_DTYPES`) to `packaging/numba_cache_seed/`,
@@ -41,6 +42,7 @@ def main() -> int:
     import numpy as np
 
     from mainspring.uimf import decode
+    from mainspring.uimf.frame import SparseFrame, sum_frames
 
     if not decode.numba_available():
         print("numba is not importable in this environment; nothing to warm.")
@@ -66,7 +68,12 @@ def main() -> int:
             [blob, None, blob], dtype=dtype
         )
         assert values_out.dtype == dtype and int(counts.sum()) == 2 * bin_index.size
-        print(f"warmed {type_name} ({dtype}), encode and decode")
+        # A two-frame sum: one frame alone is handed back without the kernel.
+        frame = SparseFrame(frame=1, scans=2, bins=4097, scan_start=scan_start,
+                            bin_index=bin_index.astype(np.int32), intensity=intensity)
+        total = sum_frames([frame, frame])
+        assert total.intensity.dtype == dtype and total.intensity.tolist() == [2, 4, 6, 8]
+        print(f"warmed {type_name} ({dtype}), encode, decode and sum")
 
     written = [
         os.path.join(dirpath, name)

@@ -150,3 +150,106 @@ def test_summing_a_real_file_totals_its_per_frame_tic(real_uimf):
     want = sum(float(uimf.scan_summary(n)[3].sum()) for n in numbers)
     total = sum_frames(frames)
     assert float(total.tic().sum()) == pytest.approx(want)
+
+
+# --- the compiled sum, held to scipy's -------------------------------------------------
+
+
+def scipy_sum(frames):
+    """`sum_frames` as it was before the kernel: the reference the kernel must equal."""
+    from scipy import sparse
+
+    total = None
+    for f in frames:
+        m = sparse.csr_matrix((f.intensity, f.bin_index, f.scan_start),
+                              shape=(f.scans, f.bins))
+        total = m if total is None else total + m
+    total.sort_indices()
+    total.sum_duplicates()
+    return (np.asarray(total.indptr, np.int64), np.asarray(total.indices, np.int32),
+            total.data)
+
+
+def assert_same(total, want):
+    ptr, idx, val = want
+    assert np.array_equal(total.scan_start, ptr)
+    assert total.bin_index.dtype == np.int32 and np.array_equal(total.bin_index, idx)
+    assert total.intensity.dtype == val.dtype
+    assert np.array_equal(total.intensity, val, equal_nan=val.dtype.kind == "f")
+
+
+def random_frames(rng, count, dtype, scans=40, bins=3000, signed=False):
+    frames = []
+    for k in range(count):
+        points = {}
+        for scan in range(scans):
+            n = int(rng.integers(0, 60))
+            if n:
+                bin_index = np.sort(rng.choice(bins, size=n, replace=False))
+                if dtype.kind == "f":
+                    values = (rng.random(n) * 1000 - (500 if signed else 0)).astype(dtype)
+                else:
+                    lo = -40 if signed else 1
+                    values = rng.integers(lo, 40, size=n).astype(dtype)
+                points[scan] = (bin_index, values)
+        frames.append(build(points, scans=scans, bins=bins, frame=k + 1))
+    return frames
+
+
+@pytest.mark.parametrize("dtype", [np.int32, np.int16, np.float32])
+@pytest.mark.parametrize("signed", [False, True])
+def test_the_kernel_sum_is_scipys_to_the_bit(dtype, signed):
+    """Frame order is scipy's left fold, so even float32 must round the same way, and a
+    sum that comes to zero is dropped the way scipy's addition drops it."""
+    rng = np.random.default_rng(34)
+    frames = random_frames(rng, 12, np.dtype(dtype), signed=signed)
+    assert_same(sum_frames(frames), scipy_sum(frames))
+
+
+@pytest.mark.parametrize("dtype", [np.int32, np.float32])
+def test_a_stream_merged_in_pieces_is_the_same_sum(dtype, monkeypatch):
+    from mainspring.uimf import frame as frame_module
+
+    monkeypatch.setattr(frame_module, "_MERGE_FLOOR_BYTES", 4000)
+    rng = np.random.default_rng(35)
+    frames = random_frames(rng, 30, np.dtype(dtype), signed=True)
+    assert_same(sum_frames(iter(frames)), scipy_sum(frames))
+
+
+def test_a_single_frame_keeps_its_explicit_zeros():
+    """One frame is not added to anything, so it is handed back as it came."""
+    only = build({1: (np.array([2, 5]), np.array([0, 3]))})
+    total = sum_frames([only])
+    assert total.scan(1)[0].tolist() == [2, 5] and total.scan(1)[1].tolist() == [0, 3]
+
+
+def test_a_scan_out_of_order_goes_the_scipy_way_mid_stream(monkeypatch):
+    from mainspring.uimf import frame as frame_module
+
+    monkeypatch.setattr(frame_module, "_MERGE_FLOOR_BYTES", 4000)
+    rng = np.random.default_rng(36)
+    frames = random_frames(rng, 20, np.dtype(np.float32))
+    bad = frames[15]
+    s = int(np.flatnonzero(np.diff(bad.scan_start) >= 2)[0])
+    lo, hi = int(bad.scan_start[s]), int(bad.scan_start[s + 1])
+    swapped = bad.bin_index.copy()
+    swapped[lo:hi] = swapped[lo:hi][::-1]
+    frames[15] = SparseFrame(bad.frame, bad.scans, bad.bins, bad.scan_start, swapped,
+                             bad.intensity)
+    assert_same(sum_frames(iter(frames)), scipy_sum(frames))
+
+
+def test_frames_of_different_shapes_are_still_refused():
+    a = build({1: (np.array([5]), np.array([3]))}, scans=8)
+    b = build({1: (np.array([7]), np.array([4]))}, scans=9)
+    with pytest.raises(ValueError):
+        sum_frames([a, b])
+
+
+def test_without_numba_the_sum_is_the_same(monkeypatch):
+    from mainspring.uimf import frame as frame_module
+
+    rng = np.random.default_rng(37)
+    frames = random_frames(rng, 6, np.dtype(np.float32), signed=True)
+    monkeypatch.setattr(frame_module, "_sum_kernel", lambda: None)
+    assert_same(sum_frames(frames), scipy_sum(frames))
