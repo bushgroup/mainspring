@@ -12,7 +12,7 @@ instrument writes UIMF.
 
 ## Status
 
-Version 1.10.0. The reader layer, the viewer, and the Windows installer are written and
+Version 1.10.1. The reader layer, the viewer, and the Windows installer are written and
 verified, and the development record lives in a private companion repository. This release
 makes the installed viewer keep one cache of compiled code, wherever it is started from, and
 arrive with that cache already filled. Before it, the viewer compiled its decoding code again
