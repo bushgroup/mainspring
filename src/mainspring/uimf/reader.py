@@ -67,8 +67,13 @@ from .writer import (
     DETECTOR_BITS,
     FRAME_COMPLETE,
     METHOD_FRAME,
+    OUTCOME_UNKNOWN,
     REPETITION,
     REPETITIONS,
+    REPETITIONS_ACQUIRED,
+    REPETITIONS_PLANNED,
+    RUN_OUTCOME,
+    RUN_REASON,
     WRITER_STAMP,
 )
 
@@ -320,6 +325,13 @@ class GlobalParams:
     UIMF parameter set has no name for and which the viewer otherwise takes from a user
     setting, and what created the file. `written_by` is also what makes a missing
     per-frame completion marker mean something -- see `is_provisional`.
+
+    `run_outcome` is how the run that wrote the file ended (`RUN_OUTCOMES`), and
+    `unknown` on a file that does not say -- every PNNL file, and every file the lab
+    wrote before the outcome was recorded. A value this reader does not know is passed
+    through as written rather than folded into `unknown`, so a newer writer's word is
+    seen rather than hidden. `repetitions_planned` and `repetitions_acquired` are `None`
+    where the file does not carry them.
     """
 
     instrument_name: str = ""
@@ -332,6 +344,10 @@ class GlobalParams:
     dataset_type: str = ""
     detector_bits: int | None = None
     written_by: str = ""
+    run_outcome: str = OUTCOME_UNKNOWN
+    run_reason: str = ""
+    repetitions_planned: int | None = None
+    repetitions_acquired: int | None = None
     extra: Mapping[str, str] = field(default_factory=dict)
 
     @property
@@ -1034,6 +1050,10 @@ def _global_params_from(raw: Mapping[str, str]) -> GlobalParams:
         dataset_type=raw.get("DatasetType", ""),
         detector_bits=_as_optional_int(raw.get(DETECTOR_BITS)),
         written_by=raw.get(WRITER_STAMP, ""),
+        run_outcome=(raw.get(RUN_OUTCOME) or "").strip().lower() or OUTCOME_UNKNOWN,
+        run_reason=raw.get(RUN_REASON, ""),
+        repetitions_planned=_as_optional_int(raw.get(REPETITIONS_PLANNED)),
+        repetitions_acquired=_as_optional_int(raw.get(REPETITIONS_ACQUIRED)),
         extra=dict(raw),
     )
 

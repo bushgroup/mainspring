@@ -6,6 +6,12 @@ machine with no GUI stack is likely to run. Three modes, all writing to stdout:
     uimf-info FILE                 parameters, frame list, per-frame scan counts
     uimf-info FILE --verify        decode every scan and compare with the stored columns
     uimf-info FILE --bench         time decode, encode and raster, numba and pure
+    uimf-info FOLDER --list        each file's run: how it ended, how much of it there is
+
+`--list --outcome completed,stopped` keeps only the files whose run ended one of those
+ways, which is the filter an analysis wants before it averages anything: a run that
+failed, or that never closed, is a file with fewer repetitions in it than its method
+asked for, and nothing inside a frame says so.
 
 `--verify` is the reader's acceptance test in the field, not merely a developer tool:
 `TIC` and `BPI` are exact ground truth on every row, and a file whose blobs do not
@@ -24,6 +30,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sqlite3
 import sys
 import time
 
@@ -33,6 +40,7 @@ from .calib import Calibration
 from .decode import decode_frame_blobs, encode_frame_blobs, numba_available
 from .raster import DisplayAxes, profile, rasterise
 from .reader import UimfFile, connect
+from .writer import OUTCOME_UNKNOWN, RUN_OUTCOMES
 
 __all__ = ["main"]
 
@@ -52,7 +60,12 @@ def main(argv: "list[str] | None" = None) -> int:
         prog="uimf-info",
         description="Inspect, verify and benchmark a UIMF file.",
     )
-    parser.add_argument("path", help="the .uimf file to read")
+    parser.add_argument("path", help="the .uimf file to read, or a folder with --list")
+    parser.add_argument("--list", action="store_true",
+                        help="one line per .uimf file in a folder: how its run ended")
+    parser.add_argument("--outcome", default=None, metavar="WORDS",
+                        help="with --list, only runs that ended so: comma-separated, from "
+                        + ", ".join((*RUN_OUTCOMES, OUTCOME_UNKNOWN)))
     parser.add_argument("--verify", action="store_true",
                         help="decode every scan and compare with the stored columns")
     parser.add_argument("--bench", action="store_true",
@@ -70,6 +83,9 @@ def main(argv: "list[str] | None" = None) -> int:
             stream.reconfigure(encoding="utf-8", errors="replace")
         except AttributeError:
             pass
+
+    if args.list or args.outcome is not None:
+        return _list_main(args)
 
     try:
         uimf = UimfFile(args.path)
@@ -103,6 +119,67 @@ def main(argv: "list[str] | None" = None) -> int:
                 json.dump(stamped, handle, indent=2, default=str)
             print(f"\nwrote {args.json}")
     return status
+
+
+# --- how each run in a folder ended ---------------------------------------------------
+
+
+def _list_main(args: argparse.Namespace) -> int:
+    known = (*RUN_OUTCOMES, OUTCOME_UNKNOWN)
+    wanted: set[str] | None = None
+    if args.outcome is not None:
+        wanted = {word.strip().lower() for word in args.outcome.split(",") if word.strip()}
+        strange = sorted(wanted - set(known))
+        if strange:
+            print(f"uimf-info: no such outcome: {', '.join(strange)}; "
+                  f"choose from {', '.join(known)}", file=sys.stderr)
+            return 2
+    if os.path.isdir(args.path):
+        paths = sorted(os.path.join(args.path, name) for name in os.listdir(args.path)
+                       if name.lower().endswith(".uimf"))
+    elif os.path.isfile(args.path):
+        paths = [args.path]
+    else:
+        print(f"uimf-info: no such file or folder: {args.path}", file=sys.stderr)
+        return 2
+    rows = [row for row in (_run_row(path) for path in paths)
+            if wanted is None or row["outcome"] in wanted]
+    for row in rows:
+        _print_run_row(row)
+    if args.json is not None:
+        from .. import report
+
+        stamped = report.stamp({"folder": os.path.abspath(args.path), "files": rows},
+                               task="uimf-info")
+        if args.json == "-":
+            print(json.dumps(stamped, indent=2, default=str))
+        else:
+            with open(args.json, "w", encoding="utf-8", newline="\n") as handle:
+                json.dump(stamped, handle, indent=2, default=str)
+            print(f"\nwrote {args.json}")
+    return 0
+
+
+def _run_row(path: str) -> dict:
+    """One file's run: its outcome, its counts and its reason, or why it could not be read."""
+    row: dict = {"file": os.path.basename(path), "path": os.path.abspath(path)}
+    try:
+        globals_ = UimfFile(path).global_params()
+    except (OSError, ValueError, KeyError, sqlite3.Error) as failure:
+        return {**row, "outcome": OUTCOME_UNKNOWN, "reason": "",
+                "repetitions_planned": None, "repetitions_acquired": None,
+                "unreadable": str(failure)}
+    return {**row, "outcome": globals_.run_outcome, "reason": globals_.run_reason,
+            "repetitions_planned": globals_.repetitions_planned,
+            "repetitions_acquired": globals_.repetitions_acquired}
+
+
+def _print_run_row(row: dict) -> None:
+    planned, acquired = row["repetitions_planned"], row["repetitions_acquired"]
+    counts = (f"{acquired if acquired is not None else '?'} of {planned} repetitions"
+              if planned is not None else "")
+    tail = row.get("unreadable") or row["reason"]
+    print("  ".join(part for part in (row["file"], row["outcome"], counts, tail) if part))
 
 
 # --- what is in this file ------------------------------------------------------------
@@ -149,6 +226,10 @@ def _summarise(uimf: UimfFile, only: int | None) -> dict:
         "tof_intensity_type": globals_.tof_intensity_type,
         "dtype": str(globals_.dtype),
         "time_offset_ns": globals_.time_offset_ns,
+        "run_outcome": globals_.run_outcome,
+        "run_reason": globals_.run_reason,
+        "repetitions_planned": globals_.repetitions_planned,
+        "repetitions_acquired": globals_.repetitions_acquired,
         "numba": numba_available(),
         "frames": frames,
         "global_extra": dict(globals_.extra),

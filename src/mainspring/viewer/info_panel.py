@@ -78,6 +78,28 @@ def per_push(max_intensity: float, accumulations: int, detector_bits: int) -> tu
     return counts_per_push, percent
 
 
+def run_words(global_params: object) -> str:
+    """How the file's run ended, as a sentence fragment for the panel.
+
+    `unknown` is spelled out, because a file from before the outcome was recorded is
+    the commonest case there is and "unknown" alone reads as a fault. The counts go
+    beside `stopped` and `failed` in particular, where they are what decides whether the
+    file is usable, and beside the others where they are there to be read.
+    """
+    outcome = getattr(global_params, "run_outcome", "unknown") or "unknown"
+    if outcome == "unknown":
+        return "not recorded in this file"
+    words = {"incomplete": "never closed, or still running"}.get(outcome, outcome)
+    planned = getattr(global_params, "repetitions_planned", None)
+    acquired = getattr(global_params, "repetitions_acquired", None)
+    if planned is not None and acquired is not None:
+        words += f", {acquired} of {planned} repetitions"
+    reason = getattr(global_params, "run_reason", "")
+    if reason:
+        words += f": {reason}"
+    return words
+
+
 def _tree_row(parent: QTreeWidgetItem, name: str, value: str) -> QTreeWidgetItem:
     """One parameter row, with its name and its full value on both columns' tooltips."""
     item = QTreeWidgetItem(parent, [name, value])
@@ -123,6 +145,7 @@ class InfoPanel(QDockWidget):
         self._global_root = QTreeWidgetItem(self._tree, ["Global", ""])
         self._frame_root = QTreeWidgetItem(self._tree, ["Frame", ""])
 
+        self._run_label = QLabel("-", container)
         self._state_label = QLabel("-", container)
         self._max_label = QLabel("-", container)
         self._per_push_label = QLabel("-", container)
@@ -134,6 +157,7 @@ class InfoPanel(QDockWidget):
         # into whatever width it is given. Both halves are needed -- `Ignored` alone
         # would elide, and word wrap alone would still report a wide size hint.
         for label in (
+            self._run_label,
             self._state_label,
             self._max_label,
             self._per_push_label,
@@ -146,6 +170,7 @@ class InfoPanel(QDockWidget):
         # A field too wide for the space beside its label drops to the next line rather
         # than squeezing into a sliver -- the per-push line, at the narrowest width.
         live.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        live.addRow("Run:", self._run_label)
         live.addRow("Frame:", self._state_label)
         live.addRow("Max intensity in view:", self._max_label)
         live.addRow("Per push:", self._per_push_label)
@@ -156,6 +181,11 @@ class InfoPanel(QDockWidget):
         # it is a quotient, over an accumulation count and a bit depth the file may not
         # have told us (lab record, task 01).
         for widget, tip in (
+            (
+                self._run_label,
+                "How the acquisition that wrote this file ended, as the file records it:"
+                " completed, stopped, failed, or never closed.",
+            ),
             (
                 self._state_label,
                 "Whether the instrument may still be adding scans to the frame on"
@@ -199,6 +229,7 @@ class InfoPanel(QDockWidget):
         method path read to fourteen characters and an ellipsis is worse than not shown
         at all -- so the whole value is one hover away at any panel width.
         """
+        self._run_label.setText(run_words(global_params))
         self._global_root.takeChildren()
         for name, value in _rows(global_params):
             _tree_row(self._global_root, name, value)

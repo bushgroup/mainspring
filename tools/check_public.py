@@ -255,6 +255,16 @@ def main() -> int:
                 uimf_writer.REPETITION, uimf_writer.REPETITIONS, uimf_writer.FRAME_COMPLETE)
                == ("MainspringWriter", "MainspringDetectorBits", "MainspringMethodFrame",
                    "MainspringRepetition", "MainspringRepetitions", "MainspringFrameComplete"))
+    # The run's outcome, on the same footing: the acquisition side writes it and an
+    # analysis filters on it, so the four names and the four words are strings a file
+    # already on disk carries.
+    check_true("the run outcome's names and its words are unchanged",
+               (uimf_writer.RUN_OUTCOME, uimf_writer.RUN_REASON,
+                uimf_writer.REPETITIONS_PLANNED, uimf_writer.REPETITIONS_ACQUIRED,
+                uimf_writer.RUN_OUTCOMES, uimf_writer.OUTCOME_UNKNOWN)
+               == ("MainspringRunOutcome", "MainspringRunReason",
+                   "MainspringRepetitionsPlanned", "MainspringRepetitionsAcquired",
+                   ("completed", "stopped", "failed", "incomplete"), "unknown"))
     # The companion's name is a convention between two programs, so it is pinned as a
     # string for the same reason the six parameter names are: renaming the constant is
     # free, renaming the string leaves a viewer unable to find the file an operator's

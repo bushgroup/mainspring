@@ -26,6 +26,15 @@ for ever, which is the honest answer: it may indeed be short. `UimfFile.is_provi
 reads the marker on files this writer created and falls back to its file-age heuristic
 on everything else, which is every file PNNL's own writers produce.
 
+**A run's outcome, set at create and replaced at close.** A client that passes
+`GlobalSpec(records_outcome=True)` gets `MainspringRunOutcome = incomplete` in
+`Global_Params` from the first commit, with the repetitions it planned beside it, and
+replaces it with `completed`, `stopped` or `failed` through `set_outcome` once it knows.
+A crash or a power cut leaves `incomplete`, which is the honest reading: nothing ever said
+the run ended. The per-frame marker cannot answer this, because a run stopped after twelve
+of fifty repetitions is twelve finished frames, and neither says the other thirty-eight
+were never asked for.
+
 **Two kinds of file, one writer.** The acquisition client writes a raw file with one
 frame per ion mobility experiment (`Accumulations` = 1, the console filling the scans)
 and folds those into a summed companion in today's shape (`Accumulations` = A). The
@@ -63,8 +72,18 @@ __all__ = [
     "FRAME_KEYS",
     "GLOBAL_KEYS",
     "METHOD_FRAME",
+    "OUTCOME_COMPLETED",
+    "OUTCOME_FAILED",
+    "OUTCOME_INCOMPLETE",
+    "OUTCOME_STOPPED",
+    "OUTCOME_UNKNOWN",
     "REPETITION",
     "REPETITIONS",
+    "REPETITIONS_ACQUIRED",
+    "REPETITIONS_PLANNED",
+    "RUN_OUTCOME",
+    "RUN_OUTCOMES",
+    "RUN_REASON",
     "WRITER_BUSY_TIMEOUT_MS",
     "WRITER_STAMP",
     "FrameSpec",
@@ -136,6 +155,40 @@ DETECTOR_BITS = "MainspringDetectorBits"
 not derivable from anything that is; the viewer's "% of full scale" readout falls back
 to a user setting when a file does not carry it (lab record, task 06)."""
 
+RUN_OUTCOME = "MainspringRunOutcome"
+"""Global parameter: how the run that wrote this file ended, one of `RUN_OUTCOMES`.
+Written as `incomplete` when the file is created and replaced by `set_outcome`."""
+
+RUN_REASON = "MainspringRunReason"
+"""Global parameter: why a `failed` run failed, in the words the client showed its
+operator. Empty for every other outcome."""
+
+REPETITIONS_PLANNED = "MainspringRepetitionsPlanned"
+"""Global parameter: how many repetitions the run asked for, over every method frame."""
+
+REPETITIONS_ACQUIRED = "MainspringRepetitionsAcquired"
+"""Global parameter: how many of those it finished, each counted once however many times
+it was acquired. With `REPETITIONS_PLANNED` this is what lets an analysis decide whether
+a `stopped` run counts."""
+
+OUTCOME_COMPLETED = "completed"
+"""Every repetition the run planned was acquired."""
+
+OUTCOME_STOPPED = "stopped"
+"""The operator, or a client on their behalf, stopped the run early."""
+
+OUTCOME_FAILED = "failed"
+"""Something went wrong and the run ended: a box lost, a console error, an exception."""
+
+OUTCOME_INCOMPLETE = "incomplete"
+"""Nothing said how the run ended: it is still running, or it never closed."""
+
+OUTCOME_UNKNOWN = "unknown"
+"""What the reader says of a file that carries no outcome at all. Never written."""
+
+RUN_OUTCOMES = (OUTCOME_COMPLETED, OUTCOME_STOPPED, OUTCOME_FAILED, OUTCOME_INCOMPLETE)
+"""The values `RUN_OUTCOME` may hold in a file."""
+
 
 @dataclass(frozen=True)
 class ParamDef:
@@ -184,6 +237,15 @@ GLOBAL_KEYS = _defs((
      "Software that created this file and wrote its parameters"),
     (CUSTOM_PARAM_ID_BASE + 2, DETECTOR_BITS, "System.Int32",
      "Digitizer bit depth, for reporting intensity as a fraction of full scale"),
+    (CUSTOM_PARAM_ID_BASE + 3, RUN_OUTCOME, "System.String",
+     "How the run that wrote this file ended: completed, stopped, failed, or incomplete"
+     " if it never said"),
+    (CUSTOM_PARAM_ID_BASE + 4, RUN_REASON, "System.String",
+     "Why a failed run failed, as its operator was told; empty otherwise"),
+    (CUSTOM_PARAM_ID_BASE + 5, REPETITIONS_PLANNED, "System.Int32",
+     "How many repetitions the run asked for, over every method frame"),
+    (CUSTOM_PARAM_ID_BASE + 6, REPETITIONS_ACQUIRED, "System.Int32",
+     "How many of the planned repetitions the run finished, each counted once"),
 ))
 
 # PNNL's `FrameParamKeyType`, same source and same rule. One deliberate divergence:
@@ -366,6 +428,11 @@ class GlobalSpec:
     recorded and, as everywhere else in mainspring, is **not** part of the calibration.
     `detector_bits` is mainspring's own: see `DETECTOR_BITS`.
 
+    `records_outcome` makes the file say how its run ended (`RUN_OUTCOME`): it is written
+    `incomplete` now, with `repetitions_planned` beside it and nothing acquired yet, and
+    `UimfWriter.set_outcome` replaces it. Off by default, because a file written for any
+    other reason has no run to report on.
+
     **Set `prescan_tof_pulses` to the frame's `Scans`.** It reads like a prescan
     setting and nothing in mainspring uses it, but FALKOR writes the method's scan count
     there and PNNL's `uimfpy` takes its `num_scans` from it and from nowhere else, so a
@@ -388,6 +455,8 @@ class GlobalSpec:
     prescan_tof_pulses: int = 0
     prescan_accumulations: int = 0
     detector_bits: int | None = None
+    records_outcome: bool = False
+    repetitions_planned: int | None = None
     extra: Mapping["str | ParamDef", object] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -398,7 +467,17 @@ class GlobalSpec:
         dtype_for(self.tof_intensity_type)  # raises on an element type nothing can decode
         if self.detector_bits is not None and not 1 <= int(self.detector_bits) <= 64:
             raise ValueError(f"detector_bits outside 1..64: {self.detector_bits}")
+        if self.repetitions_planned is not None:
+            if not self.records_outcome:
+                raise ValueError("repetitions_planned is recorded only with records_outcome")
+            if int(self.repetitions_planned) < 0:
+                raise ValueError(
+                    f"repetitions_planned cannot be negative: {self.repetitions_planned}")
         _check_extra(self.extra, GLOBAL_KEYS, "global")
+        outcome_keys = {RUN_OUTCOME, RUN_REASON, REPETITIONS_PLANNED, REPETITIONS_ACQUIRED}
+        if outcome_keys & {getattr(key, "name", key) for key in self.extra}:
+            raise ValueError("the run outcome is set by records_outcome and set_outcome,"
+                             " not through extra")
 
 
 @dataclass(frozen=True)
@@ -645,6 +724,40 @@ class UimfWriter:
             if self.legacy:
                 self._update_legacy_frame(frame, values)
 
+    def set_outcome(
+        self,
+        outcome: str,
+        *,
+        reason: str = "",
+        repetitions_acquired: int | None = None,
+    ) -> None:
+        """Replace the run's outcome, written `incomplete` when the file was created.
+
+        One transaction, so a reader sees the old outcome or the new one and never the
+        outcome without its count. `reason` is for a `failed` run and is refused on any
+        other, where it could only mislead. Allowed more than once, so a client that
+        learns more after a first call can say so; a file created without
+        `records_outcome` refuses it, since it never said it would report one.
+        """
+        self._require_open()
+        if not self.globals.records_outcome:
+            raise ValueError(f"{self.path}: created without records_outcome")
+        if outcome not in RUN_OUTCOMES:
+            raise ValueError(
+                f"outcome must be one of {', '.join(RUN_OUTCOMES)}, not {outcome!r}")
+        if reason and outcome != OUTCOME_FAILED:
+            raise ValueError(f"a reason is recorded only for a failed run, not {outcome}")
+        values: dict[str, object] = {RUN_OUTCOME: outcome, RUN_REASON: reason}
+        if repetitions_acquired is not None:
+            if int(repetitions_acquired) < 0:
+                raise ValueError(
+                    f"repetitions_acquired cannot be negative: {repetitions_acquired}")
+            values[REPETITIONS_ACQUIRED] = int(repetitions_acquired)
+        if not self.modern:
+            return  # the legacy table has no column to hold it
+        with self._transaction():
+            self._upsert_globals(values)
+
     # --- scans, for the fold and for the fixture ---------------------------------------
 
     def write_scans(
@@ -783,6 +896,18 @@ class UimfWriter:
                      0, 0, "", spec.instrument_name),
                 )
 
+    def _upsert_globals(self, values: Mapping[str, object]) -> None:
+        """Write these `Global_Params` rows, replacing any already there."""
+        self._conn.executemany(
+            "INSERT INTO Global_Params (ParamID, ParamName, ParamValue, ParamDataType,"
+            " ParamDescription) VALUES (?, ?, ?, ?, ?)"
+            " ON CONFLICT(ParamID) DO UPDATE SET ParamValue = excluded.ParamValue",
+            [(self.global_keys[name].param_id, name,
+              _as_text(value, self.global_keys[name]),
+              self.global_keys[name].data_type, self.global_keys[name].description)
+             for name, value in values.items()],
+        )
+
     def _declare_frame_keys(self, names: Iterable[str]) -> None:
         """Make sure `Frame_Param_Keys` has a row for each of these, and remember it.
 
@@ -821,6 +946,12 @@ class UimfWriter:
         }
         if spec.detector_bits is not None:
             values[DETECTOR_BITS] = int(spec.detector_bits)
+        if spec.records_outcome:
+            values[RUN_OUTCOME] = OUTCOME_INCOMPLETE
+            values[RUN_REASON] = ""
+            values[REPETITIONS_ACQUIRED] = 0
+            if spec.repetitions_planned is not None:
+                values[REPETITIONS_PLANNED] = int(spec.repetitions_planned)
         values.update(_register_extra(spec.extra, self.global_keys, "global"))
         return {name: _as_text(value, self.global_keys[name])
                 for name, value in values.items()}
