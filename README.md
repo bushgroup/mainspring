@@ -12,7 +12,7 @@ instrument writes UIMF.
 
 ## Status
 
-Version 1.7.0. The reader layer, the viewer, and the Windows installer are written and
+Version 1.8.0. The reader layer, the viewer, and the Windows installer are written and
 verified, and the development record lives in a private companion repository. This release
 makes writing a UIMF file from Python 25 times faster: a summed frame of 139 million points from
 a real acquisition, which took ten minutes to write, now takes 24 seconds, and the file written
