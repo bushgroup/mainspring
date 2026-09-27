@@ -364,6 +364,9 @@ def _sum_kernel():
         from numba import njit
     except Exception:  # noqa: BLE001 -- absent, broken and incompatible all mean "scipy"
         return None
+    from .decode import install_frozen_cache_locator
+
+    install_frozen_cache_locator()
     _SUM_KERNEL = njit(cache=True, nogil=True)(_k_sum_rows)
     return _SUM_KERNEL
 

@@ -16,7 +16,6 @@
 
 import os
 
-from PyInstaller.building.datastruct import Tree
 from PyInstaller.utils.hooks import collect_data_files
 
 block_cipher = None
@@ -51,18 +50,11 @@ ICON = os.path.join(
 if not os.path.isfile(ICON):
     raise RuntimeError(f"{ICON} is missing -- run `uv run tools/make_icon.py`.")
 
-# `mainspring.viewer.app._seed_numba_cache` copies this into NUMBA_CACHE_DIR on a frozen
-# build's first launch, so the 2.5-4.7 s first-ever-launch JIT cost (notes/reader-layer.md,
-# task 04) is paid at build time instead. Required, not optional: an unwarmed build would
-# still work, just slowly on its first launch, and that regression should fail the build
-# rather than ship quietly.
-SEED_DIR = os.path.join(SPECPATH, "numba_cache_seed")
-if not os.path.isdir(SEED_DIR) or not os.listdir(SEED_DIR):
-    raise RuntimeError(
-        "packaging/numba_cache_seed is missing or empty -- run "
-        "`uv run tools/warm_numba_cache.py` before building (lab record, task 07)."
-    )
-NUMBA_SEED_DATAS = Tree(SEED_DIR, prefix="numba_cache_seed")
+# The numba cache seed is not collected here. It is written into the finished bundle by the
+# built `.exe` itself (`tools/warm_numba_cache.py`, after PyInstaller), because numba stamps
+# a frozen program's cache with the executable, and a seed compiled from the source tree is
+# one no installed copy reads (lab record, task 34). `tools/build_exe.ps1` fails the build
+# if that step does.
 
 # The commit this build is built from, written by `tools/write_commit.py` into the package
 # itself so that a frozen mainspring can still say what code it is (lab record, task 20).
@@ -137,7 +129,9 @@ a = Analysis(
     [ENTRYPOINT],
     pathex=[],
     binaries=[],
-    datas=collect_data_files("mainspring") + GUIDE_DATAS,
+    # `__pycache__` excluded: it holds the build tree's own bytecode and numba cache, which
+    # a frozen program never reads and which used to ride along into `_internal`.
+    datas=collect_data_files("mainspring", excludes=["**/__pycache__/*"]) + GUIDE_DATAS,
     # The viewer does not import `mainspring.report` -- the entry point reaches the uimf
     # layer and the GUI, and nothing on screen is stamped today -- so the commit module
     # would not be followed into the bundle by itself. Named here so a frozen mainspring
@@ -153,10 +147,6 @@ a = Analysis(
     cipher=block_cipher,
     noarchive=False,
 )
-# Tree() yields the 3-entry TOC form (dest, src, typecode), unlike Analysis(datas=...)'s
-# 2-entry (src, dest_dir) form, so it is appended to the already-built TOC rather than
-# passed into Analysis itself.
-a.datas += NUMBA_SEED_DATAS
 
 # --- Provenance guard --------------------------------------------------------------------
 # PyInstaller resolves each collected binary's DLL dependencies by searching the binary's

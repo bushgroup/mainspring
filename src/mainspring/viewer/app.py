@@ -131,9 +131,26 @@ def _numba_cache_dir() -> str:
     return os.path.join(base, "mainspring", "numba-cache")
 
 
+SEEDED_MARKER = ".seeded-by"
+"""The file in the cache folder naming the executable whose seed was last copied in."""
+
+WARM_OPTION = "--warm-numba-cache"
+"""What the build runs the built `.exe` with, and a directory: compile into it and exit.
+
+Not in `USAGE`, because nobody but `tools/warm_numba_cache.py` has a reason to type it.
+The seed has to come from the frozen executable itself: numba stamps a frozen program's
+cache with the executable's modification time and size, which the installer preserves,
+so a cache compiled by any other interpreter is never read (lab record, task 34).
+"""
+
+
+def _exe_stamp() -> str:
+    st = os.stat(sys.executable)
+    return f"{os.path.basename(sys.executable)} {int(st.st_mtime)} {st.st_size}"
+
+
 def _seed_numba_cache(cache_dir: str) -> None:
-    """Copy a build-time pre-warmed numba cache into `cache_dir`, on a frozen build's
-    first launch only.
+    """Copy the build's pre-warmed numba cache into `cache_dir`, once per executable.
 
     Compiling the four decode kernels from nothing costs 2.5-4.7 s, against 0.9-1.4 s
     once an on-disk cache exists (`notes/reader-layer.md`, task 04); that first-launch
@@ -141,19 +158,55 @@ def _seed_numba_cache(cache_dir: str) -> None:
     per install, instead of by the first researcher who opens a file. Not a candidate
     for `_numba_cache_dir` itself: numba's cache is keyed by target CPU features, and
     a directory that is only ever read (never written back to after a mismatch) would
-    silently stop helping the moment this build runs on a different CPU.
-    `packaging/mainspring.spec` bundles `packaging/numba_cache_seed/`
-    (`tools/warm_numba_cache.py`) as `numba_cache_seed/` beside the frozen app; `sys.frozen`
-    is set only by PyInstaller, so a source checkout never looks for it.
+    silently stop helping the moment this build runs on a different CPU. The seed is
+    `numba_cache_seed/` beside the frozen app, written by the built `.exe` itself
+    (`WARM_OPTION`, `tools/warm_numba_cache.py`); `sys.frozen` is set only by
+    PyInstaller, so a source checkout never looks for it.
+
+    **Once per executable, not once per folder.** The first version seeded only an empty
+    folder, so an upgrade over a folder the previous version had filled never got its
+    seed. A marker file names the executable (file name, modification time, size) whose
+    seed was copied; a different one copies again, over what is there. What this copies
+    is read only because `decode.install_frozen_cache_locator` makes numba look here:
+    without it a frozen program ignores `NUMBA_CACHE_DIR` altogether (lab record,
+    task 34).
     """
     if not getattr(sys, "frozen", False):
         return
-    if os.path.isdir(cache_dir) and os.listdir(cache_dir):
-        return  # already seeded, or numba has already compiled into it
     bundle_root = getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
     seed = os.path.join(bundle_root, "numba_cache_seed")
-    if os.path.isdir(seed):
+    if not os.path.isdir(seed):
+        return
+    marker = os.path.join(cache_dir, SEEDED_MARKER)
+    stamp = _exe_stamp()
+    try:
+        with open(marker, encoding="utf-8") as fh:
+            if fh.read().strip() == stamp:
+                return
+    except OSError:
+        pass
+    try:
         shutil.copytree(seed, cache_dir, dirs_exist_ok=True)
+        with open(marker, "w", encoding="utf-8") as fh:
+            print(stamp, file=fh)
+    except OSError:
+        pass  # a cache that cannot be seeded is a slower first open, not a failure
+
+
+def _warm_numba_cache(directory: str) -> int:
+    """`WARM_OPTION`: compile every kernel into `directory` and return an exit status."""
+    os.environ["NUMBA_CACHE_DIR"] = os.path.abspath(directory)
+    os.makedirs(os.environ["NUMBA_CACHE_DIR"], exist_ok=True)
+    from ..uimf import decode
+
+    try:
+        decode.warm_kernels()
+    except Exception:  # noqa: BLE001 -- the build reads the status, not a traceback
+        return 1
+    # A frozen build that warmed without the locator wrote a cache nothing will read.
+    if getattr(sys, "frozen", False) and not decode.install_frozen_cache_locator():
+        return 1
+    return 0
 
 
 def _icon_path() -> str:
@@ -203,6 +256,10 @@ def main(argv: "list[str] | None" = None) -> int:
     status bar says why it is not being followed, and the process exits 0, because the
     file is what the person was trying to see.
     """
+    args = list(sys.argv[1:] if argv is None else argv)
+    if len(args) == 2 and args[0] == WARM_OPTION:
+        return _warm_numba_cache(args[1])
+
     os.environ.setdefault("NUMBA_CACHE_DIR", _numba_cache_dir())
     os.makedirs(os.environ["NUMBA_CACHE_DIR"], exist_ok=True)
     _seed_numba_cache(os.environ["NUMBA_CACHE_DIR"])

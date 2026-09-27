@@ -26,12 +26,6 @@ $buildDir = Join-Path $root "build"
 $exePath = Join-Path $distDir "mainspring\mainspring.exe"
 
 if (-not $SkipBuild) {
-    Write-Host "Warming the numba kernel cache for packaging/numba_cache_seed..." -ForegroundColor Cyan
-    uv run tools/warm_numba_cache.py
-    if ($LASTEXITCODE -ne 0) {
-        throw "Warming the numba cache failed (exit $LASTEXITCODE)."
-    }
-
     Write-Host "Recording the commit this build is built from..." -ForegroundColor Cyan
     # The wheel gets this from the hatchling build hook; PyInstaller runs against the
     # checkout and no backend is involved, so the .exe needs it written here. Left in place
@@ -60,6 +54,15 @@ if (-not $SkipBuild) {
         }
     } finally {
         $env:PATH = $savedPath
+    }
+
+    Write-Host "Seeding the build with its own compiled numba kernels..." -ForegroundColor Cyan
+    # After PyInstaller, from the built .exe: numba stamps a frozen program's cache with the
+    # executable, so only the executable can write a seed an installed copy will read
+    # (lab record, task 34).
+    uv run tools/warm_numba_cache.py
+    if ($LASTEXITCODE -ne 0) {
+        throw "Seeding the numba cache failed (exit $LASTEXITCODE)."
     }
 }
 

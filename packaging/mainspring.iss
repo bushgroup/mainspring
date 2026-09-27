@@ -58,6 +58,12 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 Name: "associate"; Description: "Open .uimf files with {#MyAppName}"; GroupDescription: "Other tasks:"
 
+[InstallDelete]
+; Everything a previous version installed under _internal goes first: Setup never deletes a
+; file the new build does not carry, so an upgrade used to keep the old numba seed and the
+; old libraries beside the new ones (lab record, task 34).
+Type: filesandordirs; Name: "{app}\_internal"
+
 [Files]
 Source: "..\dist\mainspring\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 

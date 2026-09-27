@@ -136,9 +136,11 @@ at the root of the checkout:
 tools\build_exe.ps1
 ```
 
-The script compiles the numba kernels into a cache that the build carries, runs PyInstaller
-against `packaging/mainspring.spec`, and then launches the result twice and reports how long
-each launch took to put a window on screen. The build lands in `dist\mainspring\`, a folder of
+The script runs PyInstaller against `packaging/mainspring.spec`, has the built program compile
+its numba kernels into a cache that the build carries, and then launches the result twice and
+reports how long each launch took to put a window on screen. The cache has to come from the
+built program itself, because numba recognises a packaged program's compiled kernels by the
+executable's size and modification time, and the installer keeps both. The build lands in `dist\mainspring\`, a folder of
 about 350 MB holding `mainspring.exe` beside the Qt and numpy libraries it loads. A folder is
 the deliverable rather than one self-extracting file because a self-extracting file unpacks its
 payload to a temporary directory on every launch, which ran past 180 s with no window against

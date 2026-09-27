@@ -38,6 +38,8 @@ stays a meaningful test of either.
 
 from __future__ import annotations
 
+import os
+import sys
 from typing import Sequence
 
 import numpy as np
@@ -50,11 +52,14 @@ __all__ = [
     "dtype_for",
     "encode_frame_blobs",
     "encode_intensities",
+    "frozen_cache_folder",
+    "install_frozen_cache_locator",
     "lzf_compress",
     "lzf_decompress",
     "numba_available",
     "rlz_decode",
     "rlz_encode",
+    "warm_kernels",
 ]
 
 INTENSITY_DTYPES: dict[str, np.dtype] = {
@@ -498,6 +503,7 @@ def _kernels():
         return None
     from types import SimpleNamespace
 
+    install_frozen_cache_locator()
     compiled = njit(cache=True, nogil=True)
     _KERNELS = SimpleNamespace(
         lzf_sizes=compiled(_k_lzf_sizes),
@@ -509,6 +515,121 @@ def _kernels():
         lzf_compress=compiled(_k_lzf_compress),
     )
     return _KERNELS
+
+
+_FROZEN_LOCATOR_INSTALLED = False
+
+
+def frozen_cache_folder(root: str, py_file: str) -> str:
+    """Where a frozen program keeps the compiled kernels of the module at `py_file`.
+
+    `<root>/<program>_<package>`, for example `mainspring_uimf` for the viewer and
+    `clockwork_uimf` for a frozen acquisition program that folds through this layer. The
+    program's name keeps two frozen programs sharing one root from overwriting each
+    other's index, and nothing here depends on the directory the program was started in.
+    """
+    program = os.path.splitext(os.path.basename(sys.executable))[0].lower()
+    package = os.path.basename(os.path.dirname(py_file)) or "module"
+    return os.path.join(root, f"{program}_{package}")
+
+
+def install_frozen_cache_locator() -> bool:
+    """In a frozen program, make numba cache kernels in one place whatever the launch folder.
+
+    numba finds a cache folder through a list of locators, and in a PyInstaller build
+    every one of them misreads the situation: the build carries bytecode and no `.py`,
+    so the locator that honours `NUMBA_CACHE_DIR` declines (it wants the source file to
+    exist), and the one that accepts a frozen program names its folder after
+    `abspath(co_filename)`, where `co_filename` is PyInstaller's relative
+    `mainspring/uimf/decode.py` (backslashed on Windows) -- so after the directory the program happened to be
+    started in. An installed viewer started from twenty-five folders had compiled into
+    twenty-five caches and never read the one it was seeded with (lab record, task 34).
+
+    This puts a locator at the head of numba's list that answers only in a frozen program:
+    `NUMBA_CACHE_DIR` if set, numba's own per-user folder otherwise, and
+    `frozen_cache_folder` under it. The stamp stays numba's frozen one, the executable's
+    modification time and size, so an upgrade still invalidates it once. Uses numba's
+    internal caching classes (`CacheImpl._locator_classes`, the locator base and mixin);
+    if they are not where numba 0.67 keeps them, this does nothing and numba behaves as
+    it always has. Returns whether the locator is in place.
+    """
+    global _FROZEN_LOCATOR_INSTALLED
+    if _FROZEN_LOCATOR_INSTALLED:
+        return True
+    if not getattr(sys, "frozen", False):
+        return False
+    try:
+        from numba.core import caching, config
+        from numba.misc.appdirs import AppDirs
+    except Exception:  # noqa: BLE001 -- no numba, or a numba laid out differently
+        return False
+
+    class FrozenCacheLocator(caching._SourceFileBackedLocatorMixin, caching._CacheLocator):
+        def __init__(self, py_func, py_file):
+            self._py_file = py_file
+            self._lineno = py_func.__code__.co_firstlineno
+            root = config.CACHE_DIR or AppDirs(appname="numba", appauthor=False).user_cache_dir
+            self._cache_path = frozen_cache_folder(root, py_file)
+
+        def get_cache_path(self):
+            return self._cache_path
+
+        @classmethod
+        def from_function(cls, py_func, py_file):
+            if not getattr(sys, "frozen", False):
+                return None
+            self = cls(py_func, py_file)
+            try:
+                self.ensure_cache_path()
+            except OSError:
+                return None
+            return self
+
+    # `CacheImpl` in numba 0.67, `_CacheImpl` before it was made public.
+    impl = getattr(caching, "CacheImpl", None) or getattr(caching, "_CacheImpl", None)
+    try:
+        impl._locator_classes.insert(0, FrozenCacheLocator)
+    except Exception:  # noqa: BLE001
+        return False
+    _FROZEN_LOCATOR_INSTALLED = True
+    return True
+
+
+def warm_kernels() -> list[str]:
+    """Compile every kernel for every element type the format uses; return what was warmed.
+
+    What a build runs so the first file an installed program opens, sums or folds pays no
+    compile: the four decode kernels, the three encode kernels at the types
+    `UimfWriter.write_scans` passes them (an int64 row pointer and bin index), and the sum
+    behind `sum_frames` (two frames, since one alone never reaches it), each checked
+    against the pure path. Where the compiled kernels land is numba's business, and in a
+    frozen program `install_frozen_cache_locator`'s. Raises if numba is not importable.
+    """
+    if _kernels() is None:
+        raise RuntimeError("numba is not importable in this environment; nothing to warm")
+    from .frame import SparseFrame, sum_frames
+
+    warmed = []
+    for type_name in sorted(INTENSITY_DTYPES):
+        dtype = dtype_for(type_name)
+        bin_index = np.array([0, 3, 500, 4096], dtype=np.int64)
+        intensity = np.array([1, 2, 3, 4], dtype=dtype)
+        scan_start = np.array([0, 0, bin_index.size], dtype=np.int64)
+        empty, blob = encode_frame_blobs(scan_start, bin_index, intensity, dtype,
+                                         backend="numba")
+        if empty != b"" or blob != encode_intensities(bin_index, intensity, dtype,
+                                                      backend="pure"):
+            raise AssertionError(f"{type_name}: the compiled encoder disagrees with the pure one")
+        counts, _, values = decode_frame_blobs([blob, None, blob], dtype=dtype)
+        if values.dtype != dtype or int(counts.sum()) != 2 * bin_index.size:
+            raise AssertionError(f"{type_name}: the compiled decoder lost points")
+        frame = SparseFrame(frame=1, scans=2, bins=4097, scan_start=scan_start,
+                            bin_index=bin_index.astype(np.int32), intensity=intensity)
+        total = sum_frames([frame, frame])
+        if total.intensity.dtype != dtype or total.intensity.tolist() != [2, 4, 6, 8]:
+            raise AssertionError(f"{type_name}: the compiled sum disagrees")
+        warmed.append(f"{type_name} ({dtype})")
+    return warmed
 
 
 # The seven kernels below -- four to decode, three to encode -- are module-level plain
