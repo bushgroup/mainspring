@@ -1,6 +1,6 @@
 [project]
 name = "mainspring"
-version = "1.10.1"
+version = "1.11.0"
 description = "Interactive viewer and Python reader for UIMF ion mobility mass spectrometry files."
 readme = "README.md"
 requires-python = "==3.12.*"
@@ -15,11 +15,12 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Chemistry",
     "Topic :: Scientific/Engineering :: Visualization",
 ]
+# The reader alone. Qt is the `viewer` extra's, so a pipeline that installs mainspring
+# for `mainspring.uimf` gets no graphical stack on its machine (lab record, task 35);
+# `tools/check_public.py` pins both lists and installs the bare wheel to prove it.
 dependencies = [
     "numpy~=2.5.2",
     "scipy~=1.18.1",
-    "PySide6~=6.11.2",
-    "pyqtgraph~=0.14.0",
 ]
 
 [project.optional-dependencies]
@@ -27,6 +28,13 @@ dependencies = [
 # fallback runs, correct but 10-50x slower. The viewer installs it; a pipeline
 # that only needs the reader may leave it out.
 fast = ["numba~=0.67.0"]
+# The viewer, which never runs without `fast`: a heat map redrawn on every wheel tick
+# cannot wait on the pure-Python decode. Naming the extra keeps numba's pin in one place.
+viewer = [
+    "mainspring[fast]",
+    "PySide6~=6.11.2",
+    "pyqtgraph~=0.14.0",
+]
 
 [project.scripts]
 mainspring = "mainspring.viewer.app:main"
@@ -52,10 +60,12 @@ packages = ["src/mainspring"]
 package = true
 
 [dependency-groups]
+# `uv sync` installs this group by default, and through it the viewer: `uv run mainspring`,
+# the suite and the PyInstaller build all need Qt, and a checkout should not have to ask.
 dev = [
+    "mainspring[viewer]",
     "pytest~=9.1",
     "pytest-qt~=4.5",
     "pyinstaller~=6.22",
     "pyinstaller-hooks-contrib~=2026.7",
-    "numba~=0.67.0",
 ]

@@ -7,8 +7,9 @@ absent, never as FAIL. What is left is still a real test of the decode path, bec
 synthetic UIMF file can be written from nothing: `tests/synthetic.py` puts a few hundred
 known points through the real SQLite schema and the real intensity encoder.
 
-What it covers: the package imports, the `uimf` layer stays free of Qt, the three
-hand-carried version declarations agree, the module layout is complete, the reporting stamp, the lab-directory resolution, the intensity
+What it covers: the package imports, the `uimf` layer stays free of Qt and the base
+install declares none (the wheel, installed bare, proves it), the hand-carried version
+declarations agree, the module layout is complete, the reporting stamp, the lab-directory resolution, the intensity
 codec against the format's own rules and against itself in both directions, and a
 synthetic file -- written through the schema a 2026 acquisition carries -- read back
 through the whole reader, rasterised, and put through `uimf-info --verify`; the writer
@@ -17,7 +18,9 @@ by a power failure leaves behind; and, since
 task 04, the same synthetic file opened and painted by the viewer's own window,
 offscreen, alongside the window icon that ships with it; and the window following a file
 as it is written, in the rolling sum, started the way another program starts it. Where a real file is present, `--verify` runs on that too, which is the
-acceptance test the milestone is written in terms of (lab record, task 03).
+acceptance test the milestone is written in terms of (lab record, task 03). Run where
+the `viewer` extra is not installed, everything up to the viewer runs and the viewer's
+two sections are SKIPPED.
 
 Run:  uv run tools/check_public.py
 """
@@ -123,6 +126,32 @@ def declared_versions() -> dict[str, str]:
             "README.md": stated.group(1) if stated else "(not found)"}
 
 
+QT_DISTRIBUTIONS = frozenset({"pyside6", "pyside6-essentials", "pyside6-addons",
+                               "shiboken6", "pyqtgraph", "pyqt5", "pyqt6"})
+"""Distribution names, normalised, that would put a graphical stack on a machine."""
+
+
+def declared_dependencies() -> "tuple[set[str], set[str], set[str]]":
+    """The base dependencies, the `viewer` extra and the `dev` group, as `pyproject.toml`
+    states them: each requirement reduced to its normalised name, with any extras kept
+    in brackets so a self-reference reads `mainspring[fast]`."""
+    with open(os.path.join(ROOT, "pyproject.toml"), "rb") as handle:
+        pyproject = tomllib.load(handle)
+
+    def names(requirements: "list[str]") -> "set[str]":
+        found = set()
+        for requirement in requirements:
+            match = re.match(r"\s*([A-Za-z0-9._-]+)\s*(\[[^\]]*\])?", requirement)
+            name = re.sub(r"[-_.]+", "-", match.group(1)).lower()
+            found.add(name + (match.group(2) or "").replace(" ", ""))
+        return found
+
+    project = pyproject["project"]
+    return (names(project.get("dependencies", [])),
+            names(project.get("optional-dependencies", {}).get("viewer", [])),
+            names(pyproject.get("dependency-groups", {}).get("dev", [])))
+
+
 UIMF_MODULES = ("cache", "calib", "cli", "decode", "frame", "raster", "reader", "writer")
 VIEWER_MODULES = (
     "app", "chromatogram", "controls", "export", "fonts", "heatmap", "help",
@@ -159,6 +188,20 @@ def main() -> int:
         + ", ".join(f"{where} {what}" for where, what in declared.items()) + ")",
         len(set(declared.values())) == 1,
     )
+    # The seam is a packaging fact as well as an import one: a pipeline that installs
+    # mainspring for the reader must not get Qt on its machine, and an import check run
+    # in this environment, which has the viewer, cannot see a dependency declared in the
+    # wrong list. The wheel section below installs the result; this pins the lists it is
+    # built from (lab record, task 35).
+    base, viewer_extra, dev_group = declared_dependencies()
+    check_true(f"the base install names no Qt package ({', '.join(sorted(base))})",
+               not base & QT_DISTRIBUTIONS)
+    check_true(
+        f"the viewer extra is the reader's fast decode plus Qt ({', '.join(sorted(viewer_extra))})",
+        viewer_extra == {"mainspring[fast]", "pyside6", "pyqtgraph"},
+    )
+    check_true("the dev group installs the viewer, so a checkout has it unasked",
+               "mainspring[viewer]" in dev_group)
     for name in UIMF_MODULES:
         check_true(
             f"mainspring.uimf.{name} imports",
@@ -918,6 +961,167 @@ def main() -> int:
                    data is None or os.path.isdir(data))
 
     # --------------------------------------------------------------------------------
+    section("real files, if this clone has any")
+    # `uimf-info --verify` decodes every scan of every frame and compares it with the
+    # file's own TIC, BPI and NonZeroCount columns. That is the whole acceptance test,
+    # so a clone with a real file runs it rather than a smaller imitation of it.
+    from mainspring.uimf.cli import main as uimf_info_main
+
+    testdata = os.path.join(mainspring.EXTERNAL_DIR, "pnnl-testdata")
+    present = sorted(os.path.join(testdata, f) for f in os.listdir(testdata)
+                     if f.endswith(".uimf")) if os.path.isdir(testdata) else []
+    if not present:
+        skip("PNNL excerpt decode", "not fetched; run tools/fetch_testdata.py")
+    for excerpt in present:
+        check_true(f"uimf-info --verify passes on {os.path.basename(excerpt)}",
+                   _quiet(uimf_info_main, [excerpt, "--verify"]) == 0)
+
+    smoke = os.environ.get("MAINSPRING_SMOKE_UIMF")
+    if not smoke:
+        skip("smoke-file decode", "MAINSPRING_SMOKE_UIMF not set")
+    elif not os.path.isfile(smoke):
+        check_true(f"MAINSPRING_SMOKE_UIMF names a file ({smoke})", False)
+    else:
+        check_true(f"uimf-info --verify passes on {os.path.basename(smoke)}",
+                   _quiet(uimf_info_main, [smoke, "--verify"]) == 0)
+
+    # --------------------------------------------------------------------------------
+    section("the wheel (uv build, clean-venv install)")
+    # Unlike the in-process import check above, this builds the wheel and installs it
+    # in a subprocess venv, so import order here cannot leak Qt into this process. What
+    # it catches instead is a packaging mistake the in-process check cannot see: a file
+    # `hatchling` left out of the wheel, or a dependency the wheel declares wrong.
+    # The wheel goes in bare, with no extra, because that is what a pipeline installs
+    # for the reader: the venv must end up with no Qt in it at all, and the `mainspring`
+    # command, which every install carries, must say what is missing rather than fail
+    # (lab record, task 35). Building and installing needs `uv` and a venv it can create; only that second
+    # part is reported SKIPPED rather than FAILED, since a sandboxed or offline machine
+    # can otherwise run every check above (lab record, task 07).
+    import shutil
+    import subprocess
+
+    uv = shutil.which("uv")
+    if uv is None:
+        skip("wheel build and clean-venv install", "uv is not on PATH")
+    else:
+        with tempfile.TemporaryDirectory() as wheel_tmp:
+            wheel_dir = os.path.join(wheel_tmp, "dist")
+            build = subprocess.run(
+                [uv, "build", "--wheel", "--out-dir", wheel_dir, ROOT],
+                capture_output=True, text=True,
+            )
+            if build.returncode != 0:
+                check_true("uv build produces a wheel", False)
+                print(build.stdout[-2000:])
+                print(build.stderr[-2000:])
+            else:
+                wheels = sorted(f for f in os.listdir(wheel_dir) if f.endswith(".whl"))
+                check_true(f"uv build produces exactly one wheel ({wheels})", len(wheels) == 1)
+
+                venv_dir = os.path.join(wheel_tmp, "venv")
+                venv_result = subprocess.run(
+                    [uv, "venv", venv_dir, "--no-project"], capture_output=True, text=True,
+                )
+                if venv_result.returncode != 0:
+                    skip("wheel clean-venv install",
+                         f"uv could not create a venv ({venv_result.stderr.strip()[:200]})")
+                elif wheels:
+                    venv_python = os.path.join(
+                        venv_dir,
+                        "Scripts" if os.name == "nt" else "bin",
+                        "python.exe" if os.name == "nt" else "python",
+                    )
+                    wheel_path = os.path.join(wheel_dir, wheels[0])
+                    install = subprocess.run(
+                        [uv, "pip", "install", "--python", venv_python, wheel_path],
+                        capture_output=True, text=True,
+                    )
+                    check_true("the wheel installs into a clean venv", install.returncode == 0)
+                    if install.returncode != 0:
+                        print(install.stdout[-2000:])
+                        print(install.stderr[-2000:])
+                    else:
+                        probe = subprocess.run(
+                            [venv_python, "-c",
+                             "import importlib.util\n"
+                             "qt = [m for m in ('PySide6', 'pyqtgraph', 'shiboken6')\n"
+                             "      if importlib.util.find_spec(m) is not None]\n"
+                             "print('QT:' + ','.join(qt) if qt else 'NOQT')"],
+                            capture_output=True, text=True,
+                        )
+                        check_true(
+                            "the bare wheel installs no Qt package "
+                            f"({probe.stdout.strip() or probe.stderr.strip()[-200:]})",
+                            probe.returncode == 0 and probe.stdout.strip() == "NOQT",
+                        )
+                        probe = subprocess.run(
+                            [venv_python, "-c",
+                             "import sys, mainspring, mainspring.interface, mainspring.report\n"
+                             "from mainspring.uimf import UimfFile, UimfWriter, GlobalSpec, FrameSpec\n"
+                             "qt = [m for m in sys.modules if m.startswith(('PySide6', 'pyqtgraph', 'shiboken6'))]\n"
+                             "print('QT:' + ','.join(qt) if qt else 'NOQT')"],
+                            capture_output=True, text=True,
+                        )
+                        check_true(
+                            "and the reader, the interface and the stamp import from it "
+                            f"({probe.stdout.strip() or probe.stderr.strip()[-200:]})",
+                            probe.returncode == 0 and probe.stdout.strip() == "NOQT",
+                        )
+                        scripts = os.path.dirname(venv_python)
+                        info = subprocess.run(
+                            [os.path.join(scripts, "uimf-info"), "--help"],
+                            capture_output=True, text=True,
+                        )
+                        check_true("its uimf-info command runs", info.returncode == 0)
+                        from mainspring.viewer.app import NO_VIEWER_STATUS
+
+                        viewer = subprocess.run(
+                            [os.path.join(scripts, "mainspring")], capture_output=True, text=True,
+                        )
+                        said = (viewer.stderr.strip().splitlines() or [""])[-1]
+                        check_true(
+                            f"its mainspring command exits {NO_VIEWER_STATUS} naming the "
+                            f"viewer extra (exit {viewer.returncode}: {said[:160]})",
+                            viewer.returncode == NO_VIEWER_STATUS
+                            and "mainspring[viewer]" in said
+                            and "Traceback" not in viewer.stderr,
+                        )
+                        # The installed wheel is the only place the build hook can be
+                        # checked at all: in this checkout git answers first, so the
+                        # generated module is never what a stamp reports here (lab record,
+                        # task 20). Out there it is the only thing that can.
+                        stamp_probe = subprocess.run(
+                            [venv_python, "-c",
+                             "from mainspring.report import stamp\n"
+                             "print(stamp(None)['mainspring_commit'])"],
+                            capture_output=True, text=True,
+                        )
+                        built = stamp_probe.stdout.strip()
+                        if head is None:
+                            skip("the installed wheel carries the commit it was built from",
+                                 "this clone is not a checkout, so the build had no commit "
+                                 "to record")
+                        else:
+                            check_true(
+                                "the installed wheel carries the commit it was built from "
+                                f"({built or stamp_probe.stderr.strip()[-200:]})",
+                                built in (head, head + "-dirty"),
+                            )
+
+    # --------------------------------------------------------------------------------
+    # Everything below needs the `viewer` extra. A reader-only install is a supported
+    # one, so its absence is SKIPPED, never FAIL: the sections above have already shown
+    # that what such an install promises works (lab record, task 35).
+    from mainspring.viewer.app import missing_viewer_modules
+
+    missing_qt = missing_viewer_modules()
+    if missing_qt:
+        why = f"{' and '.join(missing_qt)} not installed; the viewer extra is absent"
+        skip("the viewer layer", why)
+        skip("the viewer following a run, and the command line that starts one", why)
+        return summary()
+
+    # --------------------------------------------------------------------------------
     section("the viewer layer")
     # Last, because importing it loads Qt -- which is exactly what the seam check above
     # must not see. QT_QPA_PLATFORM is set before that import, offscreen, so this runs
@@ -1489,119 +1693,11 @@ def main() -> int:
             window.close()
         interface.clear_live_pointer()
 
-    # --------------------------------------------------------------------------------
-    section("real files, if this clone has any")
-    # `uimf-info --verify` decodes every scan of every frame and compares it with the
-    # file's own TIC, BPI and NonZeroCount columns. That is the whole acceptance test,
-    # so a clone with a real file runs it rather than a smaller imitation of it.
-    from mainspring.uimf.cli import main as uimf_info_main
+    return summary()
 
-    testdata = os.path.join(mainspring.EXTERNAL_DIR, "pnnl-testdata")
-    present = sorted(os.path.join(testdata, f) for f in os.listdir(testdata)
-                     if f.endswith(".uimf")) if os.path.isdir(testdata) else []
-    if not present:
-        skip("PNNL excerpt decode", "not fetched; run tools/fetch_testdata.py")
-    for excerpt in present:
-        check_true(f"uimf-info --verify passes on {os.path.basename(excerpt)}",
-                   _quiet(uimf_info_main, [excerpt, "--verify"]) == 0)
 
-    smoke = os.environ.get("MAINSPRING_SMOKE_UIMF")
-    if not smoke:
-        skip("smoke-file decode", "MAINSPRING_SMOKE_UIMF not set")
-    elif not os.path.isfile(smoke):
-        check_true(f"MAINSPRING_SMOKE_UIMF names a file ({smoke})", False)
-    else:
-        check_true(f"uimf-info --verify passes on {os.path.basename(smoke)}",
-                   _quiet(uimf_info_main, [smoke, "--verify"]) == 0)
-
-    # --------------------------------------------------------------------------------
-    section("the wheel (uv build, clean-venv install)")
-    # Unlike the in-process import check above, this builds the wheel and installs it
-    # in a subprocess venv, so import order here cannot leak Qt into this process. What
-    # it catches instead is a packaging mistake the in-process check cannot see: a file
-    # `hatchling` left out of the wheel, or a dependency the wheel declares wrong.
-    # Building and installing needs `uv` and a venv it can create; only that second
-    # part is reported SKIPPED rather than FAILED, since a sandboxed or offline machine
-    # can otherwise run every check above (lab record, task 07).
-    import shutil
-    import subprocess
-
-    uv = shutil.which("uv")
-    if uv is None:
-        skip("wheel build and clean-venv install", "uv is not on PATH")
-    else:
-        with tempfile.TemporaryDirectory() as wheel_tmp:
-            wheel_dir = os.path.join(wheel_tmp, "dist")
-            build = subprocess.run(
-                [uv, "build", "--wheel", "--out-dir", wheel_dir, ROOT],
-                capture_output=True, text=True,
-            )
-            if build.returncode != 0:
-                check_true("uv build produces a wheel", False)
-                print(build.stdout[-2000:])
-                print(build.stderr[-2000:])
-            else:
-                wheels = sorted(f for f in os.listdir(wheel_dir) if f.endswith(".whl"))
-                check_true(f"uv build produces exactly one wheel ({wheels})", len(wheels) == 1)
-
-                venv_dir = os.path.join(wheel_tmp, "venv")
-                venv_result = subprocess.run(
-                    [uv, "venv", venv_dir, "--no-project"], capture_output=True, text=True,
-                )
-                if venv_result.returncode != 0:
-                    skip("wheel clean-venv install",
-                         f"uv could not create a venv ({venv_result.stderr.strip()[:200]})")
-                elif wheels:
-                    venv_python = os.path.join(
-                        venv_dir,
-                        "Scripts" if os.name == "nt" else "bin",
-                        "python.exe" if os.name == "nt" else "python",
-                    )
-                    wheel_path = os.path.join(wheel_dir, wheels[0])
-                    install = subprocess.run(
-                        [uv, "pip", "install", "--python", venv_python, wheel_path],
-                        capture_output=True, text=True,
-                    )
-                    check_true("the wheel installs into a clean venv", install.returncode == 0)
-                    if install.returncode != 0:
-                        print(install.stdout[-2000:])
-                        print(install.stderr[-2000:])
-                    else:
-                        probe = subprocess.run(
-                            [venv_python, "-c",
-                             "import sys, mainspring.uimf\n"
-                             "from mainspring.uimf import UimfWriter, GlobalSpec, FrameSpec\n"
-                             "qt = [m for m in sys.modules if m.startswith(('PySide6', 'pyqtgraph', 'shiboken6'))]\n"
-                             "print('QT:' + ','.join(qt) if qt else 'NOQT')"],
-                            capture_output=True, text=True,
-                        )
-                        check_true(
-                            "the installed wheel imports mainspring.uimf with no Qt loaded "
-                            f"({probe.stdout.strip() or probe.stderr.strip()[-200:]})",
-                            probe.returncode == 0 and probe.stdout.strip() == "NOQT",
-                        )
-                        # The installed wheel is the only place the build hook can be
-                        # checked at all: in this checkout git answers first, so the
-                        # generated module is never what a stamp reports here (lab record,
-                        # task 20). Out there it is the only thing that can.
-                        stamp_probe = subprocess.run(
-                            [venv_python, "-c",
-                             "from mainspring.report import stamp\n"
-                             "print(stamp(None)['mainspring_commit'])"],
-                            capture_output=True, text=True,
-                        )
-                        built = stamp_probe.stdout.strip()
-                        if head is None:
-                            skip("the installed wheel carries the commit it was built from",
-                                 "this clone is not a checkout, so the build had no commit "
-                                 "to record")
-                        else:
-                            check_true(
-                                "the installed wheel carries the commit it was built from "
-                                f"({built or stamp_probe.stderr.strip()[-200:]})",
-                                built in (head, head + "-dirty"),
-                            )
-
+def summary() -> int:
+    """Print the tally and return the exit status: 1 if anything failed."""
     print()
     print(f"{len(FAIL)} failed, {len(SKIPPED)} skipped")
     for name in FAIL:

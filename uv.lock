@@ -55,12 +55,10 @@ wheels = [
 
 [[package]]
 name = "mainspring"
-version = "1.10.1"
+version = "1.11.0"
 source = { editable = "." }
 dependencies = [
     { name = "numpy" },
-    { name = "pyqtgraph" },
-    { name = "pyside6" },
     { name = "scipy" },
 ]
 
@@ -68,10 +66,15 @@ dependencies = [
 fast = [
     { name = "numba" },
 ]
+viewer = [
+    { name = "numba" },
+    { name = "pyqtgraph" },
+    { name = "pyside6" },
+]
 
 [package.dev-dependencies]
 dev = [
-    { name = "numba" },
+    { name = "mainspring", extra = ["viewer"] },
     { name = "pyinstaller" },
     { name = "pyinstaller-hooks-contrib" },
     { name = "pytest" },
@@ -80,17 +83,18 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "mainspring", extras = ["fast"], marker = "extra == 'viewer'" },
     { name = "numba", marker = "extra == 'fast'", specifier = "~=0.67.0" },
     { name = "numpy", specifier = "~=2.5.2" },
-    { name = "pyqtgraph", specifier = "~=0.14.0" },
-    { name = "pyside6", specifier = "~=6.11.2" },
+    { name = "pyqtgraph", marker = "extra == 'viewer'", specifier = "~=0.14.0" },
+    { name = "pyside6", marker = "extra == 'viewer'", specifier = "~=6.11.2" },
     { name = "scipy", specifier = "~=1.18.1" },
 ]
-provides-extras = ["fast"]
+provides-extras = ["fast", "viewer"]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "numba", specifier = "~=0.67.0" },
+    { name = "mainspring", extras = ["viewer"] },
     { name = "pyinstaller", specifier = "~=6.22" },
     { name = "pyinstaller-hooks-contrib", specifier = "~=2026.7" },
     { name = "pytest", specifier = "~=9.1" },

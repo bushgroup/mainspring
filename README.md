@@ -12,13 +12,14 @@ instrument writes UIMF.
 
 ## Status
 
-Version 1.10.1. The reader layer, the viewer, and the Windows installer are written and
+Version 1.11.0. The reader layer, the viewer, and the Windows installer are written and
 verified, and the development record lives in a private companion repository. This release
-makes the installed viewer keep one cache of compiled code, wherever it is started from, and
-arrive with that cache already filled. Before it, the viewer compiled its decoding code again
-the first time it was started from each new folder, which costs a few seconds, and the
-precompiled copy shipped in every installer was never used. The release before it halved the
-time to fold a real acquisition of 100 repetitions into its summed file, from 66 seconds to 32. The [user guide](docs/user-guide.md) covers all of it.
+separates the reader from the viewer at installation. Installing mainspring as a Python
+package now brings the reader with numpy and scipy alone, whereas the viewer's graphical
+libraries, PySide6 and pyqtgraph, arrive only when asked for as `mainspring[viewer]`. The
+installer is unchanged. The release before it made the installed viewer keep one cache of
+compiled code, wherever it is started from, and arrive with that cache already filled. The
+[user guide](docs/user-guide.md) covers the viewer.
 
 The reader reproduces every scan's stored total ion current and base peak intensity exactly
 on the four files it has been tested against, which were written by four different versions
@@ -43,9 +44,11 @@ release](https://github.com/bushgroup/mainspring/releases/latest) as
 `mainspring-<version>-setup.exe`, about 94 MB, and needs no Python installation. It installs
 into the current user's profile and asks for no administrator rights, offers a Start menu entry
 and an optional desktop icon, and offers to open `.uimf` files with mainspring. The same release
-carries `mainspring-<version>-py3-none-any.whl`, which is the reader and the viewer as a Python
-package for a machine that already has Python 3.12. Both file names carry the version of the
-release they are attached to, so follow the link rather than typing one.
+carries `mainspring-<version>-py3-none-any.whl`, which is the reader as a Python package for a
+machine that already has Python 3.12. To install the viewer from it as well, ask for the
+`viewer` extra, i.e., `pip install "mainspring-<version>-py3-none-any.whl[viewer]"`. Both file
+names carry the version of the release they are attached to, so follow the link rather than
+typing one.
 
 The installer is not code signed, so Microsoft Defender SmartScreen shows "Windows protected
 your PC" the first time it is run from a download. Choose More info, then Run anyway. Signing
@@ -88,10 +91,19 @@ arrival = frame.tic()                   # total ion current per scan
 
 A frame is held as the points that exist rather than as a dense array of scans by
 time-of-flight bins, which on the Bush lab's instrument would be 2.3 GB for a single frame.
-`mainspring.uimf` imports without Qt, so a pipeline that installs mainspring for the reader
-does not pull a graphical stack onto a machine that has no use for one. Installing the
-optional `fast` extra adds numba, which compiles the decoder and the encoder: reading a frame
-becomes 25 times faster and encoding one 80 times faster, with the same bytes either way.
+To use the reader from another project, install mainspring from a release tag:
+
+```
+pip install "mainspring[fast] @ git+https://github.com/bushgroup/mainspring@v1.11.0"
+```
+
+The same requirement string works as a dependency in another project's `pyproject.toml`,
+under pip and uv alike. Neither `mainspring.uimf` nor the installation it comes from carries
+Qt, so a pipeline that installs mainspring for the reader does not pull a graphical stack onto
+a machine that has no use for one. The `fast` extra adds numba, which compiles the decoder and
+the encoder: reading a frame becomes 25 times faster and encoding one 80 times faster, with
+the same bytes either way. The `viewer` extra adds the viewer and includes `fast`. Without it
+the `mainspring` command prints one line naming `mainspring[viewer]` and exits with status 3.
 
 ## Requirements
 
@@ -128,7 +140,8 @@ file or a `.uimf` file entering history.
 ## Building the executable
 
 Building the Windows executable needs the fresh-clone steps above and nothing more, since
-PyInstaller is in the `dev` dependency group that `uv sync` installs. From a PowerShell prompt
+PyInstaller and the viewer's own libraries are in the `dev` dependency group that `uv sync`
+installs. From a PowerShell prompt
 at the root of the checkout:
 
 ```

@@ -24,12 +24,16 @@ constructed, since Qt eats the options it recognises out of any list it is hande
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import shutil
 import sys
 from dataclasses import dataclass
 
-__all__ = ["Launch", "main", "parse_arguments"]
+__all__ = [
+    "NO_VIEWER_STATUS", "VIEWER_MODULES", "Launch", "main", "missing_viewer_modules",
+    "parse_arguments",
+]
 
 USAGE = """usage: mainspring [FILE] [--follow] [--show MODE]
 
@@ -116,6 +120,33 @@ def _write(stream: object, text: str) -> None:
         stream.flush()
     except (AttributeError, OSError, ValueError):
         pass
+
+
+VIEWER_MODULES = ("PySide6", "pyqtgraph")
+"""What the viewer needs beyond the reader: the `viewer` extra's two packages."""
+
+NO_VIEWER_STATUS = 3
+"""The exit status of `mainspring` on an install that has the reader and not the viewer.
+
+Its own number, because 2 already means a command line this cannot act on and a caller
+should be able to tell "you asked wrongly" from "nothing here can show you"."""
+
+NO_VIEWER_MESSAGE = (
+    "mainspring: the viewer needs {missing}, which a reader-only install leaves out; "
+    "install mainspring[viewer] to use it\n"
+)
+
+
+def missing_viewer_modules() -> "list[str]":
+    """The viewer's packages this interpreter cannot import, found without importing them.
+
+    `mainspring` is installed whatever extras were asked for, since an entry point cannot
+    depend on one. Without this its first act on a reader-only install was a traceback
+    from deep inside the viewer, which named a module and not the remedy (lab record,
+    task 35). `find_spec` reads the import path only, so asking costs nothing and loads
+    no Qt.
+    """
+    return [name for name in VIEWER_MODULES if importlib.util.find_spec(name) is None]
 
 
 def _numba_cache_dir() -> str:
@@ -250,15 +281,31 @@ def main(argv: "list[str] | None" = None) -> int:
     which is what another program starting the viewer on a run in progress asks for.
     `argv` is the arguments after the program name, same as `sys.argv[1:]`.
 
-    Three statuses: 0 when the viewer ran (and when `--help` was all that was wanted),
-    2 for a command line this cannot act on, and whatever Qt's event loop returns
-    otherwise. A file that cannot be followed is **not** one of those -- it opens, the
+    Four statuses: 0 when the viewer ran (and when `--help` was all that was wanted),
+    2 for a command line this cannot act on, `NO_VIEWER_STATUS` (3) on an install without
+    the `viewer` extra, and whatever Qt's event loop returns otherwise. A file that cannot be followed is **not** one of those -- it opens, the
     status bar says why it is not being followed, and the process exits 0, because the
     file is what the person was trying to see.
     """
     args = list(sys.argv[1:] if argv is None else argv)
     if len(args) == 2 and args[0] == WARM_OPTION:
         return _warm_numba_cache(args[1])
+
+    # Neither of these needs Qt, so both answer before the check below: a reader-only
+    # install can still ask the command what it takes.
+    if "-h" in args or "--help" in args:
+        _write(sys.stdout, USAGE)
+        return 0
+    try:
+        launch = parse_arguments(args)
+    except ValueError as exc:
+        _write(sys.stderr, f"mainspring: {exc}\n\n{USAGE}")
+        return 2
+
+    missing = missing_viewer_modules()
+    if missing:
+        _write(sys.stderr, NO_VIEWER_MESSAGE.format(missing=" and ".join(missing)))
+        return NO_VIEWER_STATUS
 
     os.environ.setdefault("NUMBA_CACHE_DIR", _numba_cache_dir())
     os.makedirs(os.environ["NUMBA_CACHE_DIR"], exist_ok=True)
@@ -277,16 +324,6 @@ def main(argv: "list[str] | None" = None) -> int:
     # transpose; no OpenGL and no antialiasing, since a heatmap redrawn on every wheel
     # tick wants raw speed over smoothing (lab record, task 02).
     pg.setConfigOptions(imageAxisOrder="row-major", useOpenGL=False, antialias=False)
-
-    args = list(sys.argv[1:] if argv is None else argv)
-    if "-h" in args or "--help" in args:
-        _write(sys.stdout, USAGE)
-        return 0
-    try:
-        launch = parse_arguments(args)
-    except ValueError as exc:
-        _write(sys.stderr, f"mainspring: {exc}\n\n{USAGE}")
-        return 2
 
     # Qt strips the options it recognises out of whatever list it is given, so it is
     # handed the program name alone: everything after it has been read above, and a

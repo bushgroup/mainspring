@@ -22,7 +22,7 @@ you are reading this file *without* that import, you have a public clone — the
   `external/pnnl-testdata/`, and `MAINSPRING_SMOKE_UIMF` may name any other file.
 - **Two layers, one seam.** `mainspring.uimf` is the data layer (numpy, optional numba) and
   **never imports Qt**; `mainspring.viewer` is PySide6 + pyqtgraph on top of it. A pipeline that
-  installs the package for the reader must not pull a GUI into its import path.
+  installs the reader gets no Qt, imported or installed: Qt is the `viewer` extra's alone.
 - **`mainspring.uimf` is a published API with an installed caller.** The names it exports, the
   `UimfWriter` defaults (`journal_mode="wal"`, `tables="both"`), the six `Mainspring*` parameter
   names and the reader's `refresh`, `LiveState`, `is_provisional` and `is_local_path` are a
