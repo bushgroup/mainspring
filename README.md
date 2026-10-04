@@ -12,13 +12,16 @@ instrument writes UIMF.
 
 ## Status
 
-Version 1.11.0. The reader layer, the viewer, and the Windows installer are written and
+Version 1.12.0. The reader layer, the viewer, and the Windows installer are written and
 verified, and the development record lives in a private companion repository. This release
-separates the reader from the viewer at installation. Installing mainspring as a Python
-package now brings the reader with numpy and scipy alone, whereas the viewer's graphical
-libraries, PySide6 and pyqtgraph, arrive only when asked for as `mainspring[viewer]`. The
-installer is unchanged. The release before it made the installed viewer keep one cache of
-compiled code, wherever it is started from, and arrive with that cache already filled. The
+counts clipping. The info panel reports the file's largest stored intensity, how many points
+in the frame on screen reached full scale, and, when asked for, how many did across the whole
+file, and the reader answers the same question for a pipeline through `UimfFile.clipping`.
+On a file clockwork wrote, full scale is now 65,535 a push, the width the samples are stored
+at, rather than the 16,383 that the digitizer's 14 bits alone would give, so the per-push
+percentage on those files is a quarter of what earlier versions showed. The release before it
+separated the reader from the viewer at installation, so that installing mainspring as a
+Python package brings the reader with numpy and scipy alone. The
 [user guide](docs/user-guide.md) covers the viewer.
 
 The reader reproduces every scan's stored total ion current and base peak intensity exactly
@@ -94,7 +97,7 @@ time-of-flight bins, which on the Bush lab's instrument would be 2.3 GB for a si
 To use the reader from another project, install mainspring from a release tag:
 
 ```
-pip install "mainspring[fast] @ git+https://github.com/bushgroup/mainspring@v1.11.0"
+pip install "mainspring[fast] @ git+https://github.com/bushgroup/mainspring@v1.12.0"
 ```
 
 The same requirement string works as a dependency in another project's `pyproject.toml`,

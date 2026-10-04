@@ -43,7 +43,14 @@ import numpy as np
 from mainspring.uimf.decode import dtype_for, encode_intensities
 from mainspring.uimf.writer import FrameSpec, GlobalSpec, UimfWriter
 
-__all__ = ["SyntheticFile", "SyntheticScan", "write_synthetic_uimf"]
+__all__ = [
+    "CLIPPING_FRAMES",
+    "ClippingFile",
+    "SyntheticFile",
+    "SyntheticScan",
+    "write_clipping_uimf",
+    "write_synthetic_uimf",
+]
 
 # The sample's own calibration, so that a synthetic m/z axis lands where a real one does.
 SLOPE = 0.738123
@@ -356,3 +363,102 @@ def _frame_rows(
         )
         rows.append((scan, stream_bins, stream_values))
     return rows
+
+
+# --- a file with known clipping ---------------------------------------------------------
+
+CLIPPING_FRAMES: "tuple[tuple[int, dict[int, tuple[list[int], list[int]]]], ...]" = (
+    # (Accumulations, {scan: (bins, values)}), one entry per frame, frames numbered from 1.
+    # Read against the stored ceiling of a file that declares 14 bits, 65535 a push:
+    (1, {3: ([10, 11, 500], [65535, 65535, 7]),   # two clipped points
+         4: ([20, 21], [65534, 3]),               # BPI one below full scale: never decoded
+         6: ([100], [40000])}),
+    (4, {3: ([10, 30], [262140, 65535]),          # one clipped; 65535 is not, at four pushes
+         5: ([50], [262139])}),                   # one below four pushes' full scale
+    (1, {3: ([10], [100])}),                      # clean
+    (2, {3: ([10, 11, 12], [131070, 131070, 131070]),  # three clipped
+         7: ([900], [5])}),
+)
+"""Four frames at three `Accumulations`, so that a threshold taken from the wrong frame is
+caught: 65535 is clipped in frame 1 and not in frame 2. Two scans sit one count below
+their frame's full scale, which is the case the `BPI` filter has to get exactly right."""
+
+
+@dataclass(frozen=True)
+class ClippingFile:
+    """A file written by `write_clipping_uimf`, and the answers to ask it for."""
+
+    path: str
+    frames: tuple[int, ...]
+    accumulations: dict[int, int]
+    values: dict[int, np.ndarray]
+    max_intensity: float
+
+    def expected(self, full_scale: int) -> "tuple[dict[int, int], dict[int, int]]":
+        """`(clipped, over)` per frame at `full_scale`, by brute force over every point,
+        frames with none left out -- what `UimfFile.clipping` must agree with."""
+        clipped: dict[int, int] = {}
+        over: dict[int, int] = {}
+        for frame, values in self.values.items():
+            threshold = self.accumulations[frame] * full_scale
+            at = int(np.count_nonzero(values >= threshold))
+            above = int(np.count_nonzero(values > threshold))
+            if at:
+                clipped[frame] = at
+            if above:
+                over[frame] = above
+        return clipped, over
+
+    def candidate_scans(self, full_scale: int) -> int:
+        """How many stored scans reach their frame's threshold: what may be decoded."""
+        count = 0
+        for (accumulations, scans) in CLIPPING_FRAMES[: len(self.frames)]:
+            threshold = accumulations * full_scale
+            count += sum(1 for _, values in scans.values() if max(values) >= threshold)
+        return count
+
+
+def write_clipping_uimf(
+    path: str | os.PathLike[str],
+    *,
+    detector_bits: int | None = 14,
+    tables: str = "both",
+    frames: int = len(CLIPPING_FRAMES),
+    journal_mode: str = "wal",
+) -> ClippingFile:
+    """Write `CLIPPING_FRAMES` (the first `frames` of them) to a UIMF file at `path`.
+
+    `detector_bits` is stored by default, so the file declares the 16-bit stored ceiling
+    a clockwork file does; `None` writes a file that declares nothing, as PNNL's do,
+    where a caller has to say what the full scale is.
+    """
+    path = os.path.abspath(os.fspath(path))
+    accumulations: dict[int, int] = {}
+    values: dict[int, np.ndarray] = {}
+    writer = UimfWriter(
+        path,
+        GlobalSpec(bins=1024, instrument_name="SLIM3", date_started=DATE_STARTED,
+                   detector_bits=detector_bits),
+        tables=tables,
+        journal_mode=journal_mode,
+        overwrite=True,
+    )
+    with writer:
+        for number, (count, scans) in enumerate(CLIPPING_FRAMES[:frames], start=1):
+            writer.add_frame(FrameSpec(
+                scans=8, accumulations=count, calibration_slope=SLOPE,
+                calibration_intercept=INTERCEPT, average_tof_length_ns=AVERAGE_TOF_LENGTH_NS,
+            ), frame=number)
+            rows = [(scan, np.asarray(b, dtype=np.int64), np.asarray(v, dtype=np.int32))
+                    for scan, (b, v) in sorted(scans.items())]
+            writer.write_scans(number, rows)
+            writer.finalise_frame(number, duration_s=0.1)
+            accumulations[number] = count
+            values[number] = np.concatenate([row[2] for row in rows])
+    return ClippingFile(
+        path=path,
+        frames=tuple(accumulations),
+        accumulations=accumulations,
+        values=values,
+        max_intensity=float(max(v.max() for v in values.values())),
+    )

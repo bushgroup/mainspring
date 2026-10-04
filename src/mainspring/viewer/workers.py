@@ -46,6 +46,12 @@ for `CHUNK_BUDGET_S` and puts itself back at the end of the queue, carrying a se
 newer request supersedes and keeping what it has already computed under the window it
 computed it for.
 
+**The file-wide clipping count is the same shape of job and runs the same way.**
+`_walk_clipping` asks `UimfFile.clipping` for a run of frames at a time, re-queues itself
+after `CHUNK_BUDGET_S`, and keeps every frame it has counted under the full scale it
+counted it at, so a bit depth set back to where it was costs nothing and a run being
+followed only ever recounts its tail (lab record, task 36).
+
 Qt lives here, and only here on the data side of the viewer: `mainspring.uimf` knows
 nothing about threads, and everything these workers call is plain numpy. What crosses
 the seam are frozen dataclasses over read-only numpy arrays -- a `SparseFrame` and a
@@ -64,6 +70,7 @@ import numpy as np
 from PySide6.QtCore import QThread, Signal
 
 from ..uimf import (
+    Clipping,
     DisplayAxes,
     FileGone,
     FrameGrouping,
@@ -79,6 +86,7 @@ from ..uimf.raster import render_view, tic_in_view
 
 __all__ = [
     "CHUNK_BUDGET_S",
+    "ClippingRequest",
     "DEBOUNCE_MS",
     "POLL_INTERVAL_S",
     "LoadWorker",
@@ -170,6 +178,26 @@ class RestrictedRequest:
         """
         return (self.x_range, self.y_range, self.raw_units, self.swapped,
                 self.t0_offset_ms)
+
+
+@dataclass(frozen=True)
+class ClippingRequest:
+    """One "count the clipped points in these frames" ask, and where the next chunk resumes.
+
+    Immutable and re-queued with a new `start`, as `RestrictedRequest` is, and for its
+    reason. `full_scale` is the per-push ceiling the count is at, which is the whole of
+    what makes two asks the same question: the worker keeps its answers under it.
+
+    `recount_from` is a live poll's: every frame at or after it is counted again even if
+    it was counted before, because those are the frames that were still being written.
+    It applies to the first chunk only and is cleared on the re-queue.
+    """
+
+    frames: tuple[int, ...] = ()
+    full_scale: int = 1
+    serial: int = 0
+    start: int = 0
+    recount_from: "int | None" = None
 
 
 @dataclass(frozen=True)
@@ -372,6 +400,16 @@ class LoadWorker(QThread):
     dictionary is the accumulated answer and not the chunk, so a receiver draws what it
     is handed and keeps nothing. `serial` is the request's, for the same reason a
     `RenderResult` carries one: the window drops a chunk its view has moved past."""
+    file_max = Signal(str, float, object)
+    """`path, largest stored intensity, since` -- `UimfFile.max_intensity`, whole or as
+    a poll's tail. The path is the file's, so the window can drop an answer about a file
+    it has since moved on from; `since` is None for the whole file."""
+    clipping = Signal(object, object, int, int)
+    """`serial, Clipping, done, total` -- the file-wide clipping count so far.
+
+    Once per chunk, like `restricted`, and accumulated rather than the chunk: every frame
+    counted at this full scale, whichever walk counted it. `done` and `total` are frames
+    of the request, for the panel to say how far it has got."""
     follow_stopped = Signal(str, bool)
     """A poll raised, and following has been switched off: the message, and whether the
     file itself has gone.
@@ -406,6 +444,12 @@ class LoadWorker(QThread):
         # the user seconds of waiting, so nobody can accumulate enough of them to matter.
         self._restricted_totals: dict[tuple, dict[int, float]] = {}
         self._restricted_serial = 0
+        # `full scale -> (frames counted, what they held)`, for the clipping walk; the
+        # restricted totals' reasoning, keyed by the one thing that changes the answer.
+        self._clip_done: dict[int, set[int]] = {}
+        self._clip_found: dict[int, Clipping] = {}
+        self._clip_serial = 0
+        self._clip_chunk = 64
         self.start()
         self._queue.put(("warm", None))
 
@@ -471,6 +515,27 @@ class LoadWorker(QThread):
         self._restricted_serial = int(request.serial)
         self._queue.put(("restricted", request))
 
+    def request_file_max(self, since: "int | None" = None) -> None:
+        """Read the file's largest stored intensity; `file_max` carries it.
+
+        Asked after the first frame and not inside the open, because on the biggest raw
+        runs it is a second of reading (`UimfFile.max_intensity`).
+        """
+        self._queue.put(("file_max", since))
+
+    def request_clipping(self, request: ClippingRequest) -> None:
+        """Start (or resume) the file-wide clipping count; `clipping` reports each chunk.
+
+        Supersedes whatever was counting. Frames already counted at the same full scale
+        are not counted again unless the request says they may have grown.
+        """
+        self._clip_serial = int(request.serial)
+        self._queue.put(("clipping", request))
+
+    def cancel_clipping(self) -> None:
+        """Abandon the count at its next chunk. Idempotent, and keeps what it has."""
+        self._clip_serial += 1
+
     def cancel_restricted(self) -> None:
         """Abandon the walk at its next chunk. Idempotent, and keeps what it has."""
         self._restricted_serial += 1
@@ -514,6 +579,12 @@ class LoadWorker(QThread):
                     self._chromatogram = bool(payload)
                 elif kind == "restricted":
                     self._walk_restricted(payload)
+                elif kind == "file_max":
+                    if self._file is not None:
+                        self.file_max.emit(self._file.path,
+                                           self._file.max_intensity(payload), payload)
+                elif kind == "clipping":
+                    self._walk_clipping(payload)
                 elif kind == "warm":
                     numba_available()  # compiles the kernels; return value unneeded here
             except Exception as exc:  # noqa: BLE001 -- reported to the window, not raised here
@@ -542,6 +613,9 @@ class LoadWorker(QThread):
         # itself rather than read frames out of this one.
         self._restricted_totals.clear()
         self._restricted_serial += 1
+        self._clip_done.clear()
+        self._clip_found.clear()
+        self._clip_serial += 1
         self.opened.emit(globals_, numbers, types, grouping)
 
     def _read_frame(self, frame: int) -> SparseFrame:
@@ -631,6 +705,52 @@ class LoadWorker(QThread):
         self.restricted.emit(request.serial, done, index, len(frames))
         if index < len(frames):
             self._queue.put(("restricted", replace(request, start=index)))
+
+    def _walk_clipping(self, request: ClippingRequest) -> None:
+        """One budget's worth of the file-wide clipping count, then re-queue or stop.
+
+        `_walk_restricted`'s three rules, applied to a job that is per frame *range*
+        rather than per frame: `UimfFile.clipping` is one query over a run of frames, so
+        the unit here is a chunk of consecutive frames, sized as it goes so that each
+        query takes about a quarter of the budget -- a clean file's frames cost almost
+        nothing and a saturated one's cost a decode each, and one fixed size would be
+        wrong for one of them.
+        """
+        if self._file is None or request.serial != self._clip_serial:
+            return
+        scale = int(request.full_scale)
+        done = self._clip_done.setdefault(scale, set())
+        found = self._clip_found.get(scale) or Clipping(scale)
+        if request.recount_from is not None and request.start == 0:
+            done.difference_update([f for f in done if f >= request.recount_from])
+        frames = request.frames
+        deadline = time.perf_counter() + CHUNK_BUDGET_S
+        index = int(request.start)
+        while index < len(frames):
+            chunk: list[int] = []
+            while index < len(frames) and len(chunk) < self._clip_chunk:
+                number = int(frames[index])
+                index += 1
+                if number not in done:
+                    chunk.append(number)
+            if chunk:
+                started = time.perf_counter()
+                found = found.merged(
+                    self._file.clipping(scale, since=chunk[0], until=chunk[-1] + 1)
+                )
+                done.update(chunk)
+                elapsed = time.perf_counter() - started
+                if elapsed < CHUNK_BUDGET_S / 8:
+                    self._clip_chunk = min(self._clip_chunk * 2, 65536)
+                elif elapsed > CHUNK_BUDGET_S / 2:
+                    self._clip_chunk = max(self._clip_chunk // 2, 1)
+            if time.perf_counter() >= deadline:
+                break
+        self._clip_found[scale] = found
+        counted = sum(1 for n in frames if n in done)
+        self.clipping.emit(request.serial, found, counted, len(frames))
+        if index < len(frames):
+            self._queue.put(("clipping", replace(request, start=index, recount_from=None)))
 
     def _poll(self) -> None:
         """Ask the file what has changed, and report it if anything has.

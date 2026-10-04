@@ -42,6 +42,13 @@ call rule paying off in a way nobody designed for: a reader that held the file o
 would turn the acquisition software's `os.remove` into a `PermissionError` on Windows
 (lab record, task 28).
 
+**Clipping is asked of the summary columns first and of the blobs only where they say
+so.** `BPI` is each scan's largest stored value, exactly, so a scan whose `BPI` is below
+its frame's full scale cannot hold a clipped point and is never decompressed. On a
+clean file that is every scan; on the most heavily saturated run we have it is one in
+two thousand (lab record, task 36). `full_scale` is what the threshold is built from,
+and its docstring is where the one non-obvious fact about it lives.
+
 Parameter values are TEXT in the modern tables and typed by `ParamDataType`, so
 `GlobalParams` and `FrameParams` name the handful the viewer needs, coerced, and keep
 everything else as raw strings in `extra` -- the info panel shows whatever a file
@@ -81,7 +88,9 @@ __all__ = [
     "BUSY_TIMEOUT_MS",
     "PROVISIONAL_WINDOW_S",
     "START_TIME",
+    "STORED_SAMPLE_BITS",
     "SUMMED_SUFFIX",
+    "Clipping",
     "FileGone",
     "FrameParams",
     "FrameGrouping",
@@ -89,6 +98,7 @@ __all__ = [
     "LiveState",
     "UimfFile",
     "connect",
+    "full_scale",
     "hot_write_ahead_log",
     "is_local_path",
     "summed_companion",
@@ -113,6 +123,18 @@ scale files do. Whether a file's start times mean anything is `frame_start_times
 caller's question and not this layer's; measured, a real clockwork acquisition sets them
 (100 distinct values 0.638 s apart over a 64 s run) and a PNNL LC run sets the legacy
 column, while both synthetic files leave every frame at 0.0 (lab record, task 31)."""
+
+STORED_SAMPLE_BITS = 16
+"""How wide a sample is as stored, in a file that declares its digitizer's bit depth.
+
+`MainspringDetectorBits` is the ADC's resolution -- 14 on the SA220P -- and **not** the
+range of the numbers in the file. The acquisition console stores each gated sample as
+its signed, left-aligned 16-bit code plus 32768, so one push of a 14-bit digitizer runs
+from 0 to 65535 in the file, and raw per-push maxima of exactly 65535 are what a
+saturated run holds. Dividing by `2^14 - 1` instead put the per-push readout four times
+high and would have called four million points of one real run clipped where 1,707 are
+(lab record, task 36, from clockwork-lab's record of the console). A depth wider than
+this is taken at its word; nothing writes one."""
 
 PROVISIONAL_WINDOW_S = 5.0
 """How recently a file must have been written to for its last frame to count as still
@@ -311,6 +333,95 @@ def summed_companion(path: str | os.PathLike[str]) -> "str | None":
     return candidate if os.path.isfile(candidate) else None
 
 
+def full_scale(detector_bits: int, *, from_file: bool) -> int:
+    """The largest value one push can store: the per-push ceiling a count is judged by.
+
+    `from_file` says where `detector_bits` came from, because the two sources mean
+    different things by it. A depth the file declares (`MainspringDetectorBits`) is the
+    ADC's, and the samples behind it are stored left-aligned in `STORED_SAMPLE_BITS`, so
+    the ceiling is `2^16 - 1` whatever the ADC resolves. A depth a person set for a file
+    that declares none -- every file PNNL's writers produce -- is the only description
+    of those numbers there is, and is taken as the stored width: `2^bits - 1`.
+
+    Clamped to at least one bit, so a hand-typed zero cannot become a zero divisor.
+    """
+    bits = max(1, int(detector_bits))
+    if from_file:
+        bits = max(bits, STORED_SAMPLE_BITS)
+    return 2 ** bits - 1
+
+
+@dataclass(frozen=True)
+class Clipping:
+    """How many stored points reached full scale, frame by frame, at one full scale.
+
+    A point is clipped when its stored value is at least `Accumulations_f x full_scale`
+    for its own frame `f`, which is the value a bin can only reach by saturating on every
+    push that was added into it. Bins, never scans or frames, and never "equal to the
+    largest value seen" -- the threshold is the instrument's, not the data's.
+
+    `clipped` is `frame -> points at or above the threshold` and `over` is `frame ->
+    points strictly above it`; a frame with none of either is absent from both, so a
+    clean file is two empty mappings rather than five thousand zeros. **`over` should
+    always be empty**, because no push reads above its own ceiling, and a point there
+    says the full scale is wrong for this file -- a digitizer of more bits than the
+    setting says, which is what PNNL's 2011 and 2016 excerpts are at the default of 8.
+
+    `since` and `until` are the frame range this answers for, `None` for open-ended; a
+    live caller merges a newer, narrower answer over an older one with `merged`.
+    """
+
+    full_scale: int
+    clipped: Mapping[int, int] = field(default_factory=dict)
+    over: Mapping[int, int] = field(default_factory=dict)
+    since: int | None = None
+    until: int | None = None
+
+    @property
+    def total(self) -> int:
+        """Clipped points over every frame this covers."""
+        return int(sum(self.clipped.values()))
+
+    @property
+    def over_total(self) -> int:
+        """Points above full scale over every frame this covers; should be zero."""
+        return int(sum(self.over.values()))
+
+    @property
+    def frames(self) -> int:
+        """How many frames hold at least one clipped point."""
+        return len(self.clipped)
+
+    def covers(self, frame: int) -> bool:
+        """Whether `frame` is inside the range this answers for."""
+        frame = int(frame)
+        return ((self.since is None or frame >= self.since)
+                and (self.until is None or frame < self.until))
+
+    def merged(self, newer: "Clipping") -> "Clipping":
+        """This answer with `newer`'s range replaced by `newer`'s counts.
+
+        What a poll of a run in progress does: the frames from the tail that can have
+        changed are counted again, and everything outside that range is kept, since a
+        finished frame never changes. The range of the result is the union of the two.
+        Refused across two full scales, which are two different questions.
+        """
+        if newer.full_scale != self.full_scale:
+            raise ValueError(
+                f"cannot merge counts at full scale {newer.full_scale} into"
+                f" counts at {self.full_scale}"
+            )
+        clipped = {f: n for f, n in self.clipped.items() if not newer.covers(f)}
+        over = {f: n for f, n in self.over.items() if not newer.covers(f)}
+        clipped.update(newer.clipped)
+        over.update(newer.over)
+        since = (None if self.since is None or newer.since is None
+                 else min(self.since, newer.since))
+        until = (None if self.until is None or newer.until is None
+                 else max(self.until, newer.until))
+        return Clipping(self.full_scale, clipped, over, since, until)
+
+
 @dataclass(frozen=True)
 class GlobalParams:
     """The dataset-wide scalars, from `Global_Params` or its legacy twin.
@@ -356,6 +467,19 @@ class GlobalParams:
         from .decode import dtype_for
 
         return dtype_for(self.tof_intensity_type)
+
+    @property
+    def full_scale(self) -> int | None:
+        """The per-push ceiling this file declares, or `None` where it declares none.
+
+        From `detector_bits` by `full_scale(..., from_file=True)`, so 65535 on every
+        file clockwork wrote however many bits its ADC has. `None` on every file PNNL's
+        writers produce, where the caller has to supply a depth and say where it came
+        from.
+        """
+        if not self.detector_bits:
+            return None
+        return full_scale(self.detector_bits, from_file=True)
 
 
 @dataclass(frozen=True)
@@ -758,6 +882,123 @@ class UimfFile:
                     continue  # a writer that stored something else there; not a time
         return times
 
+    def max_intensity(self, since: "int | None" = None) -> float:
+        """The largest stored intensity in the file, from `MAX(BPI)`: one query, no decode.
+
+        Raw -- not divided by any frame's `Accumulations` -- because it is the number a
+        person compares against what the file's writer could store, and `BPI` is exact
+        ground truth for each scan's largest value (lab record, tasks 01 and 03). 0.0 for
+        a file with no stored scans.
+
+        **Not free on a big file**, which is the one thing to know before calling it: the
+        query reads every row's `BPI`, 3 to 60 ms on files under 100 MB and 1 to 2 s on
+        the 0.5 to 1.3 GB raw runs of a beam-on day (lab record, task 36). `since`
+        narrows it to `FrameNum >= since` through the table's index, which is what a
+        poll asks: a frame still being written only gains scans, so the largest value
+        over the finished frames and the largest over the tail together are the whole.
+        """
+        query = "SELECT MAX(BPI) FROM Frame_Scans"
+        arguments: tuple = ()
+        if since is not None:
+            query += " WHERE FrameNum >= ?"
+            arguments = (int(since),)
+        with connect(self.path, self.busy_timeout_ms) as conn:
+            value = conn.execute(query, arguments).fetchone()[0]
+        return float(value or 0.0)
+
+    def frame_accumulations(
+        self, since: "int | None" = None, until: "int | None" = None
+    ) -> "dict[int, int]":
+        """`frame -> Accumulations` for every frame, in one query.
+
+        The same trade `frame_types` makes, for the clipping threshold: a stored value
+        is a sum over its own frame's pushes, so the full scale it is judged against is
+        per frame. Coerced exactly as `FrameParams.accumulations` is -- at least 1 -- so
+        that this and `frame_params(f).accumulations` never disagree. `since` and `until`
+        bound the frame range, `until` exclusive.
+        """
+        if self.is_legacy_only:
+            query = "SELECT FrameNum, Accumulations FROM Frame_Parameters WHERE 1"
+            arguments: tuple = ()
+        else:
+            query = (
+                "SELECT FP.FrameNum, FP.ParamValue FROM Frame_Params FP"
+                " JOIN Frame_Param_Keys K ON FP.ParamID = K.ParamID"
+                " WHERE K.ParamName = 'Accumulations'"
+            )
+            arguments = ()
+        if since is not None:
+            query += " AND FrameNum >= ?" if self.is_legacy_only else " AND FP.FrameNum >= ?"
+            arguments += (int(since),)
+        if until is not None:
+            query += " AND FrameNum < ?" if self.is_legacy_only else " AND FP.FrameNum < ?"
+            arguments += (int(until),)
+        with connect(self.path, self.busy_timeout_ms) as conn:
+            return {int(frame): _as_int(value, 1) or 1
+                    for frame, value in conn.execute(query, arguments)}
+
+    def clipping(
+        self,
+        full_scale: "int | None" = None,
+        since: "int | None" = None,
+        until: "int | None" = None,
+    ) -> Clipping:
+        """How many stored points reached full scale, frame by frame. See `Clipping`.
+
+        `full_scale` is the per-push ceiling (`full_scale()`); `None` takes the file's
+        own, and a file that declares none -- any of PNNL's -- raises `ValueError`
+        rather than guessing a depth for it. `since` and `until` bound the frames
+        counted, `until` exclusive, for a caller that walks a long file in pieces or
+        recounts the tail of one still being written.
+
+        **Only scans whose `BPI` reaches their frame's threshold are decoded**, which is
+        the whole cost model: the filter is a read of the summary columns and the decode
+        is of the candidates alone. On a clean file there are none. On the most
+        saturated run we have, 1.3 GB and two million rows, there are 960, against
+        917,010 had the threshold been fourteen bits rather than the stored sixteen (lab
+        record, task 36). The filter is written per run of consecutive frames sharing
+        one `Accumulations` -- one run on every file we have -- so that a file mixing
+        accumulation counts never fetches blobs on the lowest threshold of them all.
+        """
+        if full_scale is None:
+            full_scale = self.global_params().full_scale
+            if full_scale is None:
+                raise ValueError(
+                    f"{self.path} does not declare a detector bit depth; pass full_scale"
+                )
+        full_scale = int(full_scale)
+        if full_scale < 1:
+            raise ValueError(f"full_scale must be at least 1, not {full_scale}")
+        accumulations = self.frame_accumulations(since, until)
+        if not accumulations:
+            return Clipping(full_scale, {}, {}, since, until)
+        threshold = {frame: count * full_scale for frame, count in accumulations.items()}
+
+        clauses, arguments = _threshold_runs(threshold)
+        query = ("SELECT FrameNum, BPI, Intensities FROM Frame_Scans"
+                 f" WHERE ({clauses})")
+        with connect(self.path, self.busy_timeout_ms) as conn:
+            rows = conn.execute(query, arguments).fetchall()
+
+        # The filter above may be looser than the threshold (`_threshold_runs`), and a
+        # row for a frame with no `Accumulations` parameter would have no threshold at
+        # all; this is the exact test, and the one place the per-frame value is used.
+        keep = [(int(frame), blob) for frame, bpi, blob in rows
+                if int(frame) in threshold and (bpi or 0) >= threshold[int(frame)]]
+        if not keep:
+            return Clipping(full_scale, {}, {}, since, until)
+        globals_ = self.global_params()
+        counts, _, intensity = decode_frame_blobs(
+            [blob for _, blob in keep], globals_.dtype, int(globals_.bins)
+        )
+        frame_of = np.repeat(np.asarray([frame for frame, _ in keep], dtype=np.int64), counts)
+        limit = np.repeat(np.asarray([threshold[frame] for frame, _ in keep],
+                                     dtype=np.float64), counts)
+        values = intensity.astype(np.float64, copy=False)
+        clipped = _count_by_frame(frame_of[values >= limit])
+        over = _count_by_frame(frame_of[values > limit])
+        return Clipping(full_scale, clipped, over, since, until)
+
     def frame_params(self, frame: int) -> FrameParams:
         """One frame's parameters, modern table preferred.
 
@@ -1001,6 +1242,45 @@ _LEGACY_FRAME_NAMES = {
     # panel would list the same quantity under two spellings depending on the writer.
     "starttime": "StartTimeMinutes",
 }
+
+
+_MAX_THRESHOLD_RUNS = 64
+"""How many `FrameNum BETWEEN` clauses `_threshold_runs` will write before it gives up
+on exactness and filters on the lowest threshold instead. Far above anything a real file
+needs -- every file we have is one run -- and far below SQLite's expression depth."""
+
+
+def _threshold_runs(threshold: "Mapping[int, float]") -> "tuple[str, tuple]":
+    """A `WHERE` body selecting rows at or above their own frame's threshold, and its
+    arguments.
+
+    One clause per run of consecutive frame numbers sharing a threshold, so that the
+    common file, every frame at one `Accumulations`, is a single range and an indexed
+    one. A file with more runs than `_MAX_THRESHOLD_RUNS` gets the lowest threshold over
+    its whole range instead, which over-fetches and is then filtered exactly by the
+    caller; correct either way, and only slower on a file nobody has written yet.
+    """
+    frames = sorted(threshold)
+    runs: list[list] = []
+    for frame in frames:
+        value = threshold[frame]
+        if runs and runs[-1][1] == frame - 1 and runs[-1][2] == value:
+            runs[-1][1] = frame
+        else:
+            runs.append([frame, frame, value])
+    if len(runs) > _MAX_THRESHOLD_RUNS:
+        runs = [[frames[0], frames[-1], min(threshold.values())]]
+    clauses = " OR ".join("(FrameNum BETWEEN ? AND ? AND BPI >= ?)" for _ in runs)
+    arguments = tuple(value for run in runs for value in run)
+    return clauses, arguments
+
+
+def _count_by_frame(frames: np.ndarray) -> "dict[int, int]":
+    """`frame -> how many times it occurs`, for the frames that occur at all."""
+    if not frames.size:
+        return {}
+    numbers, counts = np.unique(frames, return_counts=True)
+    return {int(n): int(c) for n, c in zip(numbers.tolist(), counts.tolist())}
 
 
 def _text(value: object) -> str:

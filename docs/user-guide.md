@@ -245,9 +245,10 @@ its own.
 
 ## The Data settings menu
 
-Three controls that say what the numbers on screen are, rather than how they are drawn.
-None of them is touched in the ordinary course of looking at a frame: the aggregate and the
-bit depth are set once for a session and the type filter once for a file.
+Four controls that say what the numbers on screen are, rather than how they are drawn.
+None of them is touched in the ordinary course of looking at a frame: the aggregate, the
+bit depth and the clipping count are set once for a session and the type filter once for a
+file.
 
 ### Aggregate
 
@@ -272,6 +273,24 @@ anything off the per-push line.
 A file clockwork wrote stores the bit depth of the digitizer that produced it. On such a file
 the control shows the stored value and cannot be changed, because the number in use is the
 file's. The per-push readout says which of the two it is using.
+
+A stored bit depth describes the digitizer, not the numbers in the file. clockwork's 14-bit
+digitizer writes each sample as a 16-bit value, so one push in its files runs from 0 to 65,535,
+and the viewer judges those files against 65,535 a push rather than against the 16,383 that 14
+bits alone would give. The info panel's [Full scale](#full-scale) row says which ceiling is in
+use and why. A bit depth you set by hand is taken as the width of the stored numbers.
+
+### Count clipping in file
+
+Counts, in the background, the points in every frame of the file that reached full scale, and
+shows the total in the info panel's [Clipped in file](#clipped-in-file) row. It is off until
+you turn it on, and the viewer remembers the choice. Turning it off stops a count in progress.
+
+The count reads only the stored peak of each scan until a scan's peak reaches full scale, and
+decodes only those scans. A file with nothing clipped therefore costs one read of the stored
+peaks, a fraction of a second on most files and one to two seconds on a 1.3 GB raw run, and the
+most saturated 1.3 GB run we have, with 1,707 clipped points, takes about three seconds. The
+viewer stays usable throughout, and a frame you ask for is served between pieces of the count.
 
 ### Type
 
@@ -553,6 +572,7 @@ calibration coefficient cut off at an ellipsis is one pointer away from being re
 
 The lower half is one statement about the frame and four readouts, all of them describing the
 image on screen rather than the whole frame, and all of them recomputed on every view change.
+Below those are four rows about clipping, which describe whole frames and the whole file.
 
 ### Frame
 
@@ -576,7 +596,9 @@ depth the `Bits` control is set to. This is the number that says whether the det
 saturating.
 
 The readout states the `Accumulations`, the bit depth, and where the bit depth came from, so
-that a count is never quoted without the two numbers that produced it. A file clockwork wrote
+that a count is never quoted without the two numbers that produced it. On a file clockwork
+wrote it adds `stored as 16-bit`, because the percentage is of 65,535 a push (see
+[Full scale](#full-scale)). A file clockwork wrote
 carries the digitizer's own bit depth and the readout says `from file`. Every other file leaves
 the depth to the `Bits` control and the readout says `from setting`. Note that in the second
 case the percentage is only as right as the setting. Quote a per-push value with the
@@ -592,6 +614,45 @@ range this equals the sum of the file's own `TIC` column for the frame.
 How many stored, non-zero points fall inside the visible region. A UIMF frame is stored as the
 points that exist rather than as a dense array, and this is a count of those, not of screen
 pixels.
+
+### Full scale
+
+The largest value one push can store, and where that number came from: for example `65,535
+per push (14-bit from file, stored as 16-bit)` on a file clockwork wrote, or `255 per push
+(8-bit from setting)` on a file that stores no bit depth. A frame's full scale is this number
+times its `Accumulations`, and the per-push line and both clipping counts are judged against
+it. On a file that stores no bit depth it comes from the [Bits](#bits) control, and every
+number below is only as right as that setting.
+
+### Raw maximum
+
+The largest stored intensity anywhere in the file, over every frame, scan and bin, not divided
+by `Accumulations`. It is read once when the file opens, after the first frame is on screen,
+and takes about a second on the largest raw files.
+
+### Clipped in frame
+
+How many points in the whole frame on screen, not only the view, reached full scale. A point
+is clipped when its stored value is at least `Accumulations` times the per-push full scale,
+which a point can only reach by saturating on every push added into it. The count is of single
+points, so one saturated peak several bins wide counts once per bin. When the heat map shows a
+sum of frames, the row says it counts single frames only. A bin of a sum reaching one frame's
+full scale says nothing about whether any of the frames in it clipped.
+
+### Clipped in file
+
+The same count over every frame of the file, of every frame type, with how many frames held a
+clipped point. It is `off` until you turn on [Count clipping in
+file](#count-clipping-in-file), and reads `counting` with the frames reached so far while the
+count runs. Changing the bit depth starts it again at the new full scale. While a run is being
+followed, the count and the raw maximum are brought up to date with each new frame and say `so
+far`.
+
+Both clipping rows can report points *above* full scale as well. No push can read above its
+own ceiling, so such points mean the bit depth is too low for the file, and the row says so.
+PNNL's 2011 and 2016 example files do this at the default 8 bits, because their digitizers had
+more. Set `Bits` to the digitizer's depth before reading a clipping count off a file that does
+not store one.
 
 ## The chromatogram
 
@@ -684,7 +745,8 @@ figure's own size in inches.
 ## What the viewer remembers
 
 Every toolbar toggle, the color map, the color scale, light mode, the text size, the
-aggregate, the detector bit depth, how many frames `Sum newest frames` adds up, whether the
+aggregate, the detector bit depth, whether clipping is counted across the file, how many
+frames `Sum newest frames` adds up, whether the
 info panel is showing and how wide it is, whether the chromatogram is showing and which edge it
 is docked on, the export resolution, the window's size and position, and the directory you last
 opened from are all saved when the viewer closes and restored when it starts. On Windows they live under

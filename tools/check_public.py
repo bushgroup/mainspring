@@ -346,6 +346,22 @@ def main() -> int:
                all(callable(getattr(mainspring.uimf.UimfFile, name, None))
                    for name in ("frame_totals", "frame_start_times"))
                and callable(getattr(mainspring.uimf, "tic_in_view", None)))
+    # The clipping count, on the chromatogram's footing: nothing downstream imports these
+    # yet, and a pipeline asking a file how many points it clipped is who they are for.
+    # The stored width is pinned as a number for the reason the six parameter names are
+    # pinned as strings: it is what a value in a clockwork file *means*, and changing it
+    # changes every count and every per-push percentage without renaming anything (lab
+    # record, task 36).
+    check_true("the reader still offers the clipping entry points",
+               all(callable(getattr(mainspring.uimf.UimfFile, name, None))
+                   for name in ("clipping", "max_intensity", "frame_accumulations"))
+               and all(hasattr(mainspring.uimf, name)
+                       for name in ("Clipping", "full_scale", "STORED_SAMPLE_BITS"))
+               and callable(getattr(mainspring.uimf.SparseFrame, "count_clipped", None)))
+    check_true("a declared bit depth still means samples stored as 16-bit",
+               mainspring.uimf.STORED_SAMPLE_BITS == 16
+               and mainspring.uimf.full_scale(14, from_file=True) == 65535
+               and mainspring.uimf.full_scale(8, from_file=False) == 255)
 
     # --------------------------------------------------------------------------------
     section("the intensity codec")
@@ -657,6 +673,46 @@ def main() -> int:
         )
         check_raises("an existing file is never silently replaced", FileExistsError,
                      lambda: uimf_writer.UimfWriter(path, uimf_writer.GlobalSpec(bins=64)))
+
+    # --------------------------------------------------------------------------------
+    section("clipping, counted from the summary columns")
+    # Four frames at three accumulation counts, every point known, two scans one count
+    # below their frame's full scale. Compared against brute force over the points, and
+    # the decode is watched: a scan below its threshold must never be decompressed,
+    # which is the whole of why a clean file costs nothing (lab record, task 36).
+    from mainspring.uimf import reader as uimf_reader
+    from synthetic import write_clipping_uimf
+
+    with tempfile.TemporaryDirectory() as tmp:
+        clip = write_clipping_uimf(os.path.join(tmp, "clipping.uimf"))
+        clip_file = UimfFile(clip.path)
+        decoded: list = []
+        real_decode = uimf_reader.decode_frame_blobs
+        uimf_reader.decode_frame_blobs = (
+            lambda blobs, *a, **k: decoded.append(len(blobs)) or real_decode(blobs, *a, **k))
+        try:
+            found = clip_file.clipping()
+        finally:
+            uimf_reader.decode_frame_blobs = real_decode
+        expected_clipped, _ = clip.expected(65535)
+        check_true(f"a file that declares 14 bits is counted at 65535 a push"
+                   f" ({found.total} points in {found.frames} frames)",
+                   found.full_scale == 65535 and dict(found.clipped) == expected_clipped
+                   and not found.over)
+        check_true(f"only the scans whose BPI reaches full scale are decoded ({decoded})",
+                   decoded == [clip.candidate_scans(65535)])
+        check_true("each frame in memory counts what the file count says it holds",
+                   all(clip_file.read_frame(f).count_clipped(
+                       clip_file.frame_params(f).accumulations * 65535)[0]
+                       == found.clipped.get(f, 0) for f in clip.frames))
+        check_true(f"the raw maximum is MAX(BPI) ({clip_file.max_intensity():,.0f})",
+                   clip_file.max_intensity() == clip.max_intensity)
+        silent = write_clipping_uimf(os.path.join(tmp, "silent.uimf"), detector_bits=None)
+        check_raises("a file that declares no depth is not guessed at", ValueError,
+                     lambda: UimfFile(silent.path).clipping())
+        low = UimfFile(silent.path).clipping(255)
+        check_true(f"a depth set too low shows as points above full scale ({low.over_total})",
+                   low.over_total > 0 and dict(low.over) == silent.expected(255)[1])
 
     # --------------------------------------------------------------------------------
     section("a database left with a hot write-ahead log")
@@ -1208,6 +1264,39 @@ def main() -> int:
             + (f" (mute: {', '.join(mute)})" if mute else ""),
             not mute,
         )
+
+        # The clipping rows, read as an operator reads them, on the file whose every point
+        # is known: the stored 16-bit full scale named with the 14 bits it came from, the
+        # raw maximum, the frame's count, and the file's once it is switched on. Settings
+        # passed in rather than loaded, and the window never closed, so this touches no
+        # store of anybody's real preferences (lab record, task 36).
+        from mainspring.viewer.settings import ViewerSettings
+        from synthetic import write_clipping_uimf
+
+        clip = write_clipping_uimf(os.path.join(tmp, "clipping.uimf"))
+        clip_window = MainWindow(ViewerSettings(count_clipping=True))
+        clip_window.open_file(clip.path)
+
+        def _clip_rows() -> dict:
+            return clip_window.info_panel.readouts()
+
+        deadline = time.time() + 5.0
+        while (_clip_rows()["Clipped in file"] != "6 points in 3 frames"
+               or _clip_rows()["Raw maximum"] != "262,140") and time.time() < deadline:
+            qt_app.processEvents()
+            time.sleep(0.01)
+        rows = _clip_rows()
+        check_true(f"the panel names the full scale and where it came from"
+                   f" ({rows['Full scale']})",
+                   rows["Full scale"] == "65,535 per push (14-bit from file, stored as 16-bit)")
+        check_true(f"and shows the raw maximum, the frame's count and the file's"
+                   f" ({rows['Raw maximum']}; {rows['Clipped in frame']};"
+                   f" {rows['Clipped in file']})",
+                   rows["Raw maximum"] == "262,140" and rows["Clipped in frame"] == "2 points"
+                   and rows["Clipped in file"] == "6 points in 3 frames")
+        check_true("the per-push line divides by the same stored full scale",
+                   "stored as 16-bit" in rows["Per push"]
+                   and "100.00% full scale" in rows["Per push"])
 
         # The Help menu answers with no network, which is the whole reason the guide is
         # carried rather than linked. A packaging change that stopped shipping it would

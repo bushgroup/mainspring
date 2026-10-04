@@ -132,6 +132,24 @@ class SparseFrame:
             out[scan] = self.bin_index[lo + int(np.argmax(self.intensity[lo:hi]))]
         return out
 
+    def count_clipped(self, threshold: float) -> tuple[int, int]:
+        """`(at_or_above, above)`: how many points reach `threshold`, and how many pass it.
+
+        The first is the clipped count when `threshold` is the frame's full scale --
+        `Accumulations` times the per-push ceiling, `reader.full_scale` -- because a
+        stored value can only reach that by saturating on every push. The second should
+        be zero, since no push can read above its ceiling, and is counted beside it
+        because a point above full scale is the one sign in the data that the full scale
+        was wrong (lab record, task 36).
+
+        One comparison over the intensities and no copy of them: the whole frame, not
+        the view, which is what a clipping count is about.
+        """
+        if not self.intensity.size:
+            return 0, 0
+        return (int(np.count_nonzero(self.intensity >= threshold)),
+                int(np.count_nonzero(self.intensity > threshold)))
+
     def slice(
         self,
         scan_range: tuple[int, int] | None = None,

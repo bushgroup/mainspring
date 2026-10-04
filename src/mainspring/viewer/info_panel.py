@@ -23,6 +23,14 @@ also showing the `Accumulations`, the bit depth, **and which of the two places t
 depth came from** (lab record, tasks 01 and 17) -- a count quoted without all three is
 not reproducible, and someone will quote it.
 
+**Clipping is the other half of that readout**, and the half that covers a whole file
+rather than one view: the file's raw maximum, and how many points reached full scale in
+the frame on screen and in the whole file. The full scale they are judged against is one
+row of its own, said once, because it is the number all three per-push claims share and
+the one that is wrong when they are -- on a clockwork file it is the stored 16-bit
+ceiling, not the 14 bits the ADC resolves (`mainspring.uimf.full_scale`, lab record,
+task 36).
+
 Also here: max intensity in view, total ion current in view and the points in view, all
 taken from the `RasterResult` so that they describe the image on screen rather than a
 newer view the render has not caught up with. The cursor readout is *not* here -- it is
@@ -61,11 +69,22 @@ from . import fonts
 from .controls import describe
 from .settings import INFO_PANEL_WIDTH
 
-__all__ = ["InfoPanel", "per_push"]
+__all__ = ["InfoPanel", "full_scale_words", "per_push"]
 
 
-def per_push(max_intensity: float, accumulations: int, detector_bits: int) -> tuple[float, float]:
+def per_push(
+    max_intensity: float,
+    accumulations: int,
+    detector_bits: int,
+    *,
+    full_scale: "int | None" = None,
+) -> tuple[float, float]:
     """`(counts_per_push, percent_of_full_scale)` from an in-view maximum.
+
+    `full_scale` is the per-push ceiling (`mainspring.uimf.full_scale`), and the caller
+    that knows where the bit depth came from passes it; without it the depth is taken as
+    the stored width, `2^bits - 1`, which is right for a depth set by hand and four
+    times too small for the one a clockwork file declares (lab record, task 36).
 
     `accumulations` is clamped to at least 1 -- `FrameParams.accumulations` already
     guarantees that from a real file, but a caller handing this function a bare number
@@ -73,9 +92,33 @@ def per_push(max_intensity: float, accumulations: int, detector_bits: int) -> tu
     """
     accumulations = max(1, int(accumulations))
     counts_per_push = float(max_intensity) / accumulations
-    full_scale = float(2 ** max(1, int(detector_bits)) - 1)
-    percent = 100.0 * counts_per_push / full_scale
+    if full_scale is None:
+        full_scale = 2 ** max(1, int(detector_bits)) - 1
+    percent = 100.0 * counts_per_push / float(max(1, int(full_scale)))
     return counts_per_push, percent
+
+
+def _depth_words(detector_bits: int, full_scale: int, from_file: bool) -> str:
+    """`14-bit from file, stored as 16-bit`, or `8-bit from setting`: where the depth
+    came from, and the stored width when that is not the depth itself."""
+    words = f"{detector_bits}-bit {'from file' if from_file else 'from setting'}"
+    stored = int(full_scale).bit_length()
+    if stored != int(detector_bits):
+        words += f", stored as {stored}-bit"
+    return words
+
+
+def full_scale_words(full_scale: int, detector_bits: int, from_file: bool) -> str:
+    """The `Full scale:` row: the ceiling one push can store, and where it came from."""
+    return f"{full_scale:,} per push ({_depth_words(detector_bits, full_scale, from_file)})"
+
+
+def _over_words(over: int) -> str:
+    """What to add when points sit *above* full scale, which no push can read."""
+    if not over:
+        return ""
+    return (f"; {over:,} above full scale, so the bit depth is too low for this file"
+            " and these counts are not clipping")
 
 
 def run_words(global_params: object) -> str:
@@ -151,6 +194,10 @@ class InfoPanel(QDockWidget):
         self._per_push_label = QLabel("-", container)
         self._tic_label = QLabel("-", container)
         self._points_label = QLabel("-", container)
+        self._full_scale_label = QLabel("-", container)
+        self._raw_max_label = QLabel("-", container)
+        self._frame_clip_label = QLabel("-", container)
+        self._file_clip_label = QLabel("-", container)
         # What keeps a live readout from resizing the window, now that the container's
         # width is no longer fixed: a label whose horizontal policy is `Ignored`
         # contributes nothing to the layout's width, whatever its text says, and wraps
@@ -163,6 +210,10 @@ class InfoPanel(QDockWidget):
             self._per_push_label,
             self._tic_label,
             self._points_label,
+            self._full_scale_label,
+            self._raw_max_label,
+            self._frame_clip_label,
+            self._file_clip_label,
         ):
             label.setWordWrap(True)
             label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
@@ -176,6 +227,10 @@ class InfoPanel(QDockWidget):
         live.addRow("Per push:", self._per_push_label)
         live.addRow("TIC in view:", self._tic_label)
         live.addRow("Points in view:", self._points_label)
+        live.addRow("Full scale:", self._full_scale_label)
+        live.addRow("Raw maximum:", self._raw_max_label)
+        live.addRow("Clipped in frame:", self._frame_clip_label)
+        live.addRow("Clipped in file:", self._file_clip_label)
         # Both halves of each row, because the field name is what a reader questions.
         # The per-push sentence carries the caveat the number is meaningless without:
         # it is a quotient, over an accumulation count and a bit depth the file may not
@@ -200,6 +255,28 @@ class InfoPanel(QDockWidget):
             ),
             (self._tic_label, "The total stored intensity inside the view."),
             (self._points_label, "How many stored, non-zero points are inside the view."),
+            (
+                self._full_scale_label,
+                "The largest value one push can store, from the detector bit depth in"
+                " the file or in the Data settings menu, which the clipping counts and"
+                " the per-push line are judged against.",
+            ),
+            (
+                self._raw_max_label,
+                "The largest stored intensity anywhere in the file, not divided by"
+                " Accumulations.",
+            ),
+            (
+                self._frame_clip_label,
+                "How many points in the whole frame on screen reached full scale, which"
+                " a point can only do by saturating on every push added into it.",
+            ),
+            (
+                self._file_clip_label,
+                "How many points in every frame of the file reached full scale, counted"
+                " in the background when Count clipping in file is on in the Data"
+                " settings menu.",
+            ),
         ):
             describe(widget, tip)
             describe(live.labelForField(widget), tip)
@@ -262,6 +339,7 @@ class InfoPanel(QDockWidget):
         detector_bits: int,
         *,
         from_file: bool = False,
+        full_scale: "int | None" = None,
     ) -> None:
         """Update the in-view readouts from a rendered `RasterResult`.
 
@@ -274,14 +352,97 @@ class InfoPanel(QDockWidget):
         nowhere to store one, so the same sentence covers two different claims -- "the
         file says 14 bits" and "you told us 8" -- and the rule that a per-push number is
         never quoted without what produced it is not met by quoting a number that could
-        be either (lab record, tasks 01 and 17).
+        be either (lab record, tasks 01 and 17). `full_scale` is the per-push ceiling that
+        follows from both (`mainspring.uimf.full_scale`); omitted, it is `2^bits - 1`.
         """
         self._max_label.setText(f"{result.max_intensity:,.0f}")
-        counts, percent = per_push(result.max_intensity, accumulations, detector_bits)
-        source = "from file" if from_file else "from setting"
+        if full_scale is None:
+            full_scale = 2 ** max(1, int(detector_bits)) - 1
+        counts, percent = per_push(result.max_intensity, accumulations, detector_bits,
+                                   full_scale=full_scale)
         self._per_push_label.setText(
-            f"{counts:,.1f} ADC/push  ({accumulations} accum., {detector_bits}-bit"
-            f" {source} -- {percent:.2f}% full scale)"
+            f"{counts:,.1f} ADC/push  ({accumulations} accum.,"
+            f" {_depth_words(detector_bits, full_scale, from_file)}"
+            f" -- {percent:.2f}% full scale)"
         )
         self._tic_label.setText(f"{result.tic_in_view:,.0f}")
         self._points_label.setText(f"{result.points_in_view:,}")
+
+    # --- clipping -----------------------------------------------------------------------
+
+    def set_full_scale(self, full_scale: int, detector_bits: int, from_file: bool) -> None:
+        """Say once what every clipping number below is judged against, and why.
+
+        The bit depth's source is the panel's standing rule (`set_view`): a number
+        derived from bits is never shown without them and without where they came from.
+        """
+        self._full_scale_label.setText(full_scale_words(full_scale, detector_bits, from_file))
+
+    def set_raw_max(self, value: "float | None", *, so_far: bool = False) -> None:
+        """The file's largest stored intensity, raw. `None` while it is being read.
+
+        `so_far` while the run is still being written, since a larger value can still
+        arrive; the words go away when following stops.
+        """
+        if value is None:
+            self._raw_max_label.setText("reading...")
+            return
+        self._raw_max_label.setText(f"{value:,.0f}" + (" so far" if so_far else ""))
+
+    def set_frame_clipping(self, counts: "tuple[int, int] | None") -> None:
+        """Clipped points in the whole frame on screen, or why there is no count.
+
+        `None` for a sum: the heat map is then several frames added together, and a
+        bin of a sum reaching one frame's full scale says nothing about whether any of
+        its frames did. The count is of single frames, and the label says so rather than
+        adding the member frames' counts behind the operator's back.
+        """
+        if counts is None:
+            self._frame_clip_label.setText("single frames only, and a sum is shown")
+            return
+        clipped, over = counts
+        self._frame_clip_label.setText(
+            f"{clipped:,} point{'' if clipped == 1 else 's'}" + _over_words(over)
+        )
+
+    def set_file_clipping(
+        self,
+        clipping: "object | None",
+        *,
+        enabled: bool,
+        done: int = 0,
+        total: int = 0,
+        so_far: bool = False,
+    ) -> None:
+        """The file-wide count: off, counting, provisional, or the answer.
+
+        Off says where to turn it on, because a row that reads only "off" is a row
+        nobody can act on. Counting gives the frames reached and what they held so
+        far. `so_far` is a run still being written, whose count can only grow.
+        """
+        if not enabled:
+            self._file_clip_label.setText("off (Data settings > Count clipping in file)")
+            return
+        if clipping is None:
+            self._file_clip_label.setText("counting...")
+            return
+        clipped = int(clipping.total)
+        frames = int(clipping.frames)
+        text = (f"{clipped:,} point{'' if clipped == 1 else 's'}"
+                f" in {frames:,} frame{'' if frames == 1 else 's'}")
+        if total and done < total:
+            text = f"counting, {done:,} of {total:,} frames: " + text + " so far"
+        elif so_far:
+            text += " so far, still being written"
+        self._file_clip_label.setText(text + _over_words(int(clipping.over_total)))
+
+    def readouts(self) -> "dict[str, str]":
+        """Every readout row's text by its field name, for a check that reads the panel."""
+        form = {
+            "Full scale": self._full_scale_label,
+            "Raw maximum": self._raw_max_label,
+            "Clipped in frame": self._frame_clip_label,
+            "Clipped in file": self._file_clip_label,
+            "Per push": self._per_push_label,
+        }
+        return {name: label.text() for name, label in form.items()}

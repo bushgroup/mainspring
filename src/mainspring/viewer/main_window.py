@@ -60,6 +60,15 @@ a frame clicked, a span to sum -- leaves through `show_frame` and `sum_frames`, 
 reaches the screen by the path a keypress does, exactly as a followed acquisition does
 (lab record, task 31).
 
+**Clipping is two more things to ask the file for, and one of them is on a switch.** The
+file's raw maximum is one query and always asked for, after the first frame for the
+reason the chromatogram's totals are. The clipping count of the frame on screen is a
+comparison over a frame already in memory and is always shown. The count over the whole
+file is `LoadWorker`'s chunked walk, behind `Data settings > Count clipping in file`, and
+is restarted whenever the full scale it is judged at moves -- a bit depth set by hand, or
+a file that declares its own. While a run is followed both file-wide numbers are
+recounted over the tail a poll says moved, and say "so far" (lab record, task 36).
+
 **A launch can ask for both of them, and asks for them late.** Another program starts
 the viewer on a run in progress (`--follow`, `--show`), and `open_file` is
 asynchronous -- the frame list and the grouping arrive with the `opened` signal, so
@@ -98,6 +107,7 @@ from .. import __version__
 from ..interface import SHOW_WORDS, read_live_pointer
 from ..uimf import (
     SUMMED_SUFFIX,
+    Clipping,
     DisplayAxes,
     FrameGrouping,
     FrameParams,
@@ -108,6 +118,7 @@ from ..uimf import (
     is_local_path,
     summed_companion,
 )
+from ..uimf import full_scale as full_scale_for
 from . import fonts, labels, theme
 from .chromatogram import ChromatogramPanel
 from .controls import (
@@ -135,6 +146,7 @@ from .settings import (
 )
 from .side_plots import SidePlots, peak_of
 from .workers import (
+    ClippingRequest,
     LoadWorker,
     RenderMailbox,
     RenderRequest,
@@ -418,6 +430,13 @@ class MainWindow(QMainWindow):
         # what a launch that follows a run just started opens (`_show_frame`).
         self._ever_shown = False
         self._shown_this_file = False
+        # The file-wide clipping numbers, as far as the worker has got with them. The
+        # serial is the walk's, as `_restricted_serial` is the chromatogram's: a chunk
+        # whose serial is not this one belongs to a full scale or a file since left.
+        self._file_max: "float | None" = None
+        self._clipping: "Clipping | None" = None
+        self._clip_serial = 0
+        self._clip_progress = (0, 0)
 
         self.heatmap = HeatmapView(color_map=self.settings.color_map)
         self.setCentralWidget(self.heatmap)
@@ -569,6 +588,8 @@ class MainWindow(QMainWindow):
         self._worker.follow_stopped.connect(self._on_follow_stopped)
         self._worker.chromatogram.connect(self._on_chromatogram)
         self._worker.restricted.connect(self._on_restricted)
+        self._worker.file_max.connect(self._on_file_max)
+        self._worker.clipping.connect(self._on_clipping)
         self._worker.failed.connect(self._on_failed)
         # The worker starts not knowing whether anything wants the poll's third query.
         # `isHidden`, not `isVisible`: a child of a window that has not been shown yet
@@ -829,6 +850,21 @@ class MainWindow(QMainWindow):
             self._bits_box,
             tip="Detector bit depth, 1 to 32, that the per-push readout assumes.",
         )
+
+        # The one switch in this menu that costs something rather than changing what a
+        # number means: a walk over every frame of the file on the load worker. Off by
+        # default and persisted (`settings.py`).
+        menu.addSeparator()
+        self._count_clipping_action = make_action(
+            self,
+            "Count clipping in &file",
+            tip="Count, in the background, the points in every frame of the file that"
+                " reached full scale, and show the total in the info panel.",
+            checkable=True,
+            checked=self.settings.count_clipping,
+            toggled=self._on_count_clipping_toggled,
+        )
+        menu.addAction(self._count_clipping_action)
 
     def _build_toolbar(self) -> None:
         """The axis toggles, frame navigation, the sums and follow.
@@ -1137,6 +1173,14 @@ class MainWindow(QMainWindow):
         # takes, and a walk over the old file's frames has nothing left to walk.
         self._cancel_restricted()
         self.chromatogram.clear()
+        # The same for the clipping numbers: the last file's raw maximum and count must
+        # not stay on screen under this one's name while it opens.
+        self._cancel_clipping()
+        self._file_max = None
+        self._clipping = None
+        self._clip_progress = (0, 0)
+        self.info_panel.set_raw_max(None)
+        self._show_file_clipping()
         # Following is about one acquisition, so it does not survive into the next file:
         # a second file opened from the dialog is nearly always a finished one, and a
         # poll left running on it would be lock traffic against nothing. A `Live` switch
@@ -1331,6 +1375,7 @@ class MainWindow(QMainWindow):
             self._live_sum_frames = ()
             self._worker.set_follow(False)
             self.chromatogram.set_restrict_enabled(True)
+            self._show_file_clipping()
             if not self._live_switching:
                 self._live_timer.stop()
                 self._growth.clear()
@@ -1650,8 +1695,10 @@ class MainWindow(QMainWindow):
         (`LoadWorker._poll`), so the common poll -- a frame still filling, nothing new
         in the list -- costs one query and no widget rebuilding.
         """
-        self._live = state
+        previous, self._live = self._live, state
+        known = list(self._frame_numbers)
         self._frame_numbers = list(state.frames)
+        self._recount_tail(previous, state, known)
         if frame_types is not None:
             self._frame_types = dict(frame_types)
             self._populate_type_filter()
@@ -1697,6 +1744,7 @@ class MainWindow(QMainWindow):
         self._live_found = ""
         self._live = None
         self._live_sum_frames = ()
+        self._show_file_clipping()
         if not gone:
             self._show_status(f"Stopped following: {message}", sticky=True)
             return
@@ -1836,6 +1884,139 @@ class MainWindow(QMainWindow):
         # frame a running total belongs to: the sum itself is frame 0 and names nothing.
         self._sync_grouping_controls(members[-1])
         self._worker.sum_all(list(members), live=FOLLOW_ROLLING_SUM)
+
+    # --- clipping -----------------------------------------------------------------------
+
+    @property
+    def full_scale(self) -> int:
+        """The per-push ceiling every clipping number and the per-push line use.
+
+        `mainspring.uimf.full_scale` of the bit depth in use, told where it came from:
+        a depth the file declares is the ADC's and its samples are stored as 16-bit, a
+        depth set by hand is taken as the stored width (lab record, task 36).
+        """
+        return full_scale_for(self.detector_bits, from_file=self.detector_bits_from_file)
+
+    def _on_count_clipping_toggled(self, checked: bool) -> None:
+        """Start the file-wide count, or stop it and say how to start it again."""
+        self.settings.count_clipping = bool(checked)
+        if checked:
+            self._start_clipping()
+        else:
+            self._cancel_clipping()
+            self._clipping = None
+            self._clip_progress = (0, 0)
+        self._show_file_clipping()
+
+    def _start_clipping(self, recount_from: "int | None" = None) -> None:
+        """Ask the worker for the file-wide count at the full scale in use.
+
+        Every frame of the file, of every type: the question is whether the file
+        clipped, and the type filter narrows what the spinner reaches rather than what
+        the instrument recorded. Frames the worker has already counted at this full
+        scale come back free; `recount_from` says which may have grown since.
+        """
+        if (self._global is None or not self.settings.count_clipping
+                or not self._frame_numbers):
+            return
+        scale = self.full_scale
+        if self._clipping is not None and self._clipping.full_scale != scale:
+            self._clipping = None
+        self._clip_serial += 1
+        self._worker.request_clipping(ClippingRequest(
+            frames=tuple(self._frame_numbers),
+            full_scale=scale,
+            serial=self._clip_serial,
+            recount_from=recount_from,
+        ))
+        if self._clipping is None:
+            self._show_file_clipping()
+
+    def _cancel_clipping(self) -> None:
+        """Abandon the count. The serial moves, so a chunk in flight drops itself."""
+        self._clip_serial += 1
+        self._worker.cancel_clipping()
+
+    def _on_clipping(self, serial: int, clipping: Clipping, done: int, total: int) -> None:
+        """One chunk of the file-wide count, shown as far as it has got."""
+        if serial != self._clip_serial:
+            return
+        self._clipping = clipping
+        self._clip_progress = (done, total)
+        self._show_file_clipping()
+
+    def _on_file_max(self, path: str, value: float, since: "int | None") -> None:
+        """The file's raw maximum, whole or over a poll's tail.
+
+        A tail's answer is folded into the whole rather than replacing it: a frame still
+        being written only gains scans, so the largest value over what was already
+        finished and the largest over the tail together are the file's.
+        """
+        if not _same_file(path, self._path):
+            return
+        if since is None or self._file_max is None:
+            self._file_max = float(value)
+        else:
+            self._file_max = max(self._file_max, float(value))
+        self.info_panel.set_raw_max(self._file_max, so_far=self.following)
+
+    def _show_file_clipping(self) -> None:
+        """Put the file-wide numbers in the panel as they stand now.
+
+        Both say "so far" while a run is being followed, and stop saying it the moment
+        following stops -- the numbers do not change then, only what can be claimed for
+        them.
+        """
+        done, total = self._clip_progress
+        self.info_panel.set_file_clipping(
+            self._clipping, enabled=self.settings.count_clipping,
+            done=done, total=total, so_far=self.following,
+        )
+        if self._file_max is not None:
+            self.info_panel.set_raw_max(self._file_max, so_far=self.following)
+
+    def _show_frame_clipping(self) -> None:
+        """Count the clipped points of the frame on screen, or say a sum has none.
+
+        On the GUI thread, because the frame is already in memory and the count is one
+        comparison over its intensities: microseconds on a raw clockwork frame, about a
+        tenth of a second on the densest companion we have, once per frame shown.
+        """
+        frame = self._current_frame
+        if frame is None or self._frame_params is None:
+            return
+        if self._current_frame_number == 0:
+            self.info_panel.set_frame_clipping(None)
+            return
+        threshold = int(self._frame_params.accumulations) * self.full_scale
+        self.info_panel.set_frame_clipping(frame.count_clipped(threshold))
+
+    def _recount_tail(
+        self, previous: "LiveState | None", state: LiveState, known: "list[int]"
+    ) -> None:
+        """A poll found something: re-ask both file-wide numbers about what it moved.
+
+        What can have moved is the frames that were still being written at the last
+        look and the ones that were not there at all, as for the chromatogram's tail.
+        On the first poll of a follow there is no last look, so the frame that was the
+        newest when the file was opened stands in for it -- it is the one that may have
+        been counted while it was still filling.
+        """
+        if not state.frames:
+            return
+        if previous is None:
+            unsettled = set(state.provisional) | ({known[-1]} if known else set())
+            new = set(state.frames) - set(known)
+        else:
+            unsettled = set(previous.provisional) | set(state.provisional)
+            new = set(state.frames) - set(previous.frames)
+        moved = unsettled | new
+        if not moved:
+            return
+        since = min(moved)
+        self._worker.request_file_max(since)
+        if self.settings.count_clipping:
+            self._start_clipping(recount_from=since)
 
     # --- the chromatogram ---------------------------------------------------------------
 
@@ -2020,6 +2201,10 @@ class MainWindow(QMainWindow):
         # open is measured by, and the trace can arrive a tenth of a second later.
         if not self.chromatogram.isHidden():
             self._worker.request_chromatogram()
+        # Behind the frame for the same reason, and further: the raw maximum is a second
+        # of reading on the biggest raw runs (`UimfFile.max_intensity`).
+        self._worker.request_file_max()
+        self._start_clipping()
 
     def _populate_type_filter(self) -> None:
         """Rebuild `Data settings > Type`, and leave it alone when the types are the same.
@@ -2108,6 +2293,7 @@ class MainWindow(QMainWindow):
         # operator is the live view worth having -- but a partial frame quoted as a
         # finished one is a number that will be wrong by the time it is written down.
         self.info_panel.set_frame_state(sparse_frame.provisional)
+        self._show_frame_clipping()
         unfinished = " -- still being written" if sparse_frame.provisional else ""
         base = message or f"Frame {frame_number}: {len(sparse_frame):,} points"
         self._frame_message = base + unfinished
@@ -2210,6 +2396,7 @@ class MainWindow(QMainWindow):
                 self._frame_params.accumulations,
                 self.detector_bits,
                 from_file=self.detector_bits_from_file,
+                full_scale=self.full_scale,
             )
         self.export_png_action.setEnabled(True)
         self.export_pdf_action.setEnabled(True)
@@ -2353,6 +2540,11 @@ class MainWindow(QMainWindow):
     def _on_detector_bits_changed(self, value: int) -> None:
         self.settings.detector_bits = int(value)
         self._refresh_view_readouts()
+        # Every clipping number is judged at the full scale the depth gives, so a new
+        # depth is a new count: the frame's at once, the file's from the worker, which
+        # keeps what it counted at the old one in case the depth comes back.
+        self._refresh_full_scale()
+        self._start_clipping()
 
     @property
     def detector_bits(self) -> int:
@@ -2398,6 +2590,13 @@ class MainWindow(QMainWindow):
             else "Detector bit depth, 1 to 32, that the per-push readout assumes.",
         )
         describe(self._bits_label, self._bits_box.toolTip())
+        self._refresh_full_scale()
+
+    def _refresh_full_scale(self) -> None:
+        """Say what the full scale now is, and recount the frame on screen against it."""
+        self.info_panel.set_full_scale(self.full_scale, self.detector_bits,
+                                       self.detector_bits_from_file)
+        self._show_frame_clipping()
 
     def _refresh_view_readouts(self) -> None:
         """Re-send the newest render's in-view numbers to the info panel.
@@ -2411,6 +2610,7 @@ class MainWindow(QMainWindow):
                 self._frame_params.accumulations,
                 self.detector_bits,
                 from_file=self.detector_bits_from_file,
+                full_scale=self.full_scale,
             )
 
     def _on_type_filter_changed(self, text: str, checked: bool) -> None:

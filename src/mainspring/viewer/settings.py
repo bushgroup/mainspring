@@ -25,6 +25,13 @@ that matters more than it looks:
   file is being watched is one file and a session's business (lab record, task 08). The
   default of five is about five seconds of acquisition at the SLIMPHONY pusher rate,
   which averages several repetitions together and still moves visibly during a run.
+* **`count_clipping` defaults off.** Counting clipped points across a whole file is a
+  read of every scan's summary column and a decode of every scan that reaches full scale
+  -- milliseconds on a clean file, seconds on a saturated one -- and the chromatogram set
+  the precedent that a new cost does not appear unasked on the strength of an upgrade.
+  Persisted, unlike `Restrict to view`, because it is a way of working: some days the
+  count has to stay on for hours of acquisitions and other days nobody needs it (lab
+  record, task 36).
 
 Plain dataclass, no Qt in the type itself, so a test can exercise the defaults and the
 round trip without a `QApplication`. `load_settings`/`save_settings` are the only two
@@ -177,6 +184,7 @@ class ViewerSettings:
     cache_budget_mb: int = 512
     arrival_offset_ms: float = 0.0
     rolling_sum_frames: int = 5
+    count_clipping: bool = False
     last_directory: str = ""
     window_geometry: bytes = b""
 
@@ -282,6 +290,7 @@ def load_settings() -> ViewerSettings:
                                      defaults.arrival_offset_ms),
         rolling_sum_frames=_as_int(store.value("rolling_sum_frames", defaults.rolling_sum_frames),
                                     defaults.rolling_sum_frames),
+        count_clipping=_as_bool(store.value("count_clipping", defaults.count_clipping)),
         last_directory=str(store.value("last_directory", defaults.last_directory)),
         window_geometry=_as_bytes(store.value("window_geometry", defaults.window_geometry)),
     )
@@ -314,6 +323,7 @@ def save_settings(settings: ViewerSettings) -> None:
     store.setValue("cache_budget_mb", settings.cache_budget_mb)
     store.setValue("arrival_offset_ms", settings.arrival_offset_ms)
     store.setValue("rolling_sum_frames", settings.rolling_sum_frames)
+    store.setValue("count_clipping", settings.count_clipping)
     # Written under the new spelling, and the old key removed in the same pass, so a
     # settings store upgraded by this version carries one key per setting rather than
     # two that could drift apart.

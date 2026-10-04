@@ -153,7 +153,12 @@ frame is finished and none of them says so."""
 DETECTOR_BITS = "MainspringDetectorBits"
 """Global parameter: the digitizer's bit depth. Not in PNNL's parameter set at all, and
 not derivable from anything that is; the viewer's "% of full scale" readout falls back
-to a user setting when a file does not carry it (lab record, task 06)."""
+to a user setting when a file does not carry it (lab record, task 06).
+
+**The ADC's resolution, not the width of the stored numbers.** The acquisition console
+stores a 14-bit sample as a left-aligned 16-bit code, so a file declaring 14 holds values
+up to 65535 a push; `reader.full_scale` is where that is turned into a ceiling, and a
+reader dividing by `2^bits - 1` is four times wrong (lab record, task 36)."""
 
 RUN_OUTCOME = "MainspringRunOutcome"
 """Global parameter: how the run that wrote this file ended, one of `RUN_OUTCOMES`.
