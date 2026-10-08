@@ -49,6 +49,14 @@ clean file that is every scan; on the most heavily saturated run we have it is o
 two thousand (lab record, task 36). `full_scale` is what the threshold is built from,
 and its docstring is where the one non-obvious fact about it lives.
 
+**A finished file can be read without writing beside it**, by `UimfFile(path,
+immutable=True)`. The ordinary open above leaves an empty `-wal` and a 32 KB `-shm`
+beside every WAL file it reads -- every file mainspring's writer made -- and a reader
+whose data folders are under version control, or belong to someone else, wants neither.
+SQLite's `immutable=1` writes nothing, and is exact only on a file whose every commit is
+in the database file and which nothing is still writing; `NotImmutable` is what every
+other file gets instead of an answer (lab record, task 38).
+
 Parameter values are TEXT in the modern tables and typed by `ParamDataType`, so
 `GlobalParams` and `FrameParams` name the handful the viewer needs, coerced, and keep
 everything else as raw strings in `extra` -- the info panel shows whatever a file
@@ -74,6 +82,7 @@ from .writer import (
     DETECTOR_BITS,
     FRAME_COMPLETE,
     METHOD_FRAME,
+    OUTCOME_INCOMPLETE,
     OUTCOME_UNKNOWN,
     REPETITION,
     REPETITIONS,
@@ -96,6 +105,7 @@ __all__ = [
     "FrameGrouping",
     "GlobalParams",
     "LiveState",
+    "NotImmutable",
     "UimfFile",
     "connect",
     "full_scale",
@@ -158,6 +168,61 @@ class FileGone(FileNotFoundError):
     """
 
 
+class NotImmutable(ValueError):
+    """A file `UimfFile(path, immutable=True)` would misread, refused rather than read.
+
+    `reason` says which of four held, as a word a caller can branch on:
+
+    `log`         a non-empty `-wal` or `-journal` beside the file, holding commits (or
+                  an interrupted transaction) the database file has not received.
+                  Immutable, SQLite looks at neither: on a run too young to have been
+                  checkpointed it sees no tables at all, on a longer one it answers with
+                  the frames checkpointed so far and says nothing (lab record, task 29).
+    `unfinished`  a file mainspring's writer stamped whose last frame carries no
+                  completion marker: a run still being acquired, or one cut short.
+    `incomplete`  a file whose recorded outcome is `incomplete`, which is what the
+                  writer says from create until the run reports how it ended.
+    `changed`     the file is not the size or age it was when this instance checked it:
+                  something wrote to it since, and immutable turns off the change
+                  detection that would otherwise have noticed.
+
+    A `ValueError` because it is about the file's state, not the path: the file is
+    there, and the default open (`immutable=False`) reads every one of these correctly.
+    """
+
+    REASONS = ("log", "unfinished", "incomplete", "changed")
+
+    def __init__(self, path: str, reason: str, message: str) -> None:
+        super().__init__(message)
+        self.path = path
+        self.reason = reason
+
+
+def _pending_log(path: str) -> "str | None":
+    """The `-wal` or `-journal` beside this database that is not empty, if either is.
+
+    `hot_write_ahead_log` with the rollback journal added: a delete-mode file whose
+    writer died mid-transaction leaves a `-journal` that an ordinary open rolls back and
+    an immutable one ignores, exactly as it ignores a log.
+    """
+    for suffix in ("-wal", "-journal"):
+        try:
+            if os.path.getsize(path + suffix) > 0:
+                return path + suffix
+        except OSError:
+            continue
+    return None
+
+
+def _stat_signature(path: str) -> "tuple[int, int] | None":
+    """Size and mtime, which is what an immutable reader can see of a change."""
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return None
+    return stat.st_size, stat.st_mtime_ns
+
+
 def hot_write_ahead_log(path: str | os.PathLike[str]) -> "str | None":
     """The `-wal` beside this database that still holds commits, if there is one.
 
@@ -216,12 +281,22 @@ def _explain_open_failure(absolute: str, error: sqlite3.OperationalError) -> "st
 
 
 @contextlib.contextmanager
-def connect(path: str | os.PathLike[str], busy_timeout_ms: int = BUSY_TIMEOUT_MS) -> Iterator[sqlite3.Connection]:
+def connect(
+    path: str | os.PathLike[str],
+    busy_timeout_ms: int = BUSY_TIMEOUT_MS,
+    *,
+    immutable: bool = False,
+) -> Iterator[sqlite3.Connection]:
     """A short-lived read-only connection to a UIMF file, closed on the way out.
 
     Read-only through a `file:...?mode=ro` URI rather than by good intentions: an
     accidental write to an acquisition in progress is unrecoverable. The caller is
     expected to run one query and let go -- see the module docstring on why.
+
+    `immutable` adds `&immutable=1`: no locks, no change detection, nothing created
+    beside the file, and a log already there ignored. **Unguarded here**: it is exact
+    only on a file `UimfFile(path, immutable=True)` has checked, which is the way to ask
+    for it.
 
     Raises `FileGone` rather than SQLite's own wording when the open failed and the
     file is not there. The question is asked only after an open has already failed, so
@@ -238,6 +313,8 @@ def connect(path: str | os.PathLike[str], busy_timeout_ms: int = BUSY_TIMEOUT_MS
     """
     absolute = os.fspath(os.path.abspath(path))
     uri = "file:" + absolute.replace("?", "%3f").replace("#", "%23") + "?mode=ro"
+    if immutable:
+        uri += "&immutable=1"
     try:
         conn = sqlite3.connect(uri, uri=True, timeout=busy_timeout_ms / 1000.0)
     except sqlite3.OperationalError as exc:
@@ -658,11 +735,39 @@ class UimfFile:
     Construction only records the path and checks that it is a file; every method opens
     its own connection. Parameters are cached in the instance because they are small and
     a live file's parameters do not change, but **frames are not** -- see `read_frame`.
+
+    **`immutable=True` reads a finished file without writing anything beside it**, and
+    raises `NotImmutable` for a file it could not read exactly. Construction checks, in
+    this order: no non-empty `-wal` or `-journal` beside the file; then, through an
+    immutable connection, that a file mainspring's writer stamped has a completion marker
+    on its last frame and does not say its run is `incomplete`. Reading the file to
+    decide whether it may be read immutable looks circular and is not: with no log
+    holding commits, every commit is in the database file, so an immutable read of it is
+    exact. **An absent outcome is not a refusal** -- `GlobalSpec.records_outcome`
+    defaults to off, so absence describes every file from a writer caller that never
+    opted in, finished or not; the per-frame marker answers that, and has been in every
+    stamped file since the writer's first version. A file PNNL's writers produce carries
+    neither, and only the log is asked of it.
+
+    Every later connection repeats the log check and compares the file's size and mtime
+    with what construction saw, because `immutable` turns SQLite's own change detection
+    off: a log that appears, or a file rewritten, between two reads is caught by the
+    next one rather than misread by it. `refresh()` raises, since following a file and
+    declaring it finished contradict each other; `is_provisional` is unchanged, and on a
+    stamped file already exact. Opt-in, because live following depends on the default
+    open, which needs no guard (lab record, task 38).
     """
 
-    def __init__(self, path: str | os.PathLike[str], busy_timeout_ms: int = BUSY_TIMEOUT_MS) -> None:
+    def __init__(
+        self,
+        path: str | os.PathLike[str],
+        busy_timeout_ms: int = BUSY_TIMEOUT_MS,
+        *,
+        immutable: bool = False,
+    ) -> None:
         self.path = os.path.abspath(os.fspath(path))
         self.busy_timeout_ms = int(busy_timeout_ms)
+        self.immutable = bool(immutable)
         if not os.path.isfile(self.path):
             raise FileNotFoundError(self.path)
         self._tables: frozenset[str] | None = None
@@ -672,9 +777,89 @@ class UimfFile:
         # remembering the answer is safe, and it is what keeps `is_provisional` off the
         # database on the read path: `read_frame` asks it for every frame it decodes.
         self._complete: set[int] = set()
+        self._signature: "tuple[int, int] | None" = None
+        if self.immutable:
+            self._check_finished()
 
     def __repr__(self) -> str:
+        if self.immutable:
+            return f"{type(self).__name__}({self.path!r}, immutable=True)"
         return f"{type(self).__name__}({self.path!r})"
+
+    # --- connections ----------------------------------------------------------------
+
+    def _connect(self):
+        """`connect` as this instance opens it: guarded and immutable, or neither."""
+        if not self.immutable:
+            return connect(self.path, self.busy_timeout_ms)
+        self._check_unchanged()
+        return connect(self.path, self.busy_timeout_ms, immutable=True)
+
+    def _refuse(self, reason: str, why: str, remedy: str) -> NotImmutable:
+        return NotImmutable(self.path, reason, f"{os.path.basename(self.path)} {why}; {remedy}")
+
+    def _check_unchanged(self) -> None:
+        """What is repeated before every immutable connection: three `stat`s."""
+        log = _pending_log(self.path)
+        if log is not None:
+            raise self._refuse(
+                "log",
+                f"has {os.path.basename(log)} beside it, holding changes the database"
+                f" file has not received, which an immutable read would not see",
+                "the default open (immutable=False) reads it correctly")
+        signature = _stat_signature(self.path)
+        # A file that has gone is left for `connect` to report as `FileGone`.
+        if (signature is not None and self._signature is not None
+                and signature != self._signature):
+            raise self._refuse(
+                "changed",
+                "has been written to since it was opened immutable, and an immutable"
+                " read does not notice a change",
+                "open it again, or with the default open (immutable=False) if it is"
+                " still being written")
+
+    def _check_finished(self) -> None:
+        """Construction's guard: the log, then a stamped file's own word that it is done.
+
+        Read through the immutable connection it is guarding, which is sound once the
+        log check has passed (class docstring). The tables and global parameters it
+        reads are kept, so the guard is one connection in all rather than a cost on
+        every later one.
+        """
+        self._check_unchanged()
+        self._signature = _stat_signature(self.path)
+        last = marker = None
+        with connect(self.path, self.busy_timeout_ms, immutable=True) as conn:
+            self._tables = frozenset(
+                row[0] for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type IN ('table', 'view')"
+                )
+            )
+            globals_ = _global_params_from(self._read_global(conn))
+            if globals_.written_by and not self.is_legacy_only:
+                last = conn.execute("SELECT MAX(FrameNum) FROM Frame_Params").fetchone()[0]
+                if last is not None:
+                    row = conn.execute(
+                        "SELECT FP.ParamValue FROM Frame_Params FP"
+                        " JOIN Frame_Param_Keys K ON FP.ParamID = K.ParamID"
+                        " WHERE K.ParamName = ? AND FP.FrameNum = ?",
+                        (FRAME_COMPLETE, int(last)),
+                    ).fetchone()
+                    marker = None if row is None else row[0]
+        if last is not None and not _as_int(marker, 0):
+            raise self._refuse(
+                "unfinished",
+                f"has no completion marker on its last frame ({int(last)}), so its run"
+                f" may still be being written or was cut short",
+                "the default open (immutable=False) reads it correctly, with that frame"
+                " provisional")
+        if globals_.run_outcome == OUTCOME_INCOMPLETE:
+            raise self._refuse(
+                "incomplete",
+                f"says its run is {OUTCOME_INCOMPLETE}: still being acquired, or ended"
+                f" without its writer recording how",
+                "the default open (immutable=False) reads it correctly")
+        self._global = globals_
 
     # --- schema ---------------------------------------------------------------------
 
@@ -686,7 +871,7 @@ class UimfFile:
         acquired, and this is on the path of every other method.
         """
         if self._tables is None:
-            with connect(self.path, self.busy_timeout_ms) as conn:
+            with self._connect() as conn:
                 self._tables = frozenset(
                     row[0] for row in conn.execute(
                         "SELECT name FROM sqlite_master WHERE type IN ('table', 'view')"
@@ -708,7 +893,7 @@ class UimfFile:
         is being written, so re-reading them per frame would be lock traffic for nothing.
         """
         if self._global is None:
-            with connect(self.path, self.busy_timeout_ms) as conn:
+            with self._connect() as conn:
                 raw = self._read_global(conn)
             self._global = _global_params_from(raw)
         return self._global
@@ -744,7 +929,7 @@ class UimfFile:
             if not self.is_legacy_only
             else "SELECT FrameNum FROM Frame_Parameters ORDER BY FrameNum"
         )
-        with connect(self.path, self.busy_timeout_ms) as conn:
+        with self._connect() as conn:
             return [int(row[0]) for row in conn.execute(query)]
 
     def frame_types(self) -> dict[int, int]:
@@ -754,7 +939,7 @@ class UimfFile:
         that difference invisible and a 2000-frame LC run does not.
         """
         params = {}
-        with connect(self.path, self.busy_timeout_ms) as conn:
+        with self._connect() as conn:
             if not self.is_legacy_only:
                 rows = conn.execute(
                     "SELECT FP.FrameNum, FP.ParamValue FROM Frame_Params FP"
@@ -785,7 +970,7 @@ class UimfFile:
             return FrameGrouping()
         names = (METHOD_FRAME, REPETITION, REPETITIONS)
         raw: dict[str, dict[int, int]] = {name: {} for name in names}
-        with connect(self.path, self.busy_timeout_ms) as conn:
+        with self._connect() as conn:
             rows = conn.execute(
                 "SELECT K.ParamName, FP.FrameNum, FP.ParamValue FROM Frame_Params FP"
                 " JOIN Frame_Param_Keys K ON FP.ParamID = K.ParamID"
@@ -847,7 +1032,7 @@ class UimfFile:
             query += " WHERE FrameNum >= ?"
             arguments = (int(since),)
         query += " GROUP BY FrameNum"
-        with connect(self.path, self.busy_timeout_ms) as conn:
+        with self._connect() as conn:
             return {int(frame): float(total or 0.0)
                     for frame, total in conn.execute(query, arguments)}
 
@@ -883,7 +1068,7 @@ class UimfFile:
                 query += " AND FP.FrameNum >= ?"
                 arguments += (int(since),)
         times: dict[int, float] = {}
-        with connect(self.path, self.busy_timeout_ms) as conn:
+        with self._connect() as conn:
             for frame, value in conn.execute(query, arguments):
                 if value is None:
                     continue
@@ -913,7 +1098,7 @@ class UimfFile:
         if since is not None:
             query += " WHERE FrameNum >= ?"
             arguments = (int(since),)
-        with connect(self.path, self.busy_timeout_ms) as conn:
+        with self._connect() as conn:
             value = conn.execute(query, arguments).fetchone()[0]
         return float(value or 0.0)
 
@@ -944,7 +1129,7 @@ class UimfFile:
         if until is not None:
             query += " AND FrameNum < ?" if self.is_legacy_only else " AND FP.FrameNum < ?"
             arguments += (int(until),)
-        with connect(self.path, self.busy_timeout_ms) as conn:
+        with self._connect() as conn:
             return {int(frame): _as_int(value, 1) or 1
                     for frame, value in conn.execute(query, arguments)}
 
@@ -988,7 +1173,7 @@ class UimfFile:
         clauses, arguments = _threshold_runs(threshold)
         query = ("SELECT FrameNum, BPI, Intensities FROM Frame_Scans"
                  f" WHERE ({clauses})")
-        with connect(self.path, self.busy_timeout_ms) as conn:
+        with self._connect() as conn:
             rows = conn.execute(query, arguments).fetchall()
 
         # The filter above may be looser than the threshold (`_threshold_runs`), and a
@@ -1026,7 +1211,7 @@ class UimfFile:
         cached = self._frames.get(frame)
         if cached is not None and (cached.marked_complete or not self.has_completion_markers):
             return cached
-        with connect(self.path, self.busy_timeout_ms) as conn:
+        with self._connect() as conn:
             raw = self._read_frame_params(conn, frame)
         if not raw:
             raise KeyError(f"{self.path}: no parameters for frame {frame}")
@@ -1062,7 +1247,7 @@ class UimfFile:
         list or a total-ion chromatogram without touching a blob. The arrays are as long
         as the rows the writer stored, which on a SLIMPHONY file is a third of `Scans`.
         """
-        with connect(self.path, self.busy_timeout_ms) as conn:
+        with self._connect() as conn:
             rows = conn.execute(
                 "SELECT ScanNum, NonZeroCount, BPI, TIC FROM Frame_Scans"
                 " WHERE FrameNum = ? ORDER BY ScanNum",
@@ -1143,7 +1328,14 @@ class UimfFile:
         It also drops the cached parameters of every frame that is still provisional, so
         that a caller holding one `UimfFile` across a whole acquisition sees each frame
         become final rather than keeping the answer it got the first time.
+
+        Raises `RuntimeError` on an immutable open, which declared the file finished:
+        an immutable connection would not see it grow if it were not.
         """
+        if self.immutable:
+            raise RuntimeError(
+                f"{self.path} was opened immutable, which declares it finished;"
+                f" open it with immutable=False to follow it")
         frames = self.frame_numbers()
         if not self.has_completion_markers:
             return LiveState(tuple(frames), self._mtime_provisional(frames))
@@ -1152,7 +1344,7 @@ class UimfFile:
             # `>= unknown[0]` rather than a list of ids: an acquisition finalises frames
             # in order, so this is the tail, and it stays correct if one ever does not --
             # the query simply re-reads a few frames already known finished.
-            with connect(self.path, self.busy_timeout_ms) as conn:
+            with self._connect() as conn:
                 rows = conn.execute(
                     "SELECT FP.FrameNum, FP.ParamValue FROM Frame_Params FP"
                     " JOIN Frame_Param_Keys K ON FP.ParamID = K.ParamID"
@@ -1210,7 +1402,7 @@ class UimfFile:
             query = ("SELECT ScanNum, Intensities FROM Frame_Scans WHERE FrameNum = ?"
                      " AND ScanNum >= ? AND ScanNum < ? ORDER BY ScanNum")
             arguments = (frame, int(scan_range[0]), int(scan_range[1]))
-        with connect(self.path, self.busy_timeout_ms) as conn:
+        with self._connect() as conn:
             rows = conn.execute(query, arguments).fetchall()
 
         provisional = self.is_provisional(frame)

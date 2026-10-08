@@ -368,6 +368,14 @@ def main() -> int:
                and all(hasattr(mainspring.uimf, name)
                        for name in ("Clipping", "full_scale", "STORED_SAMPLE_BITS"))
                and callable(getattr(mainspring.uimf.SparseFrame, "count_clipped", None)))
+    # The immutable open, on the clipping count's footing: an analysis that must not
+    # write beside its data opens through it, and the word and its default are what it
+    # types (lab record, task 38).
+    immutable = inspect.signature(mainspring.uimf.UimfFile).parameters.get("immutable")
+    check_true("the reader still offers an immutable open, keyword-only and off by default",
+               immutable is not None and immutable.default is False
+               and immutable.kind is inspect.Parameter.KEYWORD_ONLY
+               and issubclass(getattr(mainspring.uimf, "NotImmutable", type), ValueError))
     check_true("a declared bit depth still means samples stored as 16-bit",
                mainspring.uimf.STORED_SAMPLE_BITS == 16
                and mainspring.uimf.full_scale(14, from_file=True) == 65535
@@ -807,6 +815,12 @@ def main() -> int:
         check_raises("and says nothing better than SQLite does about what is missing",
                      sqlite3.DatabaseError,
                      lambda: UimfFile(os.path.join(alone, "cut.uimf")).frame_numbers())
+        # An immutable open would read that short database and never look at the log,
+        # so the log is the first thing it refuses on (lab record, task 38).
+        os.remove(rebooted + "-shm")
+        check_raises("an immutable open refuses a file with a log still holding commits",
+                     mainspring.uimf.NotImmutable,
+                     lambda: UimfFile(rebooted, immutable=True))
 
     with tempfile.TemporaryDirectory() as tmp:
         closed = os.path.join(tmp, "closed.uimf")
@@ -820,6 +834,19 @@ def main() -> int:
         UimfFile(closed).frame_numbers()
         check_true("and a log a reader left behind empty is not one either",
                    hot_write_ahead_log(closed) is None)
+
+    # The pair that read just left is what an immutable open exists to not leave: a
+    # finished file read through it is the only thing in its folder afterwards.
+    with tempfile.TemporaryDirectory() as tmp:
+        quiet = os.path.join(tmp, "quiet.uimf")
+        with uimf_writer.UimfWriter(quiet, uimf_writer.GlobalSpec(bins=4096)) as handle:
+            handle.add_frame(uimf_writer.FrameSpec(scans=8))
+            handle.write_scans(1, [(1, np.array([50]), np.array([3]))])
+            handle.finalise_frame(1, duration_s=0.5)
+        still = UimfFile(quiet, immutable=True)
+        read = len(still.read_frame(1)) == 1 and still.global_params().written_by
+        check_true("an immutable open reads a finished file and writes nothing beside it",
+                   read and os.listdir(tmp) == ["quiet.uimf"])
 
     # The one way the replay fails: it has to create the `-shm` beside the database, so
     # a run copied logs-and-all to a folder the operator can read but not write cannot
