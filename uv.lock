@@ -85,10 +85,10 @@ dev = [
 requires-dist = [
     { name = "mainspring", extras = ["fast"], marker = "extra == 'viewer'" },
     { name = "numba", marker = "extra == 'fast'", specifier = "~=0.67.0" },
-    { name = "numpy", specifier = "~=2.5.2" },
+    { name = "numpy", specifier = ">=2.0.0" },
     { name = "pyqtgraph", marker = "extra == 'viewer'", specifier = "~=0.14.0" },
     { name = "pyside6", marker = "extra == 'viewer'", specifier = "~=6.11.2" },
-    { name = "scipy", specifier = "~=1.18.1" },
+    { name = "scipy", specifier = ">=1.13.0" },
 ]
 provides-extras = ["fast", "viewer"]
 

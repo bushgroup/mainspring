@@ -8,7 +8,8 @@ synthetic UIMF file can be written from nothing: `tests/synthetic.py` puts a few
 known points through the real SQLite schema and the real intensity encoder.
 
 What it covers: the package imports, the `uimf` layer stays free of Qt and the base
-install declares none (the wheel, installed bare, proves it), the hand-carried version
+install declares none (the wheel, installed bare, proves it), the base declares floors
+and the wheel works installed at exactly those, the hand-carried version
 declarations agree, the module layout is complete, the reporting stamp, the lab-directory resolution, the intensity
 codec against the format's own rules and against itself in both directions, and a
 synthetic file -- written through the schema a 2026 acquisition carries -- read back
@@ -152,6 +153,26 @@ def declared_dependencies() -> "tuple[set[str], set[str], set[str]]":
             names(pyproject.get("dependency-groups", {}).get("dev", [])))
 
 
+def declared_floors() -> "dict[str, str | None]":
+    """The base dependencies as floors: each normalised name mapped to the version its
+    requirement is the floor of, or to None when it is anything but a bare `name>=X`.
+
+    The base names the oldest numpy and scipy the reader was proved against and nothing
+    above them; the dev lock, not the published requirement, holds mainspring's own
+    series (lab record, task 39). This is the one place those floors live: the wheel
+    section installs exactly these versions, so the declaration and its proof cannot
+    drift apart."""
+    with open(os.path.join(ROOT, "pyproject.toml"), "rb") as handle:
+        requirements = tomllib.load(handle)["project"].get("dependencies", [])
+    floors = {}
+    for requirement in requirements:
+        match = re.fullmatch(r"\s*([A-Za-z0-9._-]+)\s*>=\s*([0-9][0-9.]*)\s*", requirement)
+        name = re.sub(r"[-_.]+", "-", re.match(r"\s*([A-Za-z0-9._-]+)", requirement)
+                      .group(1)).lower()
+        floors[name] = match.group(2) if match else None
+    return floors
+
+
 UIMF_MODULES = ("cache", "calib", "cli", "decode", "frame", "raster", "reader", "writer")
 VIEWER_MODULES = (
     "app", "chromatogram", "controls", "export", "fonts", "heatmap", "help",
@@ -202,6 +223,17 @@ def main() -> int:
     )
     check_true("the dev group installs the viewer, so a checkout has it unasked",
                "mainspring[viewer]" in dev_group)
+    # A caller with its own lock has to be able to install the reader beside it, so the
+    # base states the versions the reader needs, not the series this checkout is locked
+    # to: floors, no `~=` and no ceiling. The wheel section below installs the wheel at
+    # exactly these floors (lab record, task 39).
+    floors = declared_floors()
+    check_true(
+        "the base install is numpy and scipy, each a bare floor ("
+        + ", ".join(f"{name}>={version}" if version else f"{name} not a floor"
+                    for name, version in sorted(floors.items())) + ")",
+        set(floors) == {"numpy", "scipy"} and all(floors.values()),
+    )
     for name in UIMF_MODULES:
         check_true(
             f"mainspring.uimf.{name} imports",
@@ -1091,7 +1123,7 @@ def main() -> int:
                    _quiet(uimf_info_main, [smoke, "--verify"]) == 0)
 
     # --------------------------------------------------------------------------------
-    section("the wheel (uv build, clean-venv install)")
+    section("the wheel (uv build, clean-venv installs: newest dependencies, then the floors)")
     # Unlike the in-process import check above, this builds the wheel and installs it
     # in a subprocess venv, so import order here cannot leak Qt into this process. What
     # it catches instead is a packaging mistake the in-process check cannot see: a file
@@ -1146,32 +1178,7 @@ def main() -> int:
                         print(install.stdout[-2000:])
                         print(install.stderr[-2000:])
                     else:
-                        probe = subprocess.run(
-                            [venv_python, "-c",
-                             "import importlib.util\n"
-                             "qt = [m for m in ('PySide6', 'pyqtgraph', 'shiboken6')\n"
-                             "      if importlib.util.find_spec(m) is not None]\n"
-                             "print('QT:' + ','.join(qt) if qt else 'NOQT')"],
-                            capture_output=True, text=True,
-                        )
-                        check_true(
-                            "the bare wheel installs no Qt package "
-                            f"({probe.stdout.strip() or probe.stderr.strip()[-200:]})",
-                            probe.returncode == 0 and probe.stdout.strip() == "NOQT",
-                        )
-                        probe = subprocess.run(
-                            [venv_python, "-c",
-                             "import sys, mainspring, mainspring.interface, mainspring.report\n"
-                             "from mainspring.uimf import UimfFile, UimfWriter, GlobalSpec, FrameSpec\n"
-                             "qt = [m for m in sys.modules if m.startswith(('PySide6', 'pyqtgraph', 'shiboken6'))]\n"
-                             "print('QT:' + ','.join(qt) if qt else 'NOQT')"],
-                            capture_output=True, text=True,
-                        )
-                        check_true(
-                            "and the reader, the interface and the stamp import from it "
-                            f"({probe.stdout.strip() or probe.stderr.strip()[-200:]})",
-                            probe.returncode == 0 and probe.stdout.strip() == "NOQT",
-                        )
+                        _venv_reader_checks(venv_python, "at the latest numpy and scipy")
                         scripts = os.path.dirname(venv_python)
                         info = subprocess.run(
                             [os.path.join(scripts, "uimf-info"), "--help"],
@@ -1212,6 +1219,65 @@ def main() -> int:
                                 f"({built or stamp_probe.stderr.strip()[-200:]})",
                                 built in (head, head + "-dirty"),
                             )
+
+                    # The install above resolves numpy and scipy at their newest, which
+                    # proves nothing about the floors the base declares. So a second venv
+                    # gets the wheel with each floor named exactly. Naming them is the
+                    # point: the wheel is the only direct requirement here, so a "lowest"
+                    # resolution would still put numpy and scipy at their highest (lab
+                    # record, task 39). Fetching the floors needs the network or uv's
+                    # cache, and only that is SKIPPED; once they are fetched, a wheel that
+                    # will not install beside them, or a reader that fails on them, FAILS.
+                    pinned = [f"{name}=={version}"
+                              for name, version in sorted(declared_floors().items()) if version]
+                    floor_dir = os.path.join(wheel_tmp, "floors")
+                    floor_python = os.path.join(
+                        floor_dir,
+                        "Scripts" if os.name == "nt" else "bin",
+                        "python.exe" if os.name == "nt" else "python",
+                    )
+                    made = subprocess.run([uv, "venv", floor_dir, "--no-project"],
+                                          capture_output=True, text=True)
+                    fetched = made.returncode == 0 and subprocess.run(
+                        [uv, "pip", "install", "--python", floor_python, *pinned],
+                        capture_output=True, text=True,
+                    )
+                    if made.returncode != 0:
+                        skip("the wheel at its declared floors",
+                             f"uv could not create a venv ({made.stderr.strip()[:200]})")
+                    elif fetched.returncode != 0:
+                        why = fetched.stderr.strip()
+                        offline = re.search(r"(?i)network|connect|dns|resolve host|timed? ?out"
+                                            r"|offline|not found in the cache|failed to fetch",
+                                            why)
+                        if offline:
+                            skip(f"the wheel at its declared floors ({' '.join(pinned)})",
+                                 f"the floors could not be fetched ({why[-200:]})")
+                        else:
+                            check_true(f"the declared floors install at all ({' '.join(pinned)})",
+                                       False)
+                            print(why[-2000:])
+                    else:
+                        install = subprocess.run(
+                            [uv, "pip", "install", "--python", floor_python, wheel_path,
+                             *pinned],
+                            capture_output=True, text=True,
+                        )
+                        check_true(f"the wheel installs at its declared floors ({' '.join(pinned)})",
+                                   install.returncode == 0)
+                        if install.returncode != 0:
+                            print(install.stdout[-2000:])
+                            print(install.stderr[-2000:])
+                        else:
+                            held = subprocess.run(
+                                [floor_python, "-c",
+                                 "from importlib.metadata import version\n"
+                                 "print(' '.join(f'{n}=={version(n)}' for n in ('numpy', 'scipy')))"],
+                                capture_output=True, text=True,
+                            ).stdout.split()
+                            check_true(f"and those are the versions it runs on ({' '.join(held)})",
+                                       sorted(held) == sorted(pinned))
+                            _venv_reader_checks(floor_python, "at its floors")
 
     # --------------------------------------------------------------------------------
     # Everything below needs the `viewer` extra. A reader-only install is a supported
@@ -1841,6 +1907,84 @@ def summary() -> int:
     for name in FAIL:
         print("  FAIL", name)
     return 1 if FAIL else 0
+
+
+_VENV_READER_PROBE = """\
+import os, sys, tempfile
+sys.path.insert(0, sys.argv[1])
+from synthetic import write_synthetic_uimf
+from mainspring.uimf import UimfFile
+from mainspring.uimf.cli import main as uimf_info
+from mainspring.uimf.frame import sum_frames
+with tempfile.TemporaryDirectory() as tmp:
+    path = os.path.join(tmp, "synthetic.uimf")
+    spec = write_synthetic_uimf(path, frames=2, scans=16, bins=4096)
+    uimf = UimfFile(path)
+    total = float(sum_frames([uimf.read_frame(n) for n in spec.frames]).tic().sum())
+    expected = sum(spec.tic(n) for n in spec.frames)
+    import contextlib, io
+    with contextlib.redirect_stdout(io.StringIO()):
+        verified = uimf_info([path, "--verify"])
+    # What sets the numpy floor: below 2.0 an intensity the stored type cannot hold
+    # wraps silently into the file instead of being refused.
+    import numpy as np
+    from mainspring.uimf.decode import encode_intensities
+    try:
+        encode_intensities(np.array([1, 2]), np.array([1, 40000]), "<i2", "pure")
+        refused = False
+    except OverflowError:
+        refused = True
+    qt = [m for m in sys.modules if m.startswith(("PySide6", "pyqtgraph", "shiboken6"))]
+    print("OK" if abs(total - expected) < 1e-6 and verified == 0 and refused and not qt
+          else f"BAD sum {total} of {expected}, --verify {verified}, "
+               f"out-of-range refused {refused}, Qt {qt}")
+"""
+"""Run in an installed venv: write the synthetic file, read it back, sum it (through scipy
+when numba is absent, as it is in a bare install) and `--verify` it, and see an intensity too
+large for its type refused, with no Qt loaded. The last is what the numpy floor rests on, so
+the floors venv can tell a floor set too low (lab record, task 39)."""
+
+
+def _venv_reader_checks(venv_python: str, where: str) -> None:
+    """The checks every clean-venv install of the bare wheel passes, `where` naming it:
+    no Qt installed, the public modules import without loading Qt, and a synthetic file
+    goes through the reader, a sum and `--verify`."""
+    import subprocess
+
+    probe = subprocess.run(
+        [venv_python, "-c",
+         "import importlib.util\n"
+         "qt = [m for m in ('PySide6', 'pyqtgraph', 'shiboken6')\n"
+         "      if importlib.util.find_spec(m) is not None]\n"
+         "print('QT:' + ','.join(qt) if qt else 'NOQT')"],
+        capture_output=True, text=True,
+    )
+    check_true(
+        f"the bare wheel {where} installs no Qt package "
+        f"({probe.stdout.strip() or probe.stderr.strip()[-200:]})",
+        probe.returncode == 0 and probe.stdout.strip() == "NOQT",
+    )
+    probe = subprocess.run(
+        [venv_python, "-c",
+         "import sys, mainspring, mainspring.interface, mainspring.report\n"
+         "from mainspring.uimf import UimfFile, UimfWriter, GlobalSpec, FrameSpec\n"
+         "qt = [m for m in sys.modules if m.startswith(('PySide6', 'pyqtgraph', 'shiboken6'))]\n"
+         "print('QT:' + ','.join(qt) if qt else 'NOQT')"],
+        capture_output=True, text=True,
+    )
+    check_true(
+        f"and the reader, the interface and the stamp import from it "
+        f"({probe.stdout.strip() or probe.stderr.strip()[-200:]})",
+        probe.returncode == 0 and probe.stdout.strip() == "NOQT",
+    )
+    probe = subprocess.run(
+        [venv_python, "-c", _VENV_READER_PROBE, os.path.join(ROOT, "tests")],
+        capture_output=True, text=True,
+    )
+    said = probe.stdout.strip() or probe.stderr.strip()[-300:]
+    check_true(f"and it writes, reads, sums and verifies a synthetic file and refuses "
+               f"an out-of-range intensity ({said[:300]})",
+               probe.returncode == 0 and said == "OK")
 
 
 def _quiet(call, argv) -> int:
