@@ -12,17 +12,18 @@ instrument writes UIMF.
 
 ## Status
 
-Version 1.12.0. The reader layer, the viewer, and the Windows installer are written and
+Version 1.13.0. The reader layer, the viewer, and the Windows installer are written and
 verified, and the development record lives in a private companion repository. This release
-counts clipping. The info panel reports the file's largest stored intensity, how many points
-in the frame on screen reached full scale, and, when asked for, how many did across the whole
-file, and the reader answers the same question for a pipeline through `UimfFile.clipping`.
-On a file clockwork wrote, full scale is now 65,535 a push, the width the samples are stored
-at, rather than the 16,383 that the digitizer's 14 bits alone would give, so the per-push
-percentage on those files is a quarter of what earlier versions showed. The release before it
-separated the reader from the viewer at installation, so that installing mainspring as a
-Python package brings the reader with numpy and scipy alone. The
-[user guide](docs/user-guide.md) covers the viewer.
+corrects where peaks fall in files written by PNNL's acquisition software. After a run of
+32,768 empty bins, that software writes an extra zero that its own library skips on reading,
+and earlier versions of mainspring read the zero as a bin, so every peak after it in the scan
+sat one bin too high, up to three bins on the files we have, i.e., about 0.1 at m/z 530 on
+SLIMPHONY. Peaks now fall where each scan's stored base peak m/z puts them, whereas
+intensities, total ion current, sums and clipping counts are unchanged, as is everything read
+from a file mainspring wrote. The reader can also open a finished file without creating
+anything beside it, through `UimfFile(path, immutable=True)`, and installing it as a Python
+package now asks only for numpy 2.0 and scipy 1.13 or newer rather than the versions
+mainspring is developed against. The [user guide](docs/user-guide.md) covers the viewer.
 
 The reader reproduces every scan's stored total ion current and base peak intensity exactly
 on the four files it has been tested against, which were written by four different versions
@@ -97,7 +98,7 @@ time-of-flight bins, which on the Bush lab's instrument would be 2.3 GB for a si
 To use the reader from another project, install mainspring from a release tag:
 
 ```
-pip install "mainspring[fast] @ git+https://github.com/bushgroup/mainspring@v1.12.0"
+pip install "mainspring[fast] @ git+https://github.com/bushgroup/mainspring@v1.13.0"
 ```
 
 The same requirement string works as a dependency in another project's `pyproject.toml`,
