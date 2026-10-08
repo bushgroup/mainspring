@@ -10,6 +10,10 @@ identical arrays, on synthetic blobs and on every blob of every real file this c
 has; and it refuses a malformed stream instead of returning a short one. Last, the two
 encode backends are held to each other byte for byte, and the compiled one to every blob
 of a real file mainspring wrote.
+
+The marker zero -- a `0` straight after `-32768` or the element type's minimum, which
+UIMF-Library skips and a mainspring-stamped file means literally -- has a section of its
+own, on hand-built streams in each element type and through both backends.
 """
 
 from __future__ import annotations
@@ -446,18 +450,22 @@ def test_an_unknown_encode_backend_is_refused():
 
 
 @needs_numba
-def test_every_blob_of_a_file_we_wrote_encodes_back_to_itself(real_uimf):
+def test_every_blob_of_a_file_we_wrote_encodes_back_to_its_points(real_uimf):
     """The identity on a real acquisition, not on blobs made up here: decode what a
-    mainspring writer stored, encode it again with the kernels, and get the stored bytes.
-    Only a file mainspring wrote can pass -- PNNL's writer leaves explicit zeros in its
-    streams, which decode away, so re-encoding its blobs differs legitimately."""
+    mainspring writer stored, encode it again with the kernels, decode that, and get the
+    same points. Points rather than bytes: a companion written before the encoder stopped
+    writing a `-32768` skip re-encodes a gap of exactly 32768 as `-32767, -1`, a
+    different blob holding the same spectrum, and a console-written raw file's explicit
+    zeros decode away. Only a stamped file is decoded with the markers kept, so only a
+    stamped file is asked; the byte identity of the two encoders is held above, on
+    spectra made up here."""
     import sqlite3
 
     from mainspring.uimf.reader import UimfFile
 
     source = UimfFile(real_uimf)
     if not source.global_params().written_by.startswith("mainspring"):
-        pytest.skip("not written by mainspring; its blobs differ from ours by design")
+        pytest.skip("not written by mainspring; its markers would move points on the way round")
     dtype = source.global_params().dtype
     conn = sqlite3.connect("file:" + real_uimf.replace("\\", "/") + "?mode=ro", uri=True)
     try:
@@ -465,6 +473,147 @@ def test_every_blob_of_a_file_we_wrote_encodes_back_to_itself(real_uimf):
             "SELECT Intensities FROM Frame_Scans ORDER BY FrameNum, ScanNum LIMIT 4000")]
     finally:
         conn.close()
-    counts, bins, values = decode.decode_frame_blobs(blobs, dtype, backend="numba")
+    counts, bins, values = decode.decode_frame_blobs(blobs, dtype, backend="numba",
+                                                     skip_markers=False)
     scan_start = np.concatenate(([0], np.cumsum(counts)))
-    assert decode.encode_frame_blobs(scan_start, bins, values, dtype, "numba") == blobs
+    again = decode.encode_frame_blobs(scan_start, bins, values, dtype, "numba")
+    for skip in (False, True):
+        round_trip = decode.decode_frame_blobs(again, dtype, backend="numba",
+                                               skip_markers=skip)
+        assert np.array_equal(round_trip[0], counts)
+        assert np.array_equal(round_trip[1], bins)
+        assert np.array_equal(round_trip[2], values)
+
+
+# --- the marker zero ------------------------------------------------------------------
+#
+# UIMF-Library's decoder (`RlzEncode.tt`) skips a `0` whose predecessor is `-32768` or
+# the element type's minimum: its old encoder wrote one after clamping a long silence.
+# So does this one, unless the caller says the file is mainspring's, where the console
+# writes the same pair as a 32768-bin gap and a real zero (lab record, task 37).
+
+BOTH = ["pure", pytest.param("numba", marks=needs_numba)]
+
+
+def blob_of(stream, dtype):
+    """A stored blob holding exactly this RLZ stream, bypassing the encoder."""
+    return decode.lzf_compress(np.asarray(stream, dtype=dtype).tobytes())
+
+
+def frame_points(blobs, dtype, backend, skip, bins=0):
+    counts, index, values = decode.decode_frame_blobs(blobs, dtype, bins, backend, skip)
+    return [counts.tolist(), index.tolist(), values.tolist()]
+
+
+@pytest.mark.parametrize("backend", BOTH)
+@pytest.mark.parametrize("intensity_type", ["ADC", "TDC", "FOLDED"])
+def test_a_zero_after_the_clamp_is_a_marker_or_a_bin_as_asked(intensity_type, backend):
+    dtype = decode.dtype_for(intensity_type)
+    blob = blob_of([5, -32768, 0, 7, 0, 9], dtype)
+    # UIMF-Library: 5 at 0, skip to 32769, the marker advances nothing, 7 there, a real
+    # zero, 9 at 32771. Kept, the marker is one more bin and both later points move up.
+    assert frame_points([blob], dtype, backend, True) == [[3], [0, 32769, 32771], [5, 7, 9]]
+    assert frame_points([blob], dtype, backend, False) == [[3], [0, 32770, 32772], [5, 7, 9]]
+
+
+@pytest.mark.parametrize("backend", BOTH)
+def test_the_default_of_every_exported_decoder_is_the_skip(backend):
+    blob = blob_of([5, -32768, 0, 7], "<i4")
+    assert decode.decode_frame_blobs([blob], backend=backend)[1].tolist() == [0, 32769]
+    assert decode.decode_intensities(blob)[0].tolist() == [0, 32769]
+    assert decode.rlz_decode(np.array([5, -32768, 0, 7], "<i4"))[0].tolist() == [0, 32769]
+
+
+@pytest.mark.parametrize("backend", BOTH)
+def test_a_zero_after_int32s_minimum_is_a_marker_too(backend):
+    """int32's minimum is its own case; int16's is -32768 already, and the reference's
+    float instantiation tests `short.MinValue` twice, so float32's minimum is not one.
+    Counted rather than placed: any point after that skip is past an int32 bin index."""
+    blob = blob_of([7, -(2 ** 31), 0, 7, -(2 ** 31) + 1, 0], "<i4")
+    assert decode.count_markers([blob], "<i4", backend).tolist() == [1]
+    float_floor = blob_of([float(np.finfo("<f4").min), 0.0, 7.0], "<f4")
+    assert decode.count_markers([float_floor], "<f4", backend).tolist() == [0]
+
+
+@pytest.mark.parametrize("backend", BOTH)
+def test_only_the_first_zero_after_the_clamp_is_a_marker(backend):
+    blob = blob_of([-32768, 0, 0, 7], "<i4")
+    assert frame_points([blob], "<i4", backend, True)[1] == [32769]
+    assert frame_points([blob], "<i4", backend, False)[1] == [32770]
+    assert decode.count_markers([blob], "<i4", backend).tolist() == [1]
+
+
+@pytest.mark.parametrize("backend", BOTH)
+def test_the_look_back_does_not_reach_into_the_previous_blob(backend):
+    """The kernels walk a frame's blobs as one array; a blob that ends on -32768 must not
+    make the next blob's leading zero a marker."""
+    first = blob_of([3, -32768], "<i4")
+    second = blob_of([0, 7], "<i4")
+    assert frame_points([first, second], "<i4", backend, True) == [[1, 1], [0, 1], [3, 7]]
+    assert decode.count_markers([first, second], "<i4", backend).tolist() == [0, 0]
+
+
+@pytest.mark.parametrize("backend", BOTH)
+def test_the_bin_axis_bounds_the_point_where_the_rule_put_it(backend):
+    blob = blob_of([-32768, 0, 7], "<i4")
+    assert frame_points([blob], "<i4", backend, True, bins=32769) == [[1], [32768], [7]]
+    assert frame_points([blob], "<i4", backend, False, bins=32769) == [[0], [], []]
+
+
+@pytest.mark.parametrize("backend", BOTH)
+def test_count_markers_counts_each_blob(backend):
+    blobs = [blob_of([-32768, 0, 1, -32768, 0, 2], "<i4"), None, b"",
+             blob_of([-32767, 0, 1], "<i4")]
+    assert decode.count_markers(blobs, "<i4", backend).tolist() == [2, 0, 0, 0]
+    assert decode.count_markers([blob_of([-32768, 0], "<i2")], "<i2", backend).tolist() == [1]
+
+
+@needs_numba
+@pytest.mark.parametrize("intensity_type", ["ADC", "TDC", "FOLDED"])
+def test_the_two_backends_agree_on_streams_full_of_markers(intensity_type):
+    dtype = decode.dtype_for(intensity_type)
+    rng = np.random.default_rng(37)
+    blobs = [blob_of(rng.choice([-32768, -32767, -5, -1, 0, 0, 3, 40],
+                                size=int(rng.integers(1, 80))), dtype)
+             for _ in range(60)]
+    for skip in (True, False):
+        pure = decode.decode_frame_blobs(blobs, dtype, 200000, "pure", skip)
+        fast = decode.decode_frame_blobs(blobs, dtype, 200000, "numba", skip)
+        for ours, theirs in zip(pure, fast):
+            assert np.array_equal(ours, theirs)
+    assert np.array_equal(decode.count_markers(blobs, dtype, "pure"),
+                          decode.count_markers(blobs, dtype, "numba"))
+
+
+# --- the encoder never writes the ambiguous skip ----------------------------------------
+
+
+@pytest.mark.parametrize("backend", ["pure", pytest.param("numba", marks=needs_numba)])
+@pytest.mark.parametrize("intensity_type", ["ADC", "TDC", "FOLDED"])
+def test_a_gap_of_exactly_32768_is_written_as_two_skips(intensity_type, backend):
+    """The same spectrum under either rule, so neither UIMF-Library nor a stamped-file
+    reader can misplace the point after a real zero."""
+    dtype = decode.dtype_for(intensity_type)
+    bins = np.array([0, 32769, 32770])
+    values = np.array([5, 0, 7], dtype=dtype)
+    blob = decode.encode_intensities(bins, values, dtype, backend)
+    stream = np.frombuffer(decode.lzf_decompress(blob), dtype=dtype).tolist()
+    assert stream == [5, -32767, -1, 0, 7]
+    for skip in (True, False):
+        assert decode.decode_intensities(blob, dtype, skip_markers=skip)[0].tolist() \
+            == [0, 32770]
+
+
+@pytest.mark.parametrize("gap", [32767, 32768, 32769, 65535, 65536, 98304,
+                                 (1 << 24) + 32768, 2 * (1 << 24) + 32768])
+@pytest.mark.parametrize("intensity_type", ["ADC", "TDC", "FOLDED"])
+def test_no_encoder_writes_minus_32768(intensity_type, gap):
+    dtype = decode.dtype_for(intensity_type)
+    bins = np.array([0, gap, gap + 1])
+    values = np.array([5, 0, 6], dtype=dtype)
+    stream = decode.rlz_encode(bins, values, dtype)
+    assert -32768 not in stream.tolist()
+    assert walk_rlz(stream.tolist()) == ([0, gap + 1], [5, 6])
+    if decode.numba_available():
+        assert (decode.encode_intensities(bins, values, dtype, "numba")
+                == decode.encode_intensities(bins, values, dtype, "pure"))

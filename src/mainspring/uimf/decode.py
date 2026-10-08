@@ -11,6 +11,18 @@ without emitting a point. Writers do emit those explicit zeros -- thousands per 
 so `NonZeroCount` is an upper bound on the number of points and a safe preallocation
 size, never an exact count.
 
+**One zero is not a bin.** PNNL's old encoder, on a run of zeros long enough to reach
+the skip's limit, wrote `-32768` and then a spurious `0`; UIMF-Library's decoder skips a
+`0` whose predecessor in the same stream is `-32768` or the element type's minimum
+(`RlzEncode.tt`, "an old bug in the run-length zero encoding"). That *marker* moves
+nothing when skipped and every later point of its scan up one bin when not, so the
+decoders here skip it too -- `skip_markers=True`, the default. The exception is a file
+mainspring's writer stamped (`MainspringWriter`): the acquisition console that fills it
+writes zeros literally and does not clamp, so there `-32768, 0` is a gap of 32768 bins
+and a real zero, and `UimfFile` decodes it with `skip_markers=False`. mainspring's own
+encoder never writes a `-32768` skip at all, so what it writes reads the same under
+either rule (lab record, task 37).
+
 LZF is Marc Lehmann's liblzf as PNNL's `CLZF2.cs` carries it: a control byte `c` under
 32 introduces `c + 1` literal bytes, and `c >= 32` a back-reference of length
 `(c >> 5) + 2` -- with one extra length byte when `c >> 5 == 7` -- at offset
@@ -46,6 +58,7 @@ import numpy as np
 
 __all__ = [
     "BACKENDS",
+    "count_markers",
     "INTENSITY_DTYPES",
     "decode_frame_blobs",
     "decode_intensities",
@@ -71,6 +84,21 @@ INTENSITY_DTYPES: dict[str, np.dtype] = {
 
 _FAST_DTYPES = tuple(INTENSITY_DTYPES.values())
 """The element types the encode kernels are compiled for; anything else encodes pure."""
+
+_CLAMP = -32768
+"""The skip PNNL's old encoder clamped to, after which it wrote a spurious zero."""
+
+_AMBIGUOUS_SKIP = 32768
+"""The one skip length mainspring's encoder never writes: it would be `-32768`."""
+
+
+def _marker_floor(dtype: np.dtype) -> int:
+    """The second predecessor that makes a zero a marker: the element type's minimum.
+
+    UIMF-Library tests `short.MinValue` and `<T>.MinValue`; its float instantiation
+    tests `short.MinValue` twice, so for float32 the floor is `-32768` again.
+    """
+    return int(np.iinfo(dtype).min) if dtype.kind == "i" else _CLAMP
 
 
 def dtype_for(tof_intensity_type: str | None) -> np.dtype:
@@ -113,6 +141,10 @@ def rlz_encode(
 
     Gaps wider than the element type can hold negatively are split into consecutive
     skips -- only int16 files can reach that, and only after a 32767-bin silence.
+
+    A skip of exactly 32768 is written `-32767, -1`, never `-32768`: UIMF-Library takes
+    a `0` straight after `-32768` for its old encoder's spurious one and skips it, so a
+    literal zero there would read one bin early to every PNNL tool (lab record, task 37).
     """
     dtype = np.dtype(dtype)
     bin_index = np.asarray(bin_index, dtype=np.int64)
@@ -133,6 +165,8 @@ def rlz_encode(
         gap = b - cursor
         while gap > 0:
             step = min(gap, max_skip)
+            if step == _AMBIGUOUS_SKIP:
+                step -= 1
             out.append(-step)
             gap -= step
         out.append(value)
@@ -416,11 +450,27 @@ def lzf_decompress(data: bytes, expected_size: int = 0) -> bytes:
     return bytes(out)
 
 
-def rlz_decode(values: np.ndarray, bins: int = 0) -> tuple[np.ndarray, np.ndarray]:
+def _markers(values: np.ndarray) -> np.ndarray:
+    """Which entries of one stream are the old encoder's spurious zero: a `0` whose
+    predecessor is `-32768` or the element type's minimum. The first entry never is."""
+    marker = np.zeros(values.size, dtype=bool)
+    if values.size > 1:
+        before = values[:-1]
+        marker[1:] = (values[1:] == 0) & (
+            (before == _CLAMP) | (before == _marker_floor(values.dtype)))
+    return marker
+
+
+def rlz_decode(
+    values: np.ndarray, bins: int = 0, skip_markers: bool = True,
+) -> tuple[np.ndarray, np.ndarray]:
     """Undo the run-length-zero stream into `(bin_index, intensity)`.
 
     Explicit zeros in the stream advance the bin counter and emit nothing, matching
-    UIMF-Library. `bins` bounds the result; 0 means trust the stream.
+    UIMF-Library -- except, with `skip_markers`, a zero straight after `-32768` or the
+    element type's minimum, which advances nothing (the module docstring says why, and
+    why a mainspring-stamped file is read with it off). `bins` bounds the result; 0
+    means trust the stream.
 
     Vectorised rather than looped: the bin of an entry is the sum of its predecessors'
     strides, which is one `cumsum`, and the points are then a boolean mask. The stride
@@ -432,6 +482,8 @@ def rlz_decode(values: np.ndarray, bins: int = 0) -> tuple[np.ndarray, np.ndarra
     if values.size == 0:
         return np.empty(0, dtype=np.int32), values
     stride = np.where(values < 0, -values.astype(np.int64), np.int64(1))
+    if skip_markers:
+        stride[_markers(values)] = 0
     position = np.cumsum(stride) - stride
     keep = values > 0
     if bins > 0:
@@ -443,8 +495,11 @@ def decode_intensities(
     blob: bytes,
     dtype: np.dtype | str = "<i4",
     count_hint: int = 0,
+    skip_markers: bool = True,
 ) -> tuple[np.ndarray, np.ndarray]:
     """One stored blob to `(bin_index, intensity)`, the inverse of `encode_intensities`.
+
+    `skip_markers` is as for `decode_frame_blobs`.
 
     `count_hint` is the row's `NonZeroCount`, an upper bound on the number of points
     (lab record, task 01). It is accepted for symmetry with the frame-at-a-time path and
@@ -463,7 +518,7 @@ def decode_intensities(
         raise ValueError(
             f"decompressed length {len(raw)} is not a multiple of the {dtype} element size"
         )
-    return rlz_decode(np.frombuffer(raw, dtype=dtype))
+    return rlz_decode(np.frombuffer(raw, dtype=dtype), skip_markers=skip_markers)
 
 
 # --- decoding: a whole frame in one pass, over the numba kernels --------------------
@@ -510,6 +565,7 @@ def _kernels():
         lzf_expand=compiled(_k_lzf_expand),
         rlz_count=compiled(_k_rlz_count),
         rlz_fill=compiled(_k_rlz_fill),
+        rlz_markers=compiled(_k_rlz_markers),
         rlz_encode_sizes=compiled(_k_rlz_encode_sizes),
         rlz_encode_fill=compiled(_k_rlz_encode_fill),
         lzf_compress=compiled(_k_lzf_compress),
@@ -599,7 +655,7 @@ def warm_kernels() -> list[str]:
     """Compile every kernel for every element type the format uses; return what was warmed.
 
     What a build runs so the first file an installed program opens, sums or folds pays no
-    compile: the four decode kernels, the three encode kernels at the types
+    compile: the five decode kernels (the marker count among them), the three encode kernels at the types
     `UimfWriter.write_scans` passes them (an int64 row pointer and bin index), and the sum
     behind `sum_frames` (two frames, since one alone never reaches it), each checked
     against the pure path. Where the compiled kernels land is numba's business, and in a
@@ -623,6 +679,8 @@ def warm_kernels() -> list[str]:
         counts, _, values = decode_frame_blobs([blob, None, blob], dtype=dtype)
         if values.dtype != dtype or int(counts.sum()) != 2 * bin_index.size:
             raise AssertionError(f"{type_name}: the compiled decoder lost points")
+        if count_markers([blob, None], dtype=dtype, backend="numba").tolist() != [0, 0]:
+            raise AssertionError(f"{type_name}: the compiled marker count found one")
         frame = SparseFrame(frame=1, scans=2, bins=4097, scan_start=scan_start,
                             bin_index=bin_index.astype(np.int32), intensity=intensity)
         total = sum_frames([frame, frame])
@@ -632,7 +690,7 @@ def warm_kernels() -> list[str]:
     return warmed
 
 
-# The seven kernels below -- four to decode, three to encode -- are module-level plain
+# The eight kernels below -- five to decode, three to encode -- are module-level plain
 # Python, so that numba can cache their compilation against this file and so that they
 # read as the format's rules rather than as numba. They are not the pure fallback: these
 # loops would be glacial in the interpreter, and the functions above are what runs
@@ -708,41 +766,64 @@ def _k_lzf_expand(src, src_off, dst, dst_off, status):
                     ref += 1
 
 
-def _k_rlz_count(values, elem_off, bins, counts):
-    """Points per blob: the entries above zero that land inside the bin axis."""
+def _k_rlz_count(values, elem_off, bins, skip, floor, counts):
+    """Points per blob: the entries above zero that land inside the bin axis.
+
+    With `skip`, a zero whose predecessor *in the same blob* is `-32768` or `floor` (the
+    element type's minimum) advances nothing; the look-back starts afresh per blob."""
     for i in range(counts.size):
         position = 0
         found = 0
-        for j in range(elem_off[i], elem_off[i + 1]):
+        start = elem_off[i]
+        for j in range(start, elem_off[i + 1]):
             value = values[j]
             if value < 0:
-                position += int(-value)
-            else:
-                if value > 0 and (bins <= 0 or position < bins):
+                position -= int(value)  # widen, then negate: int16 -32768 would wrap
+            elif value > 0:
+                if bins <= 0 or position < bins:
                     found += 1
+                position += 1
+            elif not (skip and j > start
+                      and (values[j - 1] == -32768 or values[j - 1] == floor)):
                 position += 1
         counts[i] = found
 
 
-def _k_rlz_fill(values, elem_off, bins, out_start, out_bins, out_intensity):
+def _k_rlz_fill(values, elem_off, bins, skip, floor, out_start, out_bins, out_intensity):
     """The same walk again, writing blob `i`'s points from `out_start[i]`."""
     for i in range(out_start.size - 1):
         position = 0
         o = out_start[i]
-        for j in range(elem_off[i], elem_off[i + 1]):
+        start = elem_off[i]
+        for j in range(start, elem_off[i + 1]):
             value = values[j]
             if value < 0:
-                position += int(-value)
-            else:
-                if value > 0 and (bins <= 0 or position < bins):
+                position -= int(value)  # widen, then negate: int16 -32768 would wrap
+            elif value > 0:
+                if bins <= 0 or position < bins:
                     out_bins[o] = position
                     out_intensity[o] = value
                     o += 1
                 position += 1
+            elif not (skip and j > start
+                      and (values[j - 1] == -32768 or values[j - 1] == floor)):
+                position += 1
+
+
+def _k_rlz_markers(values, elem_off, floor, markers):
+    """Marker zeros per blob, the ones `skip` passes over in the two walks above."""
+    for i in range(markers.size):
+        found = 0
+        for j in range(elem_off[i] + 1, elem_off[i + 1]):
+            if values[j] == 0 and (values[j - 1] == -32768 or values[j - 1] == floor):
+                found += 1
+        markers[i] = found
 
 
 def _k_rlz_encode_sizes(bin_index, scan_start, max_skip, sizes):
-    """Stream length of each scan: one entry per point, and one per `max_skip` of gap."""
+    """Stream length of each scan: one entry per point, one per `max_skip` of gap, and
+    one more where the last piece of a gap is exactly 32768 and is written `-32767, -1`.
+    No `max_skip` is 32768, so only the last piece can be."""
     for i in range(sizes.size):
         cursor = 0
         count = 0
@@ -750,6 +831,8 @@ def _k_rlz_encode_sizes(bin_index, scan_start, max_skip, sizes):
             gap = bin_index[j] - cursor
             if gap > 0:
                 count += (gap + max_skip - 1) // max_skip
+                if gap % max_skip == 32768:
+                    count += 1
             count += 1
             cursor = bin_index[j] + 1
         sizes[i] = count
@@ -764,6 +847,8 @@ def _k_rlz_encode_fill(bin_index, intensity, scan_start, max_skip, elem_off, str
             gap = bin_index[j] - cursor
             while gap > 0:
                 step = min(gap, max_skip)
+                if step == 32768:
+                    step = 32767
                 stream[o] = -step
                 o += 1
                 gap -= step
@@ -877,6 +962,7 @@ def decode_frame_blobs(
     dtype: np.dtype | str = "<i4",
     bins: int = 0,
     backend: str = "auto",
+    skip_markers: bool = True,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """A whole frame's blobs at once: `(counts, bin_index, intensity)`.
 
@@ -884,6 +970,13 @@ def decode_frame_blobs(
     without a second walk; `bin_index` and `intensity` are every blob's points
     concatenated in blob order. `bins` drops points past the frame's bin axis, 0 to
     trust the stream.
+
+    `skip_markers` reads a `0` straight after `-32768` (or the element type's minimum)
+    as PNNL's old encoder's spurious zero and not a bin, as UIMF-Library does; it is
+    the default because it is right on every file mainspring did not write. A file
+    mainspring stamped carries that pair legitimately and wants `False`, which
+    `UimfFile` passes on its own; a caller decoding such a file's blobs directly must
+    pass it too, or a point after a 32768-bin gap and a real zero reads one bin early.
 
     A frame is thousands of small blobs, so the whole frame is one call and, with numba,
     four passes over contiguous memory: measure the sizes, expand, count the points,
@@ -902,6 +995,7 @@ def decode_frame_blobs(
     empty = (counts, np.empty(0, dtype=np.int32), np.empty(0, dtype=dtype))
     if not any(payloads):
         return empty
+    skip = bool(skip_markers)
 
     if kernels is None:
         piece_bins: list[np.ndarray] = []
@@ -915,7 +1009,7 @@ def decode_frame_blobs(
                     f"blob {i}: decompressed length {len(raw)} is not a multiple of the"
                     f" {dtype} element size"
                 )
-            bin_index, intensity = rlz_decode(np.frombuffer(raw, dtype=dtype), bins)
+            bin_index, intensity = rlz_decode(np.frombuffer(raw, dtype=dtype), bins, skip)
             counts[i] = bin_index.size
             piece_bins.append(bin_index)
             piece_intensity.append(intensity)
@@ -927,6 +1021,58 @@ def decode_frame_blobs(
             np.concatenate(piece_intensity).astype(dtype, copy=False),
         )
 
+    values, elem_off = _expand(kernels, payloads, dtype)
+    floor = _marker_floor(dtype)
+    kernels.rlz_count(values, elem_off, int(bins), skip, floor, counts)
+    out_start = np.zeros(len(payloads) + 1, dtype=np.int64)
+    np.cumsum(counts, out=out_start[1:])
+    out_bins = np.empty(int(out_start[-1]), dtype=np.int32)
+    out_intensity = np.empty(int(out_start[-1]), dtype=dtype)
+    kernels.rlz_fill(values, elem_off, int(bins), skip, floor, out_start, out_bins,
+                     out_intensity)
+    return counts, out_bins, out_intensity
+
+
+def count_markers(
+    blobs: Sequence[bytes | None],
+    dtype: np.dtype | str = "<i4",
+    backend: str = "auto",
+) -> np.ndarray:
+    """How many marker zeros each blob carries: a `0` straight after `-32768` or the
+    element type's minimum, the pair `skip_markers` decides the reading of.
+
+    What `uimf-info --verify` reports beside the rule a file was read with: on a file
+    mainspring did not write every one is PNNL's spurious zero, and skipping it is what
+    puts each later point of its scan back on the bin the writer's `BPI_MZ` names.
+    """
+    if backend not in BACKENDS:
+        raise ValueError(f"unknown backend {backend!r}; one of {BACKENDS}")
+    dtype = np.dtype(dtype)
+    kernels = _kernels() if backend in ("auto", "numba") else None
+    if backend == "numba" and kernels is None:
+        raise RuntimeError("the numba backend was asked for and numba is not importable")
+    payloads = [b"" if blob is None else bytes(blob) for blob in blobs]
+    markers = np.zeros(len(payloads), dtype=np.int64)
+    if not any(payloads):
+        return markers
+    if kernels is None:
+        for i, payload in enumerate(payloads):
+            if payload:
+                raw = lzf_decompress(payload)
+                if len(raw) % dtype.itemsize:
+                    raise ValueError(
+                        f"blob {i}: decompressed length {len(raw)} is not a multiple of"
+                        f" the {dtype} element size"
+                    )
+                markers[i] = int(_markers(np.frombuffer(raw, dtype=dtype)).sum())
+        return markers
+    values, elem_off = _expand(kernels, payloads, dtype)
+    kernels.rlz_markers(values, elem_off, _marker_floor(dtype), markers)
+    return markers
+
+
+def _expand(kernels, payloads: list[bytes], dtype: np.dtype) -> tuple[np.ndarray, np.ndarray]:
+    """Every blob LZF-expanded into one array of `dtype`, and each blob's element offsets."""
     src = np.frombuffer(b"".join(payloads), dtype=np.uint8)
     src_off = np.zeros(len(payloads) + 1, dtype=np.int64)
     np.cumsum([len(p) for p in payloads], out=src_off[1:])
@@ -955,12 +1101,4 @@ def decode_frame_blobs(
             f"blob {int(stray[0])}: LZF back-reference points before the start of the output"
         )
 
-    values = dst.view(dtype)
-    elem_off = dst_off // dtype.itemsize
-    kernels.rlz_count(values, elem_off, int(bins), counts)
-    out_start = np.zeros(len(payloads) + 1, dtype=np.int64)
-    np.cumsum(counts, out=out_start[1:])
-    out_bins = np.empty(int(out_start[-1]), dtype=np.int32)
-    out_intensity = np.empty(int(out_start[-1]), dtype=dtype)
-    kernels.rlz_fill(values, elem_off, int(bins), out_start, out_bins, out_intensity)
-    return counts, out_bins, out_intensity
+    return dst.view(dtype), dst_off // dtype.itemsize

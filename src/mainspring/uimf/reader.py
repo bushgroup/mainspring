@@ -469,6 +469,17 @@ class GlobalParams:
         return dtype_for(self.tof_intensity_type)
 
     @property
+    def skips_rlz_markers(self) -> bool:
+        """Whether this file's blobs decode with `skip_markers`: every file but one
+        mainspring's writer stamped.
+
+        PNNL's old encoder wrote a spurious `0` after a `-32768` skip, and UIMF-Library
+        skips it; the console that fills a stamped file writes that pair as a real gap
+        and a real zero (`decode`'s module docstring; lab record, task 37).
+        """
+        return not self.written_by
+
+    @property
     def full_scale(self) -> int | None:
         """The per-push ceiling this file declares, or `None` where it declares none.
 
@@ -989,7 +1000,8 @@ class UimfFile:
             return Clipping(full_scale, {}, {}, since, until)
         globals_ = self.global_params()
         counts, _, intensity = decode_frame_blobs(
-            [blob for _, blob in keep], globals_.dtype, int(globals_.bins)
+            [blob for _, blob in keep], globals_.dtype, int(globals_.bins),
+            skip_markers=globals_.skips_rlz_markers,
         )
         frame_of = np.repeat(np.asarray([frame for frame, _ in keep], dtype=np.int64), counts)
         limit = np.repeat(np.asarray([threshold[frame] for frame, _ in keep],
@@ -1204,7 +1216,8 @@ class UimfFile:
         provisional = self.is_provisional(frame)
         keep = [(int(scan), blob) for scan, blob in rows if 0 <= int(scan) < scans]
         counts, bin_index, intensity = decode_frame_blobs(
-            [blob for _, blob in keep], globals_.dtype, bins
+            [blob for _, blob in keep], globals_.dtype, bins,
+            skip_markers=globals_.skips_rlz_markers,
         )
 
         per_scan = np.zeros(scans, dtype=np.int64)

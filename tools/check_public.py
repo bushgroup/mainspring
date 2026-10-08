@@ -290,6 +290,16 @@ def main() -> int:
     check_true(f"and still writes both table families ({writer_defaults.get('tables')!r})",
                writer_defaults.get("tables") == "both")
 
+    # A third invisible default: the run-length-zero reading of the two exported decoders.
+    # Skipping a 0 after -32768 is UIMF-Library's reading and right on every file
+    # mainspring did not write; `UimfFile` passes the stamp itself, so only a direct
+    # caller ever meets this default, and what it means is published (lab record, task 37).
+    skips = {name: inspect.signature(getattr(mainspring.uimf, name))
+             .parameters.get("skip_markers") for name in ("decode_intensities",
+                                                          "decode_frame_blobs")}
+    check_true("both exported decoders still skip the marker zero by default",
+               all(p is not None and p.default is True for p in skips.values()))
+
     # The six names are the contract the acquisition side reads and writes by. They are
     # compared as strings, because renaming the constant is free and renaming the string
     # is a file the viewer can no longer tell a finished frame from a growing one in.
@@ -407,6 +417,18 @@ def main() -> int:
                [a.tolist() for a in decode.decode_intensities(
                    decode.encode_intensities(np.array([2, 3, 4]), np.array([5, 0, 6])))]
                == [[2, 4], [5, 6]])
+    # UIMF-Library skips a 0 straight after -32768, its old encoder's spurious one; a
+    # file mainspring stamped means it literally (lab record, task 37).
+    marked = np.array([5, -32768, 0, 7], dtype="<i4")
+    check_true("a 0 straight after -32768 is skipped by default, as UIMF-Library does",
+               decode.rlz_decode(marked)[0].tolist() == [0, 32769]
+               and decode.decode_frame_blobs([decode.lzf_compress(marked.tobytes())])[1]
+               .tolist() == [0, 32769])
+    check_true("and is a bin when the caller says the file is mainspring's",
+               decode.rlz_decode(marked, skip_markers=False)[0].tolist() == [0, 32770])
+    check_true("the encoder writes a 32768-bin gap as -32767, -1, never -32768",
+               decode.rlz_encode(np.array([0, 32769, 32770]), np.array([5, 0, 7])).tolist()
+               == [5, -32767, -1, 0, 7])
     check_raises("a truncated LZF stream raises rather than returning a short spectrum",
                  ValueError, lambda: decode.lzf_decompress(blob[:-1]))
     check_true(f"the compiled decode path is {'available' if decode.numba_available() else 'absent, so the pure path runs'}",

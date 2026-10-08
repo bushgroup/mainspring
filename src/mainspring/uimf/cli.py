@@ -19,7 +19,9 @@ reproduce them is a file we do not understand. `NonZeroCount` is compared as the
 bound it is, and `BPI_MZ` as a sanity check on the *spread* of the writer's own bin
 convention rather than on its absolute value, because the writers compute it
 inconsistently -- one is a constant `TimeOffset` out, one never computed it at all
-(lab record, task 01).
+(lab record, task 01). It also says which run-length-zero rule the file was decoded
+with and how many marker zeros each frame carries, the one place the two readings of a
+file differ (`decode`'s module docstring; lab record, task 37).
 
 `--json` puts any mode's output through the reporting stamp, so a number quoted from a
 run carries the version and commit that produced it.
@@ -37,17 +39,19 @@ import time
 import numpy as np
 
 from .calib import Calibration
-from .decode import decode_frame_blobs, encode_frame_blobs, numba_available
+from .decode import count_markers, decode_frame_blobs, encode_frame_blobs, numba_available
 from .raster import DisplayAxes, profile, rasterise
 from .reader import UimfFile, connect
 from .writer import OUTCOME_UNKNOWN, RUN_OUTCOMES
 
 __all__ = ["main"]
 
-MZ_TOLERANCE_BINS = 3.0
-"""How far apart the implied `BPI_MZ` bins of one file may be, around their own median,
-before `--verify` calls it a failure. Three is what the worst writer we have costs
-(lab record, task 01); a real decode error moves this by thousands."""
+MZ_TOLERANCE_BINS = 2.5
+"""How far apart the implied `BPI_MZ` bins of one frame may be before `--verify` calls
+it a failure. The widest honest spread measured is 2.2 bins, on a 2011 writer that is
+also a constant `TimeOffset` out; 2.5 clears it and fails a decode that keeps PNNL's
+marker zeros, which spreads the sample's offsets over 0 to -3 (lab record, tasks 01
+and 37). A gross decode error moves this by thousands."""
 
 _PURE_ENCODE_POINTS = 250_000
 """How many points `--bench` times the pure encoder on: about a second of it, where the
@@ -270,6 +274,8 @@ def _verify(uimf: UimfFile, only: int | None, mz_tolerance_bins: float) -> dict:
         scan, non_zero, bpi, tic = uimf.scan_summary(number)
         frame = uimf.read_frame(number)
         with connect(uimf.path, uimf.busy_timeout_ms) as conn:
+            blobs = [row[0] for row in conn.execute(
+                "SELECT Intensities FROM Frame_Scans WHERE FrameNum = ?", (number,))]
             stored_mz = np.asarray(
                 [row[0] for row in conn.execute(
                     "SELECT BPI_MZ FROM Frame_Scans WHERE FrameNum = ? ORDER BY ScanNum",
@@ -289,11 +295,13 @@ def _verify(uimf: UimfFile, only: int | None, mz_tolerance_bins: float) -> dict:
             "bpi_mismatches": int(np.count_nonzero(ours_bpi != bpi)),
             "non_zero_count_exceeded": int(np.count_nonzero(ours_points > non_zero)),
             "non_zero_count_exact": int(np.count_nonzero(ours_points == non_zero)),
+            "rlz_markers": int(count_markers(blobs, globals_.dtype).sum()),
         }
         row.update(_verify_bpi_mz(frame, params.calibration(globals_.bin_width_ns),
                                  scan, stored_mz, mz_tolerance_bins))
         frames.append(row)
-    return {"mz_tolerance_bins": mz_tolerance_bins, "frames": frames}
+    return {"mz_tolerance_bins": mz_tolerance_bins,
+            "rlz_markers_skipped": globals_.skips_rlz_markers, "frames": frames}
 
 
 def _scan_columns(conn) -> set[str]:
@@ -309,8 +317,11 @@ def _verify_bpi_mz(
     Two separate questions, and only the first is about our decode. Whether the writer's
     `BPI_MZ` inverts to a whole bin says the formula, its units and its constants are
     right. Whether that bin is *our* argmax bin is the writer's own convention, which
-    drifts by up to three bins and, on one 2011 file, by a constant `TimeOffset`; so the
-    check is on the spread of the offsets rather than on their value.
+    rounds half a bin either way on one writer and is a constant `TimeOffset` out on one
+    2011 file; so the check is on the spread of the offsets rather than on their value.
+    The "0 to -3 bins" once put down to the sample's writer was this decoder keeping
+    PNNL's marker zeros; skipping them, the sample's offset is 0 on every row (lab
+    record, task 37).
     """
     usable = stored_mz.size == scan.size and calibration.usable
     ours_bin = frame.bpi_bin()[scan] if usable else np.empty(0)
@@ -337,8 +348,8 @@ def _verify_bpi_mz(
         "bpi_mz_spread_bins": spread,
         "bpi_mz_median_offset_bins": float(np.median(offset)),
         "bpi_mz_fractional_max": float(fractional.max()),
-        # A hair of slack: the sample's offsets are the whole numbers 0 to -3, and a
-        # spread of exactly 3 arrives from float arithmetic as 3.0000000004.
+        # A hair of slack: offsets are near-whole numbers, and a spread of exactly 1
+        # arrives from float arithmetic as 1.0000000004.
         "bpi_mz_ok": spread <= tolerance_bins + 1e-6,
         "bpi_mz_note": "",
     }
@@ -347,7 +358,12 @@ def _verify_bpi_mz(
 def _print_verify(verify: dict) -> int:
     print()
     print("  --verify: decoded scans against the file's own columns")
-    print("  frame     rows    points   TIC   BPI   NZC>   BPI_MZ n  spread  median  frac")
+    if verify["rlz_markers_skipped"]:
+        print("  RLZ rule: UIMF-Library's, a 0 straight after -32768 is skipped, not a bin")
+    else:
+        print("  RLZ rule: mainspring writer's, a 0 after -32768 is a bin like any other")
+    print("  frame     rows    points   TIC   BPI   NZC>   BPI_MZ n  spread  median  frac"
+          "  markers")
     failed = 0
     for row in verify["frames"]:
         bad = (row["tic_mismatches"] or row["bpi_mismatches"]
@@ -363,13 +379,15 @@ def _print_verify(verify: dict) -> int:
               f"  {'-' if spread is None else format(spread, '6.2f')}"
               f"  {'-' if median is None else format(median, '6.2f')}"
               f"  {'-' if fractional is None else format(fractional, '.0e')}"
+              f"  {row['rlz_markers']:7d}"
               f"{'   FAIL' if bad else ''}"
               f"{'   ' + row['bpi_mz_note'] if row['bpi_mz_note'] else ''}")
     print("  TIC and BPI must be 0 mismatches; NZC> counts scans whose decoded points")
     print("  exceed NonZeroCount, which is an upper bound. BPI_MZ spread is the writer's")
     print("  own bin convention, tolerance"
           f" {verify['mz_tolerance_bins']:g} bins; frac is how far its implied bin is")
-    print("  from a whole one, which is what settles the calibration's units.")
+    print("  from a whole one, which is what settles the calibration's units. markers")
+    print("  counts each frame's 0s straight after -32768, which the RLZ rule decides.")
     if failed:
         print(f"  {failed} frame(s) FAILED")
     else:
