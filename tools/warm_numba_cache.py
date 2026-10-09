@@ -15,8 +15,11 @@ the installer copies keeps its modification time and its size, so a seed the exe
 wrote about itself is one the installed copy recognises. On a CPU other than the build
 machine's, numba compiles once more and keeps both.
 
-The kernels are the four decode, the three encode behind `UimfWriter.write_scans` and the
-sum behind `sum_frames`, for all three intensity types (`decode.warm_kernels`).
+The kernels are the four decode, the marker count behind `uimf-info --verify`, the three
+encode behind `UimfWriter.write_scans` and the sum behind `sum_frames`, for all three
+intensity types (`decode.warm_kernels`). The list below is checked against the folder both
+ways: a kernel `warm_kernels` compiles that the list does not name fails the seed too, so
+the count this prints is what the folder holds (lab record, task 39).
 
 Run:  uv run tools/warm_numba_cache.py
 """
@@ -34,7 +37,7 @@ EXE = os.path.join(ROOT, "dist", "mainspring", "mainspring.exe")
 SEED_DIR = os.path.join(ROOT, "dist", "mainspring", "_internal", "numba_cache_seed")
 KERNELS = ("decode._k_lzf_sizes", "decode._k_lzf_expand", "decode._k_rlz_count",
            "decode._k_rlz_fill", "decode._k_rlz_encode_sizes", "decode._k_rlz_encode_fill",
-           "decode._k_lzf_compress", "frame._k_sum_rows")
+           "decode._k_lzf_compress", "decode._k_rlz_markers", "frame._k_sum_rows")
 
 
 def main() -> int:
@@ -61,6 +64,8 @@ def main() -> int:
     missing = [k for k in KERNELS if not any(n.startswith(k + "-") and n.endswith(".nbi")
                                              for n in names)]
     stray = [n for n in os.listdir(SEED_DIR) if n != "mainspring_uimf"]
+    found = {n.split("-", 1)[0] for n in names if n.endswith(".nbi")}
+    stray += sorted(found - set(KERNELS))
     if missing or stray:
         print(f"seed incomplete: missing {missing or 'nothing'}, unexpected {stray or 'nothing'}")
         return 1
@@ -69,7 +74,7 @@ def main() -> int:
     if stamps != {want}:
         print(f"seed stamped {sorted(stamps)}, but the executable is {want}")
         return 1
-    print(f"{len(names)} cache files for {len(KERNELS)} kernels in {folder}, stamped {want}")
+    print(f"{len(names)} cache files for {len(found)} kernels in {folder}, stamped {want}")
     return 0
 
 
