@@ -12,7 +12,7 @@ instrument writes UIMF.
 
 ## Status
 
-Version 1.13.0. The reader layer, the viewer, and the Windows installer are written and
+Version 1.13.1. The reader layer, the viewer, and the Windows installer are written and
 verified, and the development record lives in a private companion repository. This release
 corrects where peaks fall in files written by PNNL's acquisition software. After a run of
 32,768 empty bins, that software writes an extra zero that its own library skips on reading,
@@ -98,7 +98,7 @@ time-of-flight bins, which on the Bush lab's instrument would be 2.3 GB for a si
 To use the reader from another project, install mainspring from a release tag:
 
 ```
-pip install "mainspring[fast] @ git+https://github.com/bushgroup/mainspring@v1.13.0"
+pip install "mainspring[fast] @ git+https://github.com/bushgroup/mainspring@v1.13.1"
 ```
 
 The same requirement string works as a dependency in another project's `pyproject.toml`,
