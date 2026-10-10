@@ -446,12 +446,21 @@ class HeatmapView(pg.GraphicsLayoutWidget):
         # `colorMapMenu=False`: pyqtgraph's own right-click menu offers every registered
         # colormap, and picking one there would neither tick the View menu's choice nor
         # reach `ViewerSettings` -- `set_color_map` below is the one path that does both.
-        self._color_bar = pg.ColorBarItem(colorMap=color_map, colorMapMenu=False)
+        # `limits=(0, None)`: every displayed image is non-negative (counts, and `scaled`
+        # clips before log1p and sqrt), so a level below zero only spends colors on
+        # values that cannot occur and lifts a zero background off the bottom color.
+        # pyqtgraph's handles are relative adjusters that snap back to a quarter and
+        # three quarters of the strip on release, so pulling the bottom one down "to
+        # zero" used to push the low level negative; the floor makes that a no-op.
+        self._color_bar = pg.ColorBarItem(
+            colorMap=color_map, colorMapMenu=False, limits=(0.0, None)
+        )
         self._color_bar.setImageItem(self._image_item)
         self._color_bar.getAxis("top").setHeight(TOP_AXIS_HEIGHT)
         _BAR_TIP = (
-            "The intensity each color stands for. Drag an end to set the limits by hand,"
-            " and tick Keep levels to hold them across frames."
+            "The intensity each color stands for; the limits are the numbers at the two"
+            " ends of the strip. Drag a handle up or down to move that limit, and tick"
+            " Keep levels to hold them across frames."
         )
         describe(self._color_bar, _BAR_TIP)
         for name in ("left", "bottom", "top", "right"):

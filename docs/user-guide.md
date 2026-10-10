@@ -101,8 +101,11 @@ panel reads at the weight a small one does.
 
 **The color bar** is the strip in the far right column of the plot area. It reads in the units
 `View > Color scale` selects, so on the `Linear` setting its numbers are stored intensities and
-on `Log` or `Square root` they are the transformed values. Drag either handle to set the limits by
-hand. Its gradient is one of four perceptually uniform color maps (`Viridis`, `Plasma`,
+on `Log` or `Square root` they are the transformed values. The limits are the numbers at the two
+ends of the strip, not the positions of the two handles. Dragging a handle moves its limit in the
+same direction, further the further it is dragged, and the handle returns to its place on release.
+The lower limit stops at zero, because no intensity is negative, so the background of a frame can
+always be given the lowest color of the map. The bar's gradient is one of four perceptually uniform color maps (`Viridis`, `Plasma`,
 `Inferno`, `Magma`), chosen from `View > Color map`.
 
 **The info panel** is docked on the right. `Ctrl+I` hides and shows it, and it can be dragged

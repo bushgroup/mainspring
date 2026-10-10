@@ -143,6 +143,18 @@ def test_set_levels_holds_the_color_bar_across_a_new_image(qtbot):
     assert view.levels() == pytest.approx((0.0, 100.0))  # auto again
 
 
+def test_the_color_bar_low_level_stops_at_zero(qtbot):
+    """Regression: pyqtgraph's handles snap back to a quarter of the strip on release,
+    so pulling the bottom one down "to zero" pushed the low level negative and left a
+    zero background a quarter of the way up the color map. No displayed intensity is
+    negative, so the bar floors its low level at zero, whoever sets it."""
+    view = HeatmapView()
+    qtbot.addWidget(view)
+    view.set_image(_fake_result(np.array([[0.0, 10.0]])))
+    view.set_levels(-7000.0, 10.0)
+    assert view.levels() == pytest.approx((0.0, 10.0))
+
+
 # --- LoadWorker.sum_all: progress, and a genuine cancel ---------------------------------
 
 def test_sum_all_reports_progress_and_can_be_cancelled(qtbot, tmp_path, monkeypatch):
