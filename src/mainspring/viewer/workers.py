@@ -759,8 +759,11 @@ class LoadWorker(QThread):
         frame list changed; a frame became final; or some frame is *still* provisional,
         in which case the file may have grown inside a frame the list cannot see. A
         frame is one ion mobility experiment and its scans arrive in batches, so a view
-        of the newest frame that only repainted when the frame count changed would show
-        the experiment in one jump at the end rather than filling.
+        of the frame being written that only repainted when the frame count changed
+        would show the experiment in one jump at the end rather than filling. Whether
+        anything draws that frame is the window's business (`View > Show frames still
+        being written`); the poll reports it either way, and with the toggle off the
+        window ignores a look whose newest finished frame has not moved.
         """
         if self._file is None or self._poll_interval is None:
             return

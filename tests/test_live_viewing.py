@@ -22,6 +22,10 @@ Task 29 adds the other end of the same file's life: a run whose writer never clo
 left beside a write-ahead log nobody checkpointed. Built by killing a writer in a
 subprocess and copying what it left *without* the `-shm`, which is the only way to get
 the rebooted-instrument case rather than the same-boot one.
+
+Task 40 turns the default around: `Live` puts a frame on screen by itself only once it is
+finished, in `Newest frame` and in the chromatogram, and `View > Show frames still being
+written` brings the filling view back. The tests that pin the filling view tick it.
 """
 
 from __future__ import annotations
@@ -436,10 +440,11 @@ def test_following_the_newest_frame_lands_on_each_frame_as_it_arrives(following_
 
 def test_a_frame_still_being_written_is_drawn_and_labelled_as_unfinished(following_window,
                                                                         qtbot):
-    """Drawn, because an experiment filling in front of the operator is the live view
-    worth having; labelled, because a partial frame quoted as a finished one is a number
+    """With `View > Show frames still being written` ticked: drawn, filling in front of
+    the operator; labelled, because a partial frame quoted as a finished one is a number
     that will be wrong by the time it is written down."""
     window, acquisition, _ = following_window
+    window._unfinished_action.setChecked(True)
     window._follow_mode.setCurrentText(FOLLOW_NEWEST)
 
     acquisition.start(method_frame=1, repetition=2, repetitions=3)
@@ -1167,10 +1172,12 @@ def test_the_chromatogram_gains_a_point_as_the_run_writes_one(chromatogram_windo
 def test_a_frame_still_being_written_shows_its_total_so_far_and_then_its_real_one(
     chromatogram_window, qtbot
 ):
-    """The one point on the trace that moves. A frame's rows arrive in batches, so its
-    total climbs while it fills and settles when the frame is finalised -- and the poll
-    re-asks about exactly that frame because it was provisional at the last look."""
+    """With `View > Show frames still being written` ticked, the one point on the trace
+    that moves. A frame's rows arrive in batches, so its total climbs while it fills and
+    settles when the frame is finalised -- and the poll re-asks about exactly that frame
+    because it was provisional at the last look."""
     window, running = chromatogram_window
+    window._unfinished_action.setChecked(True)
     running.start(scans=SCANS // 3, method_frame=1, repetition=2, repetitions=3,
                   start_time_minutes=0.01)
     qtbot.waitUntil(lambda: window.chromatogram.series[0] == (1, 2), timeout=5000)
@@ -1591,3 +1598,321 @@ def test_the_search_stops_with_the_following_it_serves(qtbot, acquisition, quick
     window._follow_action.setChecked(False)
     assert not window._live_timer.isActive()
     assert window._growth == {}
+
+
+# --- task 40: what Live puts on screen is finished --------------------------------------
+
+def _looks(window, qtbot, count: int = 3) -> None:
+    """Let `count` more polls reach the window, each one reporting a frame being written.
+
+    What the rules below are about is what the window does *with* a poll, so the wait is
+    on the poll's own signal rather than on the clock: a frame that is still provisional
+    makes every look emit (`LoadWorker._poll`).
+    """
+    seen: list = []
+    window._worker.live_update.connect(lambda *a: seen.append(a))
+    qtbot.waitUntil(lambda: len(seen) >= count, timeout=5000)
+    qtbot.wait(50)  # anything a poll asked the worker for lands here
+
+
+@pytest.fixture
+def newest_window(following_window, qtbot):
+    """`following_window` in `Newest frame`, with frame 1 on screen and nothing pending."""
+    window, acquisition, painted = following_window
+    assert not window.settings.show_unfinished_frames  # the default this task is about
+    window._follow_mode.setCurrentText(FOLLOW_NEWEST)
+    qtbot.waitUntil(lambda: window._current_frame_number == 1, timeout=5000)
+    _looks(window, qtbot, count=1)
+    painted.clear()
+    return window, acquisition, painted
+
+
+def test_newest_frame_never_shows_a_frame_still_being_written_by_itself(newest_window,
+                                                                       qtbot):
+    """The complaint: a frame half written is an empty heat map, because its scans land
+    in arrival-time order and the analytes arrive late in them. The frame on screen stays
+    the last finished one through every look at the one filling."""
+    window, acquisition, painted = newest_window
+    frame = acquisition.start(scans=SCANS // 3, method_frame=1, repetition=2,
+                              repetitions=3)
+    _looks(window, qtbot)
+    acquisition.append(frame, SCANS // 3)
+    _looks(window, qtbot)
+
+    assert window._frame_spin.maximum() == 2  # the frame is known about
+    assert window._current_frame_number == 1
+    assert not window._current_frame.provisional
+    assert painted == []
+
+
+def test_newest_frame_lands_on_each_frame_once_it_is_finished(newest_window, qtbot):
+    window, acquisition, _ = newest_window
+    for number in (2, 3):
+        acquisition.start(method_frame=1, repetition=number, repetitions=3)
+        _looks(window, qtbot, count=2)
+        assert window._current_frame_number == number - 1
+        acquisition.finish()
+        qtbot.waitUntil(lambda n=number: window._current_frame_number == n, timeout=5000)
+        assert not window._current_frame.provisional
+        assert window.info_panel._state_label.text() == "complete"
+
+
+def test_newest_frame_does_not_show_the_same_finished_frame_again(newest_window, qtbot):
+    """The poll reports every look while a frame fills, and the finished frame does not
+    change between them. Showing it again would be a read and a repaint a second for
+    nothing, so the worker is not asked for it at all."""
+    window, acquisition, _ = newest_window
+    asked: list = []
+    window._worker.frame_loaded.connect(lambda *a: asked.append(a[0]))
+    acquisition.start(method_frame=1, repetition=2, repetitions=3)
+    _looks(window, qtbot, count=5)
+    assert asked == []
+
+
+def test_a_finished_frame_is_not_snatched_back_from_a_frame_stepped_to_by_hand(
+    newest_window, qtbot
+):
+    """Stepping onto the unfinished frame shows it, labelled, and the spinner reaches it.
+
+    The toggle governs only what `Live` puts on screen by itself (Matt, 2026-10-20). The
+    frame stays there until the next frame finishes, which is when `Newest frame` next
+    has something new to show.
+    """
+    window, acquisition, _ = newest_window
+    acquisition.start(method_frame=1, repetition=2, repetitions=3)
+    qtbot.waitUntil(lambda: window._frame_spin.maximum() == 2, timeout=5000)
+    window._frame_spin.setValue(2)
+    qtbot.waitUntil(lambda: window._current_frame_number == 2, timeout=5000)
+    assert window._current_frame.provisional
+    assert "still being written" in window.status_text()
+    assert window.info_panel._state_label.text() == "still being written"
+
+    _looks(window, qtbot)
+    assert window._current_frame_number == 2
+
+    acquisition.finish()
+    acquisition.start(method_frame=1, repetition=3, repetitions=3)
+    _looks(window, qtbot)
+    assert window._current_frame_number == 2
+    assert not window._current_frame.provisional  # the finished frame 2, shown by Live
+
+
+def test_the_view_toggle_acts_on_the_poll_already_in_hand(newest_window, qtbot,
+                                                          monkeypatch):
+    """Ticking it shows the frame being written at once, and unticking it goes back to
+    the last finished frame at once, rather than at the next frame to finish -- a
+    control that seemed to do nothing for a second would read as broken."""
+    window, acquisition, _ = newest_window
+    acquisition.start(method_frame=1, repetition=2, repetitions=3)
+    _looks(window, qtbot)
+    asked: list = []
+    real = window.show_frame
+    monkeypatch.setattr(window, "show_frame", lambda f: (asked.append(f), real(f)))
+
+    window._unfinished_action.setChecked(True)
+    assert asked == [2]  # no wait: the toggle is what asked
+    assert window.settings.show_unfinished_frames
+    qtbot.waitUntil(lambda: window._current_frame_number == 2, timeout=5000)
+
+    asked.clear()
+    window._unfinished_action.setChecked(False)
+    assert asked == [1]
+    qtbot.waitUntil(lambda: window._current_frame_number == 1, timeout=5000)
+
+
+def test_the_view_toggle_is_remembered_when_the_window_closes(qtbot):
+    from mainspring.viewer.settings import load_settings
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    assert not window._unfinished_action.isChecked()
+    window._unfinished_action.setChecked(True)
+    window.close()
+    assert load_settings().show_unfinished_frames
+    again = MainWindow()
+    qtbot.addWidget(again)
+    assert again._unfinished_action.isChecked()
+
+
+def test_a_frame_whose_completion_marker_never_came_is_passed_over(newest_window, qtbot):
+    """A power cut between a frame's scans and its marker leaves it provisional for ever
+    (`uimf/writer.py`). `Newest frame` never shows it by itself, which is honest; the
+    frames after it are finished and are shown, and the operator can still step onto it.
+    """
+    window, acquisition, _ = newest_window
+    lost = acquisition.start(method_frame=1, repetition=2, repetitions=3)
+    acquisition.frame(method_frame=1, repetition=3, repetitions=3)
+    qtbot.waitUntil(lambda: window._current_frame_number == 3, timeout=5000)
+    assert window._live.provisional == frozenset({lost})
+
+    window._frame_spin.setValue(lost)
+    qtbot.waitUntil(lambda: window._current_frame_number == lost, timeout=5000)
+    assert window._current_frame.provisional
+
+
+def test_before_any_frame_has_finished_the_screen_waits_and_says_so(qtbot, tmp_path,
+                                                                    quick_poll):
+    """The start of a run, launched by the acquisition software onto a file whose first
+    frame is still being written. Nothing is drawn until it finishes -- the heat map is
+    not blanked and not filled -- and the status bar says why, once."""
+    running = Acquisition(tmp_path / "starting.uimf")
+    window = MainWindow()
+    qtbot.addWidget(window)
+    painted: list = []
+    window.frame_shown.connect(painted.append)
+    try:
+        frame = running.start(scans=SCANS // 2)
+        window.follow_when_opened(show=FOLLOW_NEWEST)
+        window.open_file(running.path, from_command_line=True)
+        qtbot.waitUntil(lambda: window.following, timeout=5000)
+        _looks(window, qtbot)
+        assert painted == []
+        assert "waiting for the first frame to finish" in window.status_text()
+        assert window.status_text().startswith("Following starting.uimf")
+        assert window._follow_mode.currentText() == FOLLOW_NEWEST
+
+        running.append(frame, SCANS // 2)
+        running.finish(frame)
+        qtbot.waitUntil(lambda: bool(painted), timeout=5000)
+        assert window._current_frame_number == 1
+        assert not window._current_frame.provisional
+        result = painted[-1]
+        assert (result.x_range, result.y_range) == result.axes.full_range
+    finally:
+        running.close()
+
+
+def test_live_moving_to_a_run_whose_first_frame_is_filling_keeps_the_last_one_up(
+    qtbot, acquisition, quick_poll, pointer, tmp_path
+):
+    """A `Live` switch onto a run that has begun but not finished a frame: the last run's
+    frame stays on screen, under the new file's name, until the new run has one."""
+    finished = Acquisition(tmp_path / "earlier.uimf")
+    finished.frame()
+    finished.close()
+    window = MainWindow()
+    qtbot.addWidget(window)
+    painted: list = []
+    window.frame_shown.connect(painted.append)
+    window.open_file(finished.path)
+    qtbot.waitUntil(lambda: bool(painted), timeout=5000)
+    window._follow_action.setChecked(True)
+    window._follow_mode.setCurrentText(FOLLOW_NEWEST)
+    qtbot.waitUntil(lambda: window._current_frame_number == 1, timeout=5000)
+    _looks(window, qtbot, count=1)
+    earlier = window._current_frame
+    painted.clear()
+
+    acquisition.start()
+    interface.write_live_pointer(acquisition.path, writer="clockwork")
+    window._live_timer.setInterval(20)
+    qtbot.waitUntil(lambda: window._path == acquisition.path and window.following,
+                    timeout=5000)
+    _looks(window, qtbot)
+    assert window._current_frame is earlier
+    assert painted == []
+    assert "waiting for the first frame to finish" in window.status_text()
+    assert "the run being acquired now" in window.status_text()
+
+    acquisition.finish()
+    qtbot.waitUntil(lambda: bool(painted), timeout=5000)
+    assert window._current_frame is not earlier
+    assert not window._current_frame.provisional
+
+
+def test_the_chromatogram_leaves_out_the_frame_still_being_written(chromatogram_window,
+                                                                   qtbot):
+    """The trace ends at the last finished frame, with no faded tail: a point that is
+    there but means "not yet" is a number someone reads off the axis. The point appears
+    when the frame finishes, at its finished total. The panel still holds the partial
+    total, since the poll's tail rule is unchanged; it is the drawing that leaves it out.
+    """
+    window, running = chromatogram_window
+    running.start(scans=SCANS // 3, method_frame=1, repetition=2, repetitions=3,
+                  start_time_minutes=0.01)
+    qtbot.waitUntil(lambda: 2 in window.chromatogram._stored, timeout=5000)
+    _looks(window, qtbot)
+    assert window.chromatogram.series[0] == (1,)
+    assert "Frame 2 is still being written" in window.chromatogram._readout.text()
+
+    running.finish(2)
+    qtbot.waitUntil(lambda: window.chromatogram.series[0] == (1, 2), timeout=5000)
+    assert dict(zip(*window.chromatogram.series))[2] == pytest.approx(
+        UimfFile(running.path).frame_totals()[2]
+    )
+    assert "still being written" not in window.chromatogram._readout.text()
+
+
+def test_the_view_toggle_puts_the_unfinished_point_back_with_nothing_read(
+    chromatogram_window, qtbot
+):
+    window, running = chromatogram_window
+    running.start(scans=SCANS // 3, method_frame=1, repetition=2, repetitions=3,
+                  start_time_minutes=0.01)
+    qtbot.waitUntil(lambda: 2 in window.chromatogram._stored, timeout=5000)
+    asked: list = []
+    window._worker.chromatogram.connect(lambda *a: asked.append(a))
+    _looks(window, qtbot, count=1)
+    asked.clear()
+
+    window._unfinished_action.setChecked(True)
+    assert window.chromatogram.series[0] == (1, 2)  # no wait, and no query
+    window._unfinished_action.setChecked(False)
+    assert window.chromatogram.series[0] == (1,)
+    assert asked == [] or all(not a[2] for a in asked)  # only the poll's own tails
+
+
+def test_a_run_opened_without_live_is_drawn_whole(qtbot, acquisition):
+    """The rule is about what `Live` puts on screen. A file opened without it has no poll
+    to say which of its frames are finished, so its chromatogram has every point."""
+    from mainspring.viewer.settings import ViewerSettings
+
+    acquisition.frame()
+    acquisition.start()
+    window = MainWindow(ViewerSettings(show_chromatogram=True))
+    qtbot.addWidget(window)
+    window.open_file(acquisition.path)
+    qtbot.waitUntil(lambda: window.chromatogram.series[0] == (1, 2), timeout=5000)
+
+
+def test_stopping_live_draws_every_point_again(chromatogram_window, qtbot):
+    window, running = chromatogram_window
+    running.start(method_frame=1, repetition=2, repetitions=3, start_time_minutes=0.01)
+    qtbot.waitUntil(lambda: 2 in window.chromatogram._stored, timeout=5000)
+    _looks(window, qtbot, count=1)
+    assert window.chromatogram.series[0] == (1,)
+    window._follow_action.setChecked(False)
+    assert window.chromatogram.series[0] == (1, 2)
+
+
+def test_a_frame_holding_a_whole_method_frame_is_shown_filling(qtbot, tmp_path, quick_poll):
+    """A `single_frame` run: one frame per method frame, filling for about a minute.
+    Waiting for it to finish would leave nothing on screen for that minute, so it is drawn
+    filling and labelled, in the heat map and in the chromatogram, toggle or no toggle.
+    The run's first frame is already filling when the launch opens it."""
+    from mainspring.viewer.settings import ViewerSettings
+
+    running = Acquisition(tmp_path / "single.uimf")
+    window = MainWindow(ViewerSettings(show_chromatogram=True))
+    qtbot.addWidget(window)
+    try:
+        frame = running.start(scans=SCANS // 2, method_frame=1, repetitions=100)
+        window.follow_when_opened(show=FOLLOW_NEWEST)
+        window.open_file(running.path, from_command_line=True)
+        qtbot.waitUntil(lambda: window.following, timeout=5000)
+        qtbot.waitUntil(lambda: window._current_frame_number == frame, timeout=5000)
+        assert window._grouping.covers_whole(1)
+        assert window._current_frame.provisional
+        assert window.info_panel._state_label.text() == "still being written"
+        qtbot.waitUntil(lambda: "still being written" in window.status_text(), timeout=5000)
+        qtbot.waitUntil(lambda: window.chromatogram.series[0] == (frame,), timeout=5000)
+
+        partial = len(window._current_frame)
+        running.append(frame, SCANS // 2)
+        qtbot.waitUntil(lambda: len(window._current_frame) > partial, timeout=5000)
+        running.finish(frame)
+        qtbot.waitUntil(lambda: not window._current_frame.provisional, timeout=5000)
+        assert window._current_frame_number == frame
+    finally:
+        running.close()
+

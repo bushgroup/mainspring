@@ -42,6 +42,8 @@ The gestures, which are the projections' contract one plot over:
 
 from __future__ import annotations
 
+from typing import Iterable
+
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
@@ -288,6 +290,12 @@ class ChromatogramPanel(QDockWidget):
         self._band_range: "tuple[float, float] | None" = None
         self._vertical = False
         self._restricted = False
+        # Frames held back from the trace while they are still being written. A filter
+        # over what is drawn rather than over what is kept: `_stored` stays the file's
+        # whole answer, so a frame comes back the moment it finishes, or the moment the
+        # window says to show unfinished ones, with nothing read again (`hide_frames`).
+        self._hidden: frozenset[int] = frozenset()
+        self._held_back: tuple[int, ...] = ()
 
         container = QWidget(self)
         self._container = container
@@ -443,6 +451,7 @@ class ChromatogramPanel(QDockWidget):
         self._minutes = None
         self._span_frame = None
         self._restricted = False
+        self._hidden = frozenset()
         self.clear_band()
         self._restrict_box.blockSignals(True)
         self._restrict_box.setChecked(False)
@@ -455,6 +464,7 @@ class ChromatogramPanel(QDockWidget):
         start_times: "dict[int, float]",
         *,
         replace: bool = True,
+        hide: "Iterable[int] | None" = None,
     ) -> None:
         """Show the file's own per-frame totals, replacing what is there or adding to it.
 
@@ -466,12 +476,36 @@ class ChromatogramPanel(QDockWidget):
         The start times merge either way, because a frame's start time is written once
         and never changes: a `replace` here is a re-read of the same file rather than a
         different one, and a different file goes through `clear` first.
+
+        `hide`, when given, replaces the set `hide_frames` holds, in the same redraw as
+        the totals. That is the poll's form too: a frame that has just finished and the
+        one that has just begun change places in one step, rather than the finished
+        frame's last partial total being drawn for the moment between two calls.
         """
         if replace:
             self._stored = dict(totals)
         else:
             self._stored.update(totals)
         self._times.update(start_times)
+        if hide is not None:
+            self._hidden = frozenset(int(frame) for frame in hide)
+        self._resolve()
+
+    def hide_frames(self, frames: "Iterable[int]") -> None:
+        """Leave these frames off the trace, keeping their totals for when they return.
+
+        The window hands in the frames still being written while it follows a run with
+        `View > Show frames still being written` unticked, and an empty set otherwise
+        (lab record, task 40). The trace then ends at the last finished frame: no faded
+        tail and no placeholder, because a point that is there but means "not yet" is a
+        number someone reads off the axis. Everything that reads the trace -- `series`,
+        the band's frames, a click's frame, the readout -- reads what is drawn, so a
+        hidden frame cannot be selected for a sum either.
+        """
+        hidden = frozenset(int(frame) for frame in frames)
+        if hidden == self._hidden:
+            return
+        self._hidden = hidden
         self._resolve()
 
     def set_restricted(self, totals: "dict[int, float]") -> None:
@@ -494,8 +528,12 @@ class ChromatogramPanel(QDockWidget):
         self._resolve()
 
     def _resolve(self) -> None:
-        """Settle which source is being drawn, and redraw from it."""
-        self._totals = self._walked if self._restricted else self._stored
+        """Settle which source is being drawn, less any frame held back, and redraw."""
+        source = self._walked if self._restricted else self._stored
+        held = self._hidden.intersection(source)
+        self._held_back = tuple(sorted(held))
+        self._totals = ({f: v for f, v in source.items() if f not in held} if held
+                        else source)
         self._frames = tuple(sorted(self._totals))
         self._minutes = elapsed_minutes(self._frames, self._times)
         self._redraw()
@@ -713,8 +751,13 @@ class ChromatogramPanel(QDockWidget):
 
     def _describe(self) -> None:
         """One line under the controls: what the trace is, and what the band covers."""
+        held = ""
+        if self._held_back:
+            which = (f"Frame {self._held_back[0]} is" if len(self._held_back) == 1
+                     else f"Frames {self._held_back[0]} to {self._held_back[-1]} are")
+            held = f"{which} still being written and not drawn yet."
         if not self._frames:
-            self._readout.setText("No file open.")
+            self._readout.setText(held or "No file open.")
             return
         source = ("summed over the heatmap's view" if self._restricted
                   else "the file's own per-frame totals")
@@ -723,6 +766,8 @@ class ChromatogramPanel(QDockWidget):
         if self._minutes is None:
             note = ", because this file records no frame start times"
         parts = [f"{len(self._frames):,} frames, {source}, against {axis}{note}."]
+        if held:
+            parts.append(held)
         frames = self.selected_frames()
         if frames:
             total = sum(self._totals[frame] for frame in frames)

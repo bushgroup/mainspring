@@ -174,7 +174,8 @@ image it belongs to would no longer describe it.
 | `Ctrl+I` | Show or hide the info panel |
 
 All three are on the menu bar as well: `Open` under `File`, and `Reset view`, `Info`,
-`Light mode`, `Color map`, `Color scale` and `Text size` under `View`. `Aggregate`, `Type`
+`Light mode`, `Color map`, `Color scale`, `Text size` and `Show frames still being written`
+under `View`. `Aggregate`, `Type`
 and `Bits` are under `Data settings`. There is no context menu on the heat map, because the right button is a
 zoom gesture.
 
@@ -245,6 +246,19 @@ choice.
 Reach for it on a large monitor, or on an instrument PC you read from across the bench. The
 viewer's type was sized for a 1000 by 700 window at 96 dpi and does not follow the window on
 its own.
+
+### Show frames still being written
+
+Decides whether `Live` draws the frame the instrument is writing at this moment, in `Newest
+frame` and in the chromatogram. It is off by default, so both wait for each frame to finish and
+then show it whole. Tick it to watch each frame fill as its scans arrive, labelled `still being
+written` until it is done. The viewer remembers the choice, and it takes effect on the frames
+already found rather than at the next one.
+
+It governs only what `Live` puts on screen by itself. Stepping onto the unfinished frame with
+`Frame` shows it whatever this says, and a file opened without `Live` is drawn whole. A frame
+that holds a whole method frame is shown filling whatever this says, because waiting for it
+would leave nothing on screen for the minute it takes.
 
 ## The Data settings menu
 
@@ -423,9 +437,15 @@ between polls is the whole of the delay you see.
   the repetition count beside `Rep` grows, and the frame on screen stays the frame you chose.
   This is the default, and it is what you want while studying one frame of a run that is still
   going.
-- **`Newest frame`** moves to each frame as it arrives, including the frame being written at
-  this moment. A frame is about one second of acquisition and its scans reach the file in
-  batches, so the frame fills in front of you rather than appearing whole.
+- **`Newest frame`** moves to each frame as soon as it is finished, and shows it whole. A
+  frame is about one second of acquisition and its scans reach the file in arrival-time order,
+  so a frame shown while it filled would be mostly empty: on two bradykinin runs of 100 frames,
+  a frame with half its scans written held a median 0.1 per cent of its final signal. Until the
+  first frame of a run has finished, the view stays as it is and the status bar says the viewer
+  is waiting for that frame. To watch each frame fill instead, tick `View > Show frames still
+  being written`. A frame that holds a whole method frame, which is what a clockwork run in
+  `single_frame` mode writes, fills for about a minute rather than a second, so it is shown
+  filling either way.
 - **`Method frame sum`** keeps a running total of the finished repetitions of the method frame
   being acquired, which is the summed heat map a finished file holds. It appears only on a file
   that records how its frames group, which today means a file clockwork wrote. The total is
@@ -438,8 +458,9 @@ between polls is the whole of the delay you see.
   that many frames is summed as far as it goes, and the status bar says how many frames went
   in.
 
-The two sums leave out the frame being written, for the same reason: a total that included it
-would change every time it was recomputed and would settle on wherever you happened to stop.
+The two sums always leave out the frame being written, whatever `View > Show frames still being
+written` says, because a total that included it would change every time it was recomputed and
+would settle on wherever you happened to stop.
 Each is recomputed only when the set of frames it covers has changed, so a poll that finds
 nothing new costs one query and no reading.
 
@@ -497,19 +518,24 @@ were trying to look at.
 
 ### Frames that are not finished yet
 
-A frame the instrument may still be adding scans to is drawn like any other and labelled
-`still being written`, in the status bar under the plot and beside `Frame:` in the info panel.
-The viewer never keeps such a frame in its cache, so every poll reads what is actually in the
-file rather than what was there a second ago.
+A frame the instrument may still be adding scans to reaches the screen in two ways: you step
+onto it with `Frame`, or `Live` draws it because `View > Show frames still being written` is
+ticked. Either way it is drawn like any other and labelled `still being written`, in the status
+bar under the plot and beside `Frame:` in the info panel. The viewer never keeps such a frame in
+its cache, so every poll reads what is actually in the file rather than what was there a second
+ago.
 
 A file clockwork wrote says frame by frame when a frame is finished, so the label is exact. No
 other writer records it, and on their files the viewer falls back to treating the last frame of
-a recently written file as unfinished. That fallback errs towards saying `still being written`
-about a frame that is in fact complete, which costs a re-read and nothing else.
+a recently written file as unfinished, until the file has gone five seconds without being
+written to. That fallback errs towards saying `still being written` about a frame that is in
+fact complete. On such a file `Newest frame` therefore runs one frame behind the instrument, and
+shows the last frame of a run five seconds after the run stops.
 
 A frame whose completion was lost to a power failure reads as unfinished for good. That is
 honest rather than a defect, because such a frame may well be short. Its data are intact and
-every frame before it reads as complete.
+every frame before it reads as complete. `Newest frame` never shows it by itself, and `Frame`
+still reaches it.
 
 ### When the run ends and the file goes
 
@@ -680,6 +706,14 @@ looking at rather than to the last frame written. A run of a hundred repetitions
 a hundred long from its first frame onward, and fills as the instrument writes it, instead of
 rescaling every second so that every moment of the run looks the same.
 
+While `Live` is on, the trace ends at the last finished frame and gains a point as each frame
+finishes, at that frame's finished total. The frame being written is left off, and the line under
+the controls names it. A point drawn for it would sit near zero for the first half of every
+second, since that is when the frame's early, empty arrival times are written. Tick `View > Show
+frames still being written` to draw it with its total so far. A frame that holds a whole method
+frame is drawn with its total so far either way. A file opened without `Live` has
+every point drawn, its newest included.
+
 ### Highlighting a span
 
 Drag with the right button, or hold Shift and drag with the left, to highlight a span of the
@@ -709,8 +743,8 @@ come straight back, with nothing to re-read.
 
 `Restrict to view` is greyed out while `Live` is on. Reading every frame of a file would delay
 the poll that is watching for the next one, and the frame the instrument is writing is the more
-urgent of the two. Note that the panel still fills during a run either way: each finished frame
-adds a point, and the frame being written shows its total so far and settles when it is done.
+urgent of the two. Note that the panel still fills during a run either way, a point for each
+finished frame.
 
 ## Exporting a figure
 
@@ -749,7 +783,7 @@ figure's own size in inches.
 
 Every toolbar toggle, the color map, the color scale, light mode, the text size, the
 aggregate, the detector bit depth, whether clipping is counted across the file, how many
-frames `Sum newest frames` adds up, whether the
+frames `Sum newest frames` adds up, whether frames still being written are shown, whether the
 info panel is showing and how wide it is, whether the chromatogram is showing and which edge it
 is docked on, the export resolution, the window's size and position, and the directory you last
 opened from are all saved when the viewer closes and restored when it starts. On Windows they live under

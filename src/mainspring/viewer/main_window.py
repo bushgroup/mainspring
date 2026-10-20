@@ -205,10 +205,12 @@ FOLLOW_MODES = (FOLLOW_FIXED, FOLLOW_NEWEST, FOLLOW_METHOD_SUM, FOLLOW_ROLLING_S
 
 `Fixed frame` watches and does not move: the frame spinner's range, the type filter and
 the repetition count grow under a frame the operator chose, which is what someone
-studying one experiment while the run continues wants. `Newest frame` shows each frame
-as it arrives, the one still being written included and labelled as such -- a frame is
-about a second of acquisition and its scans land in batches, so it fills in front of
-the operator rather than appearing whole. `Method frame sum` keeps a running total of
+studying one experiment while the run continues wants. `Newest frame` moves to each
+frame once it is finished: a frame is about a second of acquisition, its scans land in
+arrival-time order, and a peptide's arrive in the second half of them, so a frame shown
+while it filled was an empty heat map for most of every second (Matt, 2026-10-20, lab
+record, task 40). `View > Show frames still being written` puts back the frame being
+written, labelled as such, filling in front of the operator. `Method frame sum` keeps a running total of
 the finished repetitions of the method frame being acquired, which is the summed
 heatmap today's files hold, arriving as it is earned; it is the one entry offered only
 on a file that carries the grouping (lab record, task 08). `Sum newest frames` totals
@@ -412,6 +414,15 @@ class MainWindow(QMainWindow):
         self._sum_dialog: QProgressDialog | None = None
         self._live: LiveState | None = None
         self._live_sum_frames: tuple[int, ...] = ()
+        # What `Newest frame` last put on screen by itself while unfinished frames are
+        # held back, and whether it has already said it is waiting for one to finish.
+        # Both are forgotten whenever the rule they serve could give a different answer:
+        # a follow starting or stopping, `Show` moving, the View toggle (`_show_newest`).
+        self._live_newest: int | None = None
+        self._live_waiting = False
+        # The sentence a follow started with, which the waiting line extends rather than
+        # replaces: "Following X, the run being acquired now" is why the window moved.
+        self._follow_line = ""
         self._launch_follow = False
         self._launch_show: str | None = None
         # A switch from one run to the next is an open, and an open stops following;
@@ -677,6 +688,20 @@ class MainWindow(QMainWindow):
             checked=self.settings.raw_units,
             toggled=self._on_raw_units_toggled,
         )
+        # A View entry rather than a third state of `Show`: it applies to two plots at
+        # once, the heat map under `Newest frame` and the chromatogram, and it is a way
+        # of watching that is set once and left (Matt, 2026-10-20, lab record, task 40).
+        # The words are the info panel's own for a frame that is not finished.
+        self._unfinished_action = make_action(
+            self,
+            "Show &frames still being written",
+            tip="While Live is on, draw the frame the instrument is still writing, in"
+                " Newest frame and in the chromatogram, instead of waiting for it to"
+                " finish.",
+            checkable=True,
+            checked=self.settings.show_unfinished_frames,
+            toggled=self._on_show_unfinished_toggled,
+        )
         view_menu = self.menuBar().addMenu("&View")
         view_menu.addAction(self.reset_action)
         view_menu.addAction(self._info_action)
@@ -688,6 +713,8 @@ class MainWindow(QMainWindow):
         self._build_color_map_menu(view_menu)
         self._build_color_scale_menu(view_menu)
         self._build_text_size_menu(view_menu)
+        view_menu.addSeparator()
+        view_menu.addAction(self._unfinished_action)
         self._build_data_menu()
 
         # Last on the bar, as Help is everywhere. `&H` was the only free mnemonic after
@@ -1373,8 +1400,10 @@ class MainWindow(QMainWindow):
             self._enable_follow_controls(False)
             self._live = None
             self._live_sum_frames = ()
+            self._forget_newest()
             self._worker.set_follow(False)
             self.chromatogram.set_restrict_enabled(True)
+            self.chromatogram.hide_frames(())
             self._show_file_clipping()
             if not self._live_switching:
                 self._live_timer.stop()
@@ -1411,6 +1440,7 @@ class MainWindow(QMainWindow):
         self._enable_follow_controls(True)
         self._clear_offer()
         self._live_sum_frames = ()
+        self._forget_newest()
         # The view-restricted walk reads every frame of the file, and a poll that has to
         # wait behind one is a poll that misses the frame it was watching for. The
         # stored totals are what a followed run's trace is made of, and they are one
@@ -1432,7 +1462,8 @@ class MainWindow(QMainWindow):
         # different weight (`_live_target`).
         found, self._live_found = self._live_found, ""
         name = os.path.basename(self._path)
-        self._show_status(f"Following {name}, {found}" if found else f"Following {name}")
+        self._follow_line = f"Following {name}, {found}" if found else f"Following {name}"
+        self._show_status(self._follow_line)
 
     def _live_target(self) -> "tuple[str, str] | None":
         """The file `Live` should be on, and how it was found. `None` for nothing to follow.
@@ -1660,8 +1691,58 @@ class MainWindow(QMainWindow):
         way, by forgetting what it last added up.
         """
         self._live_sum_frames = ()
+        self._forget_newest()
         if self.following and self._live is not None:
             self._act_on_live_state(self._live)
+
+    def _on_show_unfinished_toggled(self, checked: bool) -> None:
+        """`View > Show frames still being written`: act on the poll already in hand.
+
+        The rolling-sum spinner's rule, for its reason: a control that took effect only
+        when the next frame happened to finish would read as one that does nothing. The
+        heat map moves at once if `Show` is `Newest frame`, and the chromatogram gains or
+        loses its unfinished point with nothing read again (`ChromatogramPanel.hide_frames`).
+        """
+        self.settings.show_unfinished_frames = bool(checked)
+        self._forget_newest()
+        self.chromatogram.hide_frames(self._unfinished_hidden())
+        if (self.following and self._live is not None
+                and self._follow_mode.currentText() == FOLLOW_NEWEST):
+            self._act_on_live_state(self._live)
+
+    def _forget_newest(self) -> None:
+        """Re-arm `Newest frame`, so that its next look shows its target and says so."""
+        self._live_newest = None
+        self._live_waiting = False
+
+    def _unfinished_hidden(self) -> "frozenset[int]":
+        """The frames the chromatogram leaves out: unfinished ones, while `Live` is on.
+
+        Only while following, on the line the heat map's rule is drawn on too: the
+        setting governs what `Live` puts on screen by itself. A file open without `Live`
+        is drawn whole, its newest point included, as it always was -- no poll is running
+        to say which of its frames are finished, and asking the file on every open would
+        be a question about a run nobody said they were watching (lab record, task 40).
+        """
+        if (self.following and self._live is not None
+                and not self.settings.show_unfinished_frames):
+            return frozenset(f for f in self._live.provisional if not self._fills_whole(f))
+        return frozenset()
+
+    def _fills_whole(self, frame: int) -> bool:
+        """Whether `frame` holds a whole method frame, every repetition in one frame.
+
+        What a clockwork run in `repetition_mode = "single_frame"` writes: one frame that
+        fills for as long as the method frame lasts, about a minute, against the 0.7 s of
+        a per-repetition frame. Holding such a frame back until it finished would leave
+        nothing on screen for the whole of it, which is why clockwork launches those runs
+        in `Newest frame` (its `SHOW_FOR_MODE`). So a frame like this is shown filling,
+        labelled, whatever the View toggle says, in the heat map and in the chromatogram
+        alike (Matt, 2026-10-20, lab record, task 40). A file with no grouping, which is
+        every file PNNL's writers produce, answers no.
+        """
+        method_frame = self._grouping.method_frame.get(int(frame))
+        return method_frame is not None and self._grouping.covers_whole(method_frame)
 
     def _on_rolling_sum_frames_changed(self, value: int) -> None:
         """Re-total at the new length straight away, rather than at the next frame.
@@ -1744,6 +1825,8 @@ class MainWindow(QMainWindow):
         self._live_found = ""
         self._live = None
         self._live_sum_frames = ()
+        self._forget_newest()
+        self.chromatogram.hide_frames(())
         self._show_file_clipping()
         if not gone:
             self._show_status(f"Stopped following: {message}", sticky=True)
@@ -1820,21 +1903,74 @@ class MainWindow(QMainWindow):
             return
         mode = self._follow_mode.currentText()
         if mode == FOLLOW_NEWEST:
-            # The newest frame, not the newest *finished* one: a frame is about a second
-            # of acquisition and its scans arrive in batches, so following the finished
-            # ones would show each experiment whole and one second stale instead of
-            # filling. It is never cached while it is unfinished (`FrameCache.put`), so
-            # every poll re-reads it and sees what has been added.
-            self.show_frame(state.frames[-1])
+            self._show_newest(state)
         elif mode == FOLLOW_METHOD_SUM:
             self._sum_live_method_frame(state)
         elif mode == FOLLOW_ROLLING_SUM:
             self._sum_live_newest_frames(state)
 
+    def _show_newest(self, state: LiveState) -> None:
+        """`Newest frame`: the newest finished frame, or with the View toggle the newest.
+
+        **Finished frames only, by default** (Matt, 2026-10-20, lab record, task 40). A
+        frame's scans land in arrival-time order and the analytes arrive late in them,
+        so a frame half written holds about a thousandth of its signal; following the
+        frame being written put an empty heat map in front of the operator for most of
+        every second. The cost is that each frame appears whole and about one frame
+        late, which is what was asked for.
+
+        **Shown only when that target changes.** The poll reports every look while a
+        frame is still being written, and the finished frame does not change between
+        them, so re-showing it would be a read and a repaint a second for nothing -- and
+        would pull back an operator who had stepped to another frame by hand before the
+        next frame finished.
+
+        **Before any frame has finished**, the screen is left as it is and the status bar
+        says what is being waited for, once: the start of a run, or a `Live` switch onto
+        a new one. Blanking the heat map would throw away the last run's view in exchange
+        for nothing to look at.
+
+        **A frame that holds a whole method frame is shown filling regardless**, since it
+        is a minute of acquisition rather than a second, and waiting for it would leave
+        nothing on screen for the whole of that minute (`_fills_whole`).
+
+        With `View > Show frames still being written` ticked, the newest frame on every
+        poll, as before task 40: it is never cached while it is unfinished
+        (`FrameCache.put`), so each poll re-reads it and sees what has been added, and
+        `_show_frame` labels it.
+        """
+        if self.settings.show_unfinished_frames:
+            self.show_frame(state.frames[-1])
+            return
+        newest = state.frames[-1]
+        if newest in state.provisional and self._fills_whole(newest):
+            # A whole method frame filling for a minute (`_fills_whole`): the view as it
+            # was before task 40, re-read each poll. Forgetting the target is what makes
+            # the finished frame be shown once more when it settles, now complete.
+            self._forget_newest()
+            self.show_frame(newest)
+            return
+        final = state.final
+        if not final:
+            if not self._live_waiting:
+                self._live_waiting = True
+                # Sticky because it is a state rather than an event: it is true until a
+                # frame finishes, and that frame's own line is what displaces it.
+                self._show_status(
+                    f"{self._follow_line or 'Following'} -- waiting for the first frame"
+                    " to finish", sticky=True,
+                )
+            return
+        if final[-1] == self._live_newest:
+            return
+        self._live_newest = final[-1]
+        self._live_waiting = False
+        self.show_frame(final[-1])
+
     def _sum_live_method_frame(self, state: LiveState) -> None:
         """Re-total the method frame being acquired, but only when it has gained one.
 
-        Only the **finished** repetitions, unlike `Newest frame` above: a total that
+        Only the **finished** repetitions, whatever the View toggle says: a total that
         included a frame still being written would change every time it was recomputed
         and would settle on whatever the operator happened to stop at. And only when the
         set has changed, because a hundred-frame method frame is 0.2 s of reading (lab
@@ -2054,7 +2190,11 @@ class MainWindow(QMainWindow):
         during a walk updates the series the user will see when they untick rather than
         landing among the walk's numbers.
         """
-        self.chromatogram.set_series(totals, start_times, replace=replace_series)
+        # The frames to leave out are handed in with the totals rather than at the poll:
+        # the poll's own update arrives just before its tail, so the frame that has just
+        # finished gets its final total and its place on the trace in one redraw.
+        self.chromatogram.set_series(totals, start_times, replace=replace_series,
+                                     hide=self._unfinished_hidden())
         self._sync_chromatogram_span()
 
     def _on_restricted(
@@ -2254,8 +2394,30 @@ class MainWindow(QMainWindow):
         # the other one, a file that had no frames when it was opened and whose first
         # frame arrives from the follow poll instead (lab record, task 26).
         first = self._opening or not self._shown_this_file
+        if (self._opening and sparse_frame.provisional
+                and self._launch_holds_unfinished(frame_number)):
+            # A `Live` switch or a launch onto a run whose first frame is still being
+            # written, in `Newest frame` with unfinished frames held back: this is `Live`
+            # putting a frame on screen by itself, so the open finishes the way an open
+            # of a file with no frames does -- whatever is on screen stays, and the
+            # follow it was opened for says it is waiting (`_show_newest`).
+            self._busy.hide()
+            self._opening = False
+            self._apply_launch_options()
+            return
         reset = (not self.settings.keep_ranges) if first else False
         self._show_frame(frame_number, sparse_frame, frame_params, reset=reset)
+
+    def _launch_holds_unfinished(self, frame: int) -> bool:
+        """Whether the open in flight is one `Newest frame` will follow with `frame` held
+        back. Only an open `follow_when_opened` asked for: a file the operator opened by
+        hand shows its first frame, finished or not, and labelled. Never a frame that
+        holds a whole method frame, which `Newest frame` shows filling (`_fills_whole`)."""
+        if not self._launch_follow or self.settings.show_unfinished_frames:
+            return False
+        if self._fills_whole(frame):
+            return False
+        return (self._launch_show or self._follow_mode.currentText()) == FOLLOW_NEWEST
 
     def _show_frame(
         self,
@@ -2287,11 +2449,12 @@ class MainWindow(QMainWindow):
         self._shown_this_file = True
         self._serial += 1
         self.info_panel.set_file(self._global, frame_params)
-        # A frame the instrument may still be adding scans to is drawn, and said to be
-        # unfinished in both places a user looks: the status line under it and the panel
-        # beside it. Drawing it is the point -- an experiment filling in front of the
-        # operator is the live view worth having -- but a partial frame quoted as a
-        # finished one is a number that will be wrong by the time it is written down.
+        # A frame the instrument may still be adding scans to is said to be unfinished
+        # in both places a user looks: the status line under it and the panel beside it.
+        # It reaches here when the operator steps onto it, or when `Live` is drawing
+        # frames still being written (`_show_newest`), and either way a partial frame
+        # quoted as a finished one is a number that will be wrong by the time it is
+        # written down.
         self.info_panel.set_frame_state(sparse_frame.provisional)
         self._show_frame_clipping()
         unfinished = " -- still being written" if sparse_frame.provisional else ""

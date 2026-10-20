@@ -721,10 +721,11 @@ class LiveState:
 
         What a running total is allowed to add up: a sum that included a frame still
         being written would change under the user every time it was recomputed, and the
-        answer it settled on would depend on when they stopped looking. Showing a single
-        provisional frame is a different matter and is deliberately allowed -- a frame
-        filling in front of the operator is the live view worth having, and it is
-        labelled as unfinished while it fills.
+        answer it settled on would depend on when they stopped looking. It is also what
+        the viewer's `Newest frame` follows by default: a frame half written holds
+        little of its signal, since its scans land in arrival-time order. Showing a
+        single provisional frame is still allowed, labelled as unfinished, for a caller
+        that asks for it.
         """
         return tuple(n for n in self.frames if n not in self.provisional)
 

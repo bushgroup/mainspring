@@ -1628,6 +1628,7 @@ def main() -> int:
         FOLLOW_METHOD_SUM,
         FOLLOW_MODE_WORDS,
         FOLLOW_MODES,
+        FOLLOW_NEWEST,
         FOLLOW_ROLLING_SUM,
     )
 
@@ -1752,6 +1753,33 @@ def main() -> int:
                 check_true(f"a poll that finds nothing new re-totals nothing (polls: {len(polls)})",
                            len(polls) >= 3 and len(sums) == already
                            and window._live_sum_frames == (3, 4))
+
+                # What `Live` puts on screen by itself is finished, by default: a frame's
+                # scans land in arrival-time order, so one half written is an empty heat
+                # map (lab record, task 40). The window was built from this machine's
+                # own settings, so the toggle is set here and put back afterwards.
+                theirs = window._unfinished_action.isChecked()
+                window._unfinished_action.setChecked(False)
+                window._follow_mode.setCurrentText(FOLLOW_NEWEST)
+                check_true("Newest frame lands on the newest finished frame",
+                           settled(lambda: window._current_frame_number == 4))
+                written(finish=False)
+                settled(lambda: window._frame_spin.maximum() == 5)
+                settled(lambda: False, seconds=0.1)  # a frame shown by a poll would land here
+                check_true("and stays there while the next one is still being written",
+                           window._frame_spin.maximum() == 5
+                           and window._current_frame_number == 4)
+                window._unfinished_action.setChecked(True)
+                check_true("View > Show frames still being written puts that one on screen,"
+                           " labelled",
+                           settled(lambda: window._current_frame_number == 5)
+                           and "still being written" in window.status_text())
+                window._unfinished_action.setChecked(False)
+                handle.finalise_frame(5, duration_s=0.5)
+                check_true("and unticked, a frame is shown once it is finished",
+                           settled(lambda: window._current_frame_number == 5
+                                   and not window._current_frame.provisional))
+                window._unfinished_action.setChecked(theirs)
 
                 window.stop_following()
                 check_true("stopping the follow greys the two controls that answer to"

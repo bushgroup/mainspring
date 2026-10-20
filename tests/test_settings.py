@@ -108,6 +108,7 @@ def test_settings_round_trip_through_qsettings():
         cache_budget_mb=256,
         arrival_offset_ms=-42.5,
         rolling_sum_frames=25,
+        show_unfinished_frames=True,
         last_directory="F:/data/acquisitions",
         window_geometry=b"\x00binary-ish\x01geometry\x02bytes\x03",
     )
@@ -214,3 +215,17 @@ def test_restrict_to_view_is_not_a_persisted_setting():
     file, and a persisted one would start a walk over every frame of every file the
     viewer was ever pointed at."""
     assert not any("restrict" in name for name in vars(ViewerSettings()))
+
+
+def test_frames_still_being_written_are_held_back_by_default_and_the_choice_persists():
+    """`View > Show frames still being written` starts unticked and is remembered.
+
+    Unticked because a frame half written is an empty heat map and a chromatogram point
+    near zero (Matt, 2026-10-20, lab record, task 40); remembered, unlike `Live`, because
+    it is how someone likes to watch rather than anything about one file.
+    """
+    assert ViewerSettings().show_unfinished_frames is False
+    save_settings(ViewerSettings(show_unfinished_frames=True))
+    assert load_settings().show_unfinished_frames is True
+    save_settings(ViewerSettings(show_unfinished_frames=False))
+    assert load_settings().show_unfinished_frames is False

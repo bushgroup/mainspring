@@ -32,6 +32,14 @@ that matters more than it looks:
   Persisted, unlike `Restrict to view`, because it is a way of working: some days the
   count has to stay on for hours of acquisitions and other days nobody needs it (lab
   record, task 36).
+* **`show_unfinished_frames` defaults off, and is persisted although `Follow` is not.**
+  Off, `Live` puts a frame on screen by itself only once it is finished, in `Newest
+  frame` and in the chromatogram. A frame's scans land in arrival-time order and a
+  peptide's arrive in the second half of them, so a frame half written holds about a
+  thousandth of its signal: the filling view spent most of each second on an empty heat
+  map and a point near zero (Matt, 2026-10-20, reversing task 08's default). Persisted
+  for `rolling_sum_frames`'s reason: it is how someone likes to watch a run, not
+  anything about one file (lab record, task 40).
 
 Plain dataclass, no Qt in the type itself, so a test can exercise the defaults and the
 round trip without a `QApplication`. `load_settings`/`save_settings` are the only two
@@ -185,6 +193,7 @@ class ViewerSettings:
     arrival_offset_ms: float = 0.0
     rolling_sum_frames: int = 5
     count_clipping: bool = False
+    show_unfinished_frames: bool = False
     last_directory: str = ""
     window_geometry: bytes = b""
 
@@ -291,6 +300,8 @@ def load_settings() -> ViewerSettings:
         rolling_sum_frames=_as_int(store.value("rolling_sum_frames", defaults.rolling_sum_frames),
                                     defaults.rolling_sum_frames),
         count_clipping=_as_bool(store.value("count_clipping", defaults.count_clipping)),
+        show_unfinished_frames=_as_bool(store.value("show_unfinished_frames",
+                                                    defaults.show_unfinished_frames)),
         last_directory=str(store.value("last_directory", defaults.last_directory)),
         window_geometry=_as_bytes(store.value("window_geometry", defaults.window_geometry)),
     )
@@ -324,6 +335,7 @@ def save_settings(settings: ViewerSettings) -> None:
     store.setValue("arrival_offset_ms", settings.arrival_offset_ms)
     store.setValue("rolling_sum_frames", settings.rolling_sum_frames)
     store.setValue("count_clipping", settings.count_clipping)
+    store.setValue("show_unfinished_frames", settings.show_unfinished_frames)
     # Written under the new spelling, and the old key removed in the same pass, so a
     # settings store upgraded by this version carries one key per setting rather than
     # two that could drift apart.
