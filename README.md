@@ -12,11 +12,17 @@ instrument writes UIMF.
 
 ## Status
 
-Version 1.13.1. The reader layer, the viewer, and the Windows installer are written and
+Version 1.14.0. The reader layer, the viewer, and the Windows installer are written and
 verified, and the development record lives in a private companion repository. This release
-corrects where peaks fall in files written by PNNL's acquisition software. After a run of
-32,768 empty bins, that software writes an extra zero that its own library skips on reading,
-and earlier versions of mainspring read the zero as a bin, so every peak after it in the scan
+shows a run being acquired one finished frame at a time. A frame's scans reach the file in
+arrival-time order, so a frame half written holds about 0.1 per cent of its signal, and
+following it as it filled put an empty heat map on screen for most of every second. `Newest
+frame` and the chromatogram now wait for each frame to finish, and `View > Show frames still
+being written` brings the filling view back.
+
+Since 1.13.0, peaks fall where they should in files written by PNNL's acquisition software.
+After a run of 32,768 empty bins, that software writes an extra zero that its own library skips
+on reading, and earlier versions of mainspring read the zero as a bin, so every peak after it in the scan
 sat one bin too high, up to three bins on the files we have, i.e., about 0.1 at m/z 530 on
 SLIMPHONY. Peaks now fall where each scan's stored base peak m/z puts them, whereas
 intensities, total ion current, sums and clipping counts are unchanged, as is everything read
@@ -98,7 +104,7 @@ time-of-flight bins, which on the Bush lab's instrument would be 2.3 GB for a si
 To use the reader from another project, install mainspring from a release tag:
 
 ```
-pip install "mainspring[fast] @ git+https://github.com/bushgroup/mainspring@v1.13.1"
+pip install "mainspring[fast] @ git+https://github.com/bushgroup/mainspring@v1.14.0"
 ```
 
 The same requirement string works as a dependency in another project's `pyproject.toml`,
