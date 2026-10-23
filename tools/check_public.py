@@ -1304,7 +1304,18 @@ def main() -> int:
             importlib.import_module(f"mainspring.viewer.{name}") is not None,
         )
 
+    from PySide6.QtCore import QSettings
     from PySide6.QtWidgets import QApplication
+
+    # Every window below loads its preferences on construction and saves them on close,
+    # through `QSettings` -- the Windows registry, the same store the installed viewer on
+    # this machine reads. Redirected the way `tests/conftest.py` does it, to an ini file
+    # in a directory of the check's own, so that a self-check run on an instrument PC
+    # leaves the operator's viewer as it found it, and so that what the windows here
+    # start from is the defaults rather than whatever that operator last chose.
+    settings_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+    QSettings.setDefaultFormat(QSettings.Format.IniFormat)
+    QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, settings_dir.name)
 
     from mainspring.viewer import fonts, theme
     from mainspring.viewer.controls import unexplained
@@ -1383,10 +1394,11 @@ def main() -> int:
         # The clipping rows, read as an operator reads them, on the file whose every point
         # is known: the stored 16-bit full scale named with the 14 bits it came from, the
         # raw maximum, the frame's count, and the file's once it is switched on. Settings
-        # passed in rather than loaded, and the window never closed, so this touches no
-        # store of anybody's real preferences (lab record, task 36). Its threads are
-        # stopped all the same: left running, they abort the interpreter on its way out,
-        # and the exit status stops saying what the summary says.
+        # passed in rather than loaded, and the window never closed, so the clipping
+        # count it switches on is never saved for the windows after it to load (lab
+        # record, task 36). Its threads are stopped all the same: left running, they
+        # abort the interpreter on its way out, and the exit status stops saying what
+        # the summary says.
         from mainspring.viewer.settings import ViewerSettings
         from synthetic import write_clipping_uimf
 
@@ -1759,9 +1771,8 @@ def main() -> int:
 
                 # What `Live` puts on screen by itself is finished, by default: a frame's
                 # scans land in arrival-time order, so one half written is an empty heat
-                # map (lab record, task 40). The window was built from this machine's
-                # own settings, so the toggle is set here and put back afterwards.
-                theirs = window._unfinished_action.isChecked()
+                # map (lab record, task 40). Set rather than assumed, so the scene does
+                # not depend on what an earlier window saved.
                 window._unfinished_action.setChecked(False)
                 window._follow_mode.setCurrentText(FOLLOW_NEWEST)
                 check_true("Newest frame lands on the newest finished frame",
@@ -1782,7 +1793,6 @@ def main() -> int:
                 check_true("and unticked, a frame is shown once it is finished",
                            settled(lambda: window._current_frame_number == 5
                                    and not window._current_frame.provisional))
-                window._unfinished_action.setChecked(theirs)
 
                 window.stop_following()
                 check_true("stopping the follow greys the two controls that answer to"
@@ -1944,6 +1954,11 @@ def main() -> int:
         if isinstance(leftover, MainWindow) and (leftover._worker.isRunning()
                                                  or leftover._render_worker.isRunning()):
             leftover.stop_workers()
+
+    saved = [name for _, _, names in os.walk(settings_dir.name) for name in names]
+    check_true(f"and the windows saved their preferences to the check's own store ({saved})",
+               any(name.endswith(".ini") for name in saved))
+    settings_dir.cleanup()
 
     return summary()
 
