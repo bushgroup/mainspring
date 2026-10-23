@@ -3033,11 +3033,22 @@ class MainWindow(QMainWindow):
         if area in DOCK_AREAS:
             self.settings.chromatogram_area = area
         save_settings(self.settings)
+        self.stop_workers()
+        super().closeEvent(event)
+
+    def stop_workers(self) -> None:
+        """Let the render and load threads exit and wait for them; the part of closing
+        that is not about the user's preferences, for a window that must not save them.
+
+        A window that is dropped without this still has two running `QThread`s when the
+        interpreter exits, and Qt answers destroying a running thread with `qFatal`: the
+        process ends in `abort()`, status `0xC0000409` on Windows (127 in Git Bash),
+        whatever the script had meant to return. Idempotent.
+        """
         self._mailbox.close()
         self._render_worker.wait(2000)
         self._worker.stop()
         self._worker.wait(2000)
-        super().closeEvent(event)
 
 
 def _nearest(numbers: "list[int]", value: int) -> int:

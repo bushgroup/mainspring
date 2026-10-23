@@ -1384,7 +1384,9 @@ def main() -> int:
         # is known: the stored 16-bit full scale named with the 14 bits it came from, the
         # raw maximum, the frame's count, and the file's once it is switched on. Settings
         # passed in rather than loaded, and the window never closed, so this touches no
-        # store of anybody's real preferences (lab record, task 36).
+        # store of anybody's real preferences (lab record, task 36). Its threads are
+        # stopped all the same: left running, they abort the interpreter on its way out,
+        # and the exit status stops saying what the summary says.
         from mainspring.viewer.settings import ViewerSettings
         from synthetic import write_clipping_uimf
 
@@ -1412,6 +1414,7 @@ def main() -> int:
         check_true("the per-push line divides by the same stored full scale",
                    "stored as 16-bit" in rows["Per push"]
                    and "100.00% full scale" in rows["Per push"])
+        clip_window.stop_workers()
 
         # The Help menu answers with no network, which is the whole reason the guide is
         # carried rather than linked. A packaging change that stopped shipping it would
@@ -1924,6 +1927,23 @@ def main() -> int:
                        not window._live_timer.isActive())
             window.close()
         interface.clear_live_pointer()
+
+    # A window dropped without `close()` or `stop_workers()` leaves its threads running,
+    # and Qt aborts the interpreter on its way out over them: the summary below would
+    # say 0 failed and the process would exit 0xC0000409, 127 in Git Bash. Named here
+    # instead, and then stopped, so that the status is this check's 1 and not the abort.
+    import gc
+
+    from PySide6.QtCore import QThread
+
+    running = sorted(type(thread).__name__ for thread in gc.get_objects()
+                     if isinstance(thread, QThread) and thread.isRunning())
+    check_true(f"every viewer thread the check started has stopped ({running or 'none left'})",
+               not running)
+    for leftover in gc.get_objects():
+        if isinstance(leftover, MainWindow) and (leftover._worker.isRunning()
+                                                 or leftover._render_worker.isRunning()):
+            leftover.stop_workers()
 
     return summary()
 
