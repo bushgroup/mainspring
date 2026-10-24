@@ -431,7 +431,9 @@ def profile(
 
     `along="x"` gives the mass spectrum of the window and `along="y"` its arrival-time
     distribution, each restricted to the other axis's range so that the side plots
-    always describe what is on screen. `len(edges) == len(values) + 1`.
+    always describe what is on screen. `len(edges) == len(values) + 1`. A pipeline
+    wanting an ion's arrival-time distribution from an m/z window, rather than what a
+    viewport shows, wants the analysis package's `scan_profile` instead.
 
     `bins=0`, the default, is **native resolution**: one value per source element in
     view, on that element's own edges. That is what a mass spectrum has to be -- a

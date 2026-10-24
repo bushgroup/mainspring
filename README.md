@@ -14,8 +14,9 @@ instrument writes UIMF.
 
 Version 1.15.0. The reader layer, the viewer, and the Windows installer are written and
 verified, and the development record lives in a private companion repository. This release
-adds `mainspring.analysis`, a package for processing what the reader returns, and opens it
-with a Gaussian smoother for arrival-time distributions (see
+adds `mainspring.analysis`, a package for processing what the reader returns, with an ion's
+arrival-time distribution read from an m/z window, the statistics the Bush lab reads off such a
+distribution, and a Gaussian smoother for it (see
 [Reading a file from Python](#reading-a-file-from-python)); the viewer is unchanged.
 
 Since 1.14.0, the viewer shows a run being acquired one finished frame at a time. A frame's
@@ -120,6 +121,30 @@ the encoder: reading a frame becomes 25 times faster and encoding one 80 times f
 the same bytes either way. The `viewer` extra adds the viewer and includes `fast`. Without it
 the `mainspring` command prints one line naming `mainspring[viewer]` and exits with status 3.
 
+### Reading an ion's arrival-time distribution
+
+To follow one ion through a run, `mainspring.analysis` sums the intensity of every stored point
+inside an m/z window, scan by scan, over the frames it is given:
+
+```python
+from mainspring.analysis import summed_profile
+
+frames = uimf.frame_numbers()[1:]                       # which frames count is the caller's call
+atd = summed_profile(uimf, frames, (1418.5, 1438.5))    # m/z window, both ends included
+atd.values                                              # intensity per scan
+atd.axis_ms                                             # arrival time of each scan, in ms
+```
+
+Each frame is placed through its own calibration and decoded only over the window's bins, so a
+file whose calibration changes from frame to frame is summed correctly and no frame is ever held
+whole. The window holds every bin whose m/z lies between its two ends, ends included, and
+`bin_range` returns those bins as a half-open range for a caller that reads frames itself, whereas
+`scan_profile` gives the distribution of one frame already in memory. Which frames make up a run
+is left to the caller, because leaving out a first repetition, choosing a method frame through
+`FrameGrouping`, or counting time from a release mark are each the convention of one experiment,
+and the package sums exactly the frames it is handed. Note that `mainspring.uimf.profile` is a
+different function, i.e., the viewer's side plot, summed over whatever is on screen.
+
 ### Smoothing an arrival-time distribution
 
 To draw an arrival-time distribution without the ringing that a low-pass filter puts around a
@@ -147,9 +172,38 @@ before the ions arrive and reflecting the end back would invent counts.
 `gaussian_gain` returns the factor by which the smoother multiplies a sinusoid of frequency f,
 exp(−2π²σ²f²) with σ in seconds. It is the continuous kernel's response, and it matches the
 sampled kernel's to within 10⁻⁶ at every frequency up to Nyquist whenever σ spans at least two
-scans. Every name in `mainspring.analysis` is published. A name is frozen in the self-check once a
+scans.
+
+### Reading positions and widths off a distribution
+
+To report where a distribution peaks and how wide it is, the package reads seven statistics off
+any profile, each in scans:
+
+```python
+from mainspring.analysis import centroid, fwhm, local_maxima
+
+smoothed = gaussian_smooth(atd.values, tick_ms=atd.tick_ms, sigma_ms=0.6)
+atd.ms(centroid(smoothed))                  # arrival time of the peak, in ms
+atd.ms(fwhm(smoothed))                      # its full width at half maximum, in ms
+local_maxima(smoothed, fraction=0.15)       # every maximum above 15 per cent of the tallest
+```
+
+`argmax` is the scan of the largest value, `centroid` the intensity-weighted mean scan over the
+contiguous run around it that stays at or above half its height, and `median` the scan at which
+the cumulative intensity reaches half the total. `iqr` is the span holding the central half of
+the intensity and `fwhm` the full width at half the maximum, 1.349σ and 2.355σ respectively for a
+Gaussian, and `rise_10_90` is the leading edge from 10 to 90 per cent of the maximum, 2.563σ for a
+step smoothed by a Gaussian. None of the seven smooths, because one repetition of a CLOCK
+experiment holds a few hundred stored points and the smoother and its width belong to the
+caller, so the order is smooth first and then read. `local_maxima` takes its floor as a required
+fraction for the reason the smoother takes its width without a default. A profile with nothing in
+it gives `None` from every statistic, and `ScanProfile.ms` passes `None` through unchanged.
+
+Every name in `mainspring.analysis` is published. A name is frozen in the self-check once a
 program outside this repository imports it at a release tag; until then its signature may change
-in a minor release, and the release notes say so. Both names above are frozen from 1.15.0.
+in a minor release, and the release notes say so. `gaussian_smooth` and `gaussian_gain` are frozen
+from 1.15.0, whereas the profile read and the seven statistics join the frozen list when a program
+outside this repository first imports them.
 
 ## Requirements
 
@@ -250,7 +304,8 @@ removes the registration.
 ```
 src/mainspring/uimf/     the reader: SQLite access, blob decoding, calibration, sparse frames,
                          rasterisation, and the uimf-info command line
-src/mainspring/analysis/ processing what the reader returns: the arrival-time smoother
+src/mainspring/analysis/ processing what the reader returns: an ion's arrival-time distribution,
+                         the statistics read off it, and the arrival-time smoother
 src/mainspring/viewer/   the PySide6 + pyqtgraph application
 tools/                   check_public.py (the self-check), fetch_testdata.py (PNNL excerpts),
                          build_exe.ps1 (the Windows executable), make_icon.py (its icon),

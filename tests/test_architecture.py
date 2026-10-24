@@ -16,7 +16,7 @@ import sys
 import pytest
 
 UIMF_MODULES = ("cache", "calib", "cli", "decode", "frame", "raster", "reader", "writer")
-ANALYSIS_MODULES = ("smooth",)
+ANALYSIS_MODULES = ("profile", "shape", "smooth")
 VIEWER_MODULES = (
     "app", "chromatogram", "controls", "export", "fonts", "heatmap",
     "help", "info_panel", "labels",
@@ -49,7 +49,8 @@ def test_uimf_and_analysis_import_no_qt_in_a_fresh_interpreter():
     """
     code = (
         "import sys, mainspring.uimf, mainspring.uimf.reader, mainspring.uimf.raster,"
-        " mainspring.analysis, mainspring.analysis.smooth;"
+        " mainspring.analysis, mainspring.analysis.profile, mainspring.analysis.shape,"
+        " mainspring.analysis.smooth;"
         "leaked = [m for m in sys.modules if m.startswith(('PySide6', 'pyqtgraph', 'shiboken6'))];"
         "print(leaked)"
     )

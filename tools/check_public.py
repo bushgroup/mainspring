@@ -175,7 +175,7 @@ def declared_floors() -> "dict[str, str | None]":
 
 
 UIMF_MODULES = ("cache", "calib", "cli", "decode", "frame", "raster", "reader", "writer")
-ANALYSIS_MODULES = ("smooth",)
+ANALYSIS_MODULES = ("profile", "shape", "smooth")
 VIEWER_MODULES = (
     "app", "chromatogram", "controls", "export", "fonts", "heatmap", "help",
     "info_panel", "labels",
@@ -449,6 +449,27 @@ def main() -> int:
                    step.shape == (800,) and step.min() >= 0.0
                    and step[400:600].max() <= 1.0 + 1e-12
                    and float(mainspring.analysis.gaussian_gain(0.0, sigma_ms=0.6)) == 1.0)
+    # The profile read and the shape statistics, on the chromatogram's footing: nothing
+    # outside this repository imports them at a tag yet, so they are pinned here rather
+    # than in the list above, which they join the day a caller migrates. The floor of the
+    # local maxima is required for the reason the smoother's width is (lab record, task 42).
+    PROFILED = ("bin_range", "scan_profile", "summed_profile", "ScanProfile", "argmax",
+                "centroid", "median", "iqr", "fwhm", "rise_10_90", "local_maxima")
+    missing = [name for name in PROFILED if not callable(getattr(mainspring.analysis, name, None))]
+    check_true(f"the analysis package still offers the profile and shape entry points"
+               f"{' (missing ' + ', '.join(missing) + ')' if missing else ''}",
+               not missing)
+    if not missing:
+        floor = inspect.signature(mainspring.analysis.local_maxima).parameters.get("fraction")
+        peak = np.exp(-0.5 * ((np.arange(401) - 200) / 20.0) ** 2)
+        check_true("and a Gaussian reads its centre and its widths in σ, the floor required",
+                   mainspring.analysis.argmax(peak) == 200.0
+                   and mainspring.analysis.median(peak) == 200.0
+                   and abs(mainspring.analysis.fwhm(peak) / 20.0 - 2.3548) < 3e-3
+                   and abs(mainspring.analysis.iqr(peak) / 20.0 - 1.3490) < 3e-3
+                   and mainspring.analysis.centroid(np.zeros(5)) is None
+                   and floor is not None and floor.kind is inspect.Parameter.KEYWORD_ONLY
+                   and floor.default is inspect.Parameter.empty)
 
     # --------------------------------------------------------------------------------
     section("the intensity codec")
