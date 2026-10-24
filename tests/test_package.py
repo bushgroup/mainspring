@@ -4,9 +4,10 @@ import os
 import sys
 
 
-def test_uimf_layer_does_not_import_qt(monkeypatch):
+def test_uimf_and_analysis_do_not_import_qt(monkeypatch):
     for mod in [m for m in sys.modules if m.startswith(("PySide6", "pyqtgraph", "shiboken6"))]:
         monkeypatch.delitem(sys.modules, mod, raising=False)
+    import mainspring.analysis  # noqa: F401
     import mainspring.uimf  # noqa: F401
 
     assert not any(m.startswith(("PySide6", "pyqtgraph")) for m in sys.modules)

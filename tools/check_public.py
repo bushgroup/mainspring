@@ -8,7 +8,8 @@ synthetic UIMF file can be written from nothing: `tests/synthetic.py` puts a few
 known points through the real SQLite schema and the real intensity encoder.
 
 What it covers: the package imports, the `uimf` layer stays free of Qt and the base
-install declares none (the wheel, installed bare, proves it), the base declares floors
+install declares none (the wheel, installed bare, proves it), `analysis` likewise and
+the two names a downstream program imports from it, the base declares floors
 and the wheel works installed at exactly those, the hand-carried version
 declarations agree, the module layout is complete, the reporting stamp, the lab-directory resolution, the intensity
 codec against the format's own rules and against itself in both directions, and a
@@ -174,6 +175,7 @@ def declared_floors() -> "dict[str, str | None]":
 
 
 UIMF_MODULES = ("cache", "calib", "cli", "decode", "frame", "raster", "reader", "writer")
+ANALYSIS_MODULES = ("smooth",)
 VIEWER_MODULES = (
     "app", "chromatogram", "controls", "export", "fonts", "heatmap", "help",
     "info_panel", "labels",
@@ -197,6 +199,7 @@ def main() -> int:
     import numpy as np
 
     import mainspring
+    import mainspring.analysis
     import mainspring.interface as interface
     import mainspring.report as report
     import mainspring.uimf
@@ -239,8 +242,14 @@ def main() -> int:
             f"mainspring.uimf.{name} imports",
             importlib.import_module(f"mainspring.uimf.{name}") is not None,
         )
+    for name in ANALYSIS_MODULES:
+        check_true(
+            f"mainspring.analysis.{name} imports",
+            importlib.import_module(f"mainspring.analysis.{name}") is not None,
+        )
     qt_loaded = sorted(m for m in sys.modules if m.startswith(("PySide6", "pyqtgraph", "shiboken6")))
-    check_true(f"the uimf layer loaded no Qt module ({qt_loaded or 'none'})", not qt_loaded)
+    check_true(f"the uimf and analysis packages loaded no Qt module ({qt_loaded or 'none'})",
+               not qt_loaded)
     check_true(
         "the uimf layer exports its public names",
         {"UimfFile", "SparseFrame", "Calibration", "rasterise"} <= set(mainspring.uimf.__all__),
@@ -412,6 +421,34 @@ def main() -> int:
                mainspring.uimf.STORED_SAMPLE_BITS == 16
                and mainspring.uimf.full_scale(14, from_file=True) == 65535
                and mainspring.uimf.full_scale(8, from_file=False) == 255)
+    # `mainspring.analysis` is pinned by what is imported, as the reader is: a name joins
+    # this list once a program outside this repository imports it at a release tag. The
+    # smoother's two did so from their first release, the lab's figure code being who
+    # asked for them (lab record, task 41). Their widths are required keywords, and that
+    # is pinned with them: a default width would be one nobody chose, and a positional
+    # one lets the tick and the width swap places silently.
+    ANALYSED = ("gaussian_smooth", "gaussian_gain")
+    unoffered = [name for name in ANALYSED if not callable(getattr(mainspring.analysis, name, None))]
+    check_true(f"mainspring.analysis still exports what downstream code imports"
+               f"{' (missing ' + ', '.join(unoffered) + ')' if unoffered else ''}",
+               not unoffered)
+    if not unoffered:
+        widths = {name: {key: p for key, p in inspect.signature(
+            getattr(mainspring.analysis, name)).parameters.items() if key.endswith("_ms")}
+            for name in ANALYSED}
+        check_true("and its widths are still keyword-only with no default "
+                   f"({', '.join(f'{n}: {sorted(w)}' for n, w in widths.items())})",
+                   set(widths["gaussian_smooth"]) == {"tick_ms", "sigma_ms"}
+                   and set(widths["gaussian_gain"]) == {"sigma_ms"}
+                   and all(p.kind is inspect.Parameter.KEYWORD_ONLY
+                           and p.default is inspect.Parameter.empty
+                           for w in widths.values() for p in w.values()))
+        step = mainspring.analysis.gaussian_smooth(np.r_[np.zeros(400), np.ones(400)],
+                                                   tick_ms=0.062, sigma_ms=0.6)
+        check_true("and a step through the smoother rises without ringing or losing length",
+                   step.shape == (800,) and step.min() >= 0.0
+                   and step[400:600].max() <= 1.0 + 1e-12
+                   and float(mainspring.analysis.gaussian_gain(0.0, sigma_ms=0.6)) == 1.0)
 
     # --------------------------------------------------------------------------------
     section("the intensity codec")
@@ -2031,12 +2068,13 @@ def _venv_reader_checks(venv_python: str, where: str) -> None:
         [venv_python, "-c",
          "import sys, mainspring, mainspring.interface, mainspring.report\n"
          "from mainspring.uimf import UimfFile, UimfWriter, GlobalSpec, FrameSpec\n"
+         "from mainspring.analysis import gaussian_gain, gaussian_smooth\n"
          "qt = [m for m in sys.modules if m.startswith(('PySide6', 'pyqtgraph', 'shiboken6'))]\n"
          "print('QT:' + ','.join(qt) if qt else 'NOQT')"],
         capture_output=True, text=True,
     )
     check_true(
-        f"and the reader, the interface and the stamp import from it "
+        f"and the reader, the analysis package, the interface and the stamp import from it "
         f"({probe.stdout.strip() or probe.stderr.strip()[-200:]})",
         probe.returncode == 0 and probe.stdout.strip() == "NOQT",
     )

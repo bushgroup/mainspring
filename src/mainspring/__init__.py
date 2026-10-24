@@ -7,10 +7,12 @@ package has two layers with one seam:
 
     uimf      SQLite access, blob decoding, calibration, sparse frames and
               rasterisation -- numpy, optional numba, never Qt
-    viewer    the PySide6 + pyqtgraph application on top of it
+    analysis  processing on what the reader returns, such as smoothing an
+              arrival-time profile -- on the reader's side of the seam, never Qt
+    viewer    the PySide6 + pyqtgraph application on top of them
 
-Anything that imports `mainspring.uimf` must keep working with no GUI stack
-installed, which is what lets a pipeline reuse the reader and what
+Anything that imports `mainspring.uimf` or `mainspring.analysis` must keep working
+with no GUI stack installed, which is what lets a pipeline reuse the reader and what
 `tools/check_public.py` exercises.
 """
 

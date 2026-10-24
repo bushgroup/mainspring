@@ -94,7 +94,8 @@ the open file came from, opens it and follows it, and moves to the next run when
 from mainspring.uimf import UimfFile
 
 uimf = UimfFile("run.uimf")
-frame = uimf.read_frame(uimf.frame_numbers()[0])
+number = uimf.frame_numbers()[0]
+frame = uimf.read_frame(number)
 bins, intensity = frame.scan(2482)      # one time-of-flight spectrum
 arrival = frame.tic()                   # total ion current per scan
 ```
@@ -114,6 +115,37 @@ a machine that has no use for one. The `fast` extra adds numba, which compiles t
 the encoder: reading a frame becomes 25 times faster and encoding one 80 times faster, with
 the same bytes either way. The `viewer` extra adds the viewer and includes `fast`. Without it
 the `mainspring` command prints one line naming `mainspring[viewer]` and exits with status 3.
+
+### Smoothing an arrival-time distribution
+
+To draw an arrival-time distribution without the ringing that a low-pass filter puts around a
+sharp leading edge, `mainspring.analysis` smooths it with a Gaussian kernel:
+
+```python
+from mainspring.analysis import gaussian_gain, gaussian_smooth
+
+tick_ms = uimf.frame_params(number).average_tof_length_ns * 1e-6   # one scan, in ms
+smoothed = gaussian_smooth(arrival, tick_ms=tick_ms, sigma_ms=0.6)
+gaussian_gain(954.0, sigma_ms=0.6)                                 # 0.0016
+```
+
+The kernel is a normal distribution of width σ, sampled once per scan and truncated at ±5σ.
+Because it is never negative, a step comes out as the normal cumulative distribution, rising from
+10 to 90 per cent in 2.56σ with no undershoot ahead of the edge and no overshoot after it, and a
+distribution with no negative intensity gains none. The zero-phase Butterworth filter at 200 Hz
+that it replaces in the Bush lab's figures put negative intensity ahead of every leading edge.
+Both σ and the scan interval are given in milliseconds, so a file acquired at 62 µs per scan and
+one acquired at 129 µs receive the same kernel in time. Neither has a default, because the right
+width depends on the figure and the data, and a default would be a width that nobody chose.
+Beyond either end the distribution is taken to be zero, i.e., zero padding, since a frame begins
+before the ions arrive and reflecting the end back would invent counts.
+
+`gaussian_gain` returns the factor by which the smoother multiplies a sinusoid of frequency f,
+exp(−2π²σ²f²) with σ in seconds. It is the continuous kernel's response, and it matches the
+sampled kernel's to within 10⁻⁶ at every frequency up to Nyquist whenever σ spans at least two
+scans. Every name in `mainspring.analysis` is published. A name is frozen in the self-check once a
+program outside this repository imports it at a release tag; until then its signature may change
+in a minor release, and the release notes say so. Both names above are frozen from their first release.
 
 ## Requirements
 
@@ -214,6 +246,7 @@ removes the registration.
 ```
 src/mainspring/uimf/     the reader: SQLite access, blob decoding, calibration, sparse frames,
                          rasterisation, and the uimf-info command line
+src/mainspring/analysis/ processing what the reader returns: the arrival-time smoother
 src/mainspring/viewer/   the PySide6 + pyqtgraph application
 tools/                   check_public.py (the self-check), fetch_testdata.py (PNNL excerpts),
                          build_exe.ps1 (the Windows executable), make_icon.py (its icon),

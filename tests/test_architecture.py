@@ -16,6 +16,7 @@ import sys
 import pytest
 
 UIMF_MODULES = ("cache", "calib", "cli", "decode", "frame", "raster", "reader", "writer")
+ANALYSIS_MODULES = ("smooth",)
 VIEWER_MODULES = (
     "app", "chromatogram", "controls", "export", "fonts", "heatmap",
     "help", "info_panel", "labels",
@@ -28,20 +29,27 @@ def test_uimf_modules_import(name):
     assert importlib.import_module(f"mainspring.uimf.{name}") is not None
 
 
+@pytest.mark.parametrize("name", ANALYSIS_MODULES)
+def test_analysis_modules_import(name):
+    assert importlib.import_module(f"mainspring.analysis.{name}") is not None
+
+
 @pytest.mark.parametrize("name", VIEWER_MODULES)
 def test_viewer_modules_import(name):
     assert importlib.import_module(f"mainspring.viewer.{name}") is not None
 
 
-def test_uimf_layer_imports_no_qt_in_a_fresh_interpreter():
+def test_uimf_and_analysis_import_no_qt_in_a_fresh_interpreter():
     """The seam, checked where it cannot be faked by an already-imported module.
 
     A test in this process can only see what this process has loaded, and pytest-qt has
     loaded Qt long before we get here. So ask a fresh interpreter, which is also what a
-    pipeline machine's import looks like.
+    pipeline machine's import looks like. `mainspring.analysis` is on the same side of
+    the seam as the reader and is checked with it (lab record, task 41).
     """
     code = (
-        "import sys, mainspring.uimf, mainspring.uimf.reader, mainspring.uimf.raster;"
+        "import sys, mainspring.uimf, mainspring.uimf.reader, mainspring.uimf.raster,"
+        " mainspring.analysis, mainspring.analysis.smooth;"
         "leaked = [m for m in sys.modules if m.startswith(('PySide6', 'pyqtgraph', 'shiboken6'))];"
         "print(leaked)"
     )
@@ -68,21 +76,41 @@ def test_the_launch_words_import_with_no_qt_in_a_fresh_interpreter():
 
 
 def test_viewer_does_not_leak_into_the_uimf_layer():
-    """Dependencies point one way: nothing under `uimf` may name the viewer."""
-    for name in UIMF_MODULES:
-        module = importlib.import_module(f"mainspring.uimf.{name}")
+    """Dependencies point one way: nothing under `uimf` or `analysis` may name the viewer."""
+    for module in _modules("mainspring.uimf", UIMF_MODULES) + _modules("mainspring.analysis",
+                                                                      ANALYSIS_MODULES):
+        name = module.__name__
         assert "mainspring.viewer" not in (module.__doc__ or "").replace("`", ""), name
-        source = getattr(module, "__file__", None)
-        assert source is not None
-        with open(source, encoding="utf-8") as handle:
-            text = handle.read()
+        text = _source(module)
         assert "from ..viewer" not in text and "import mainspring.viewer" not in text, name
+
+
+def test_analysis_does_not_leak_into_the_uimf_layer():
+    """`analysis` sits on the reader and may import it; the reader never names `analysis`,
+    so a pipeline that wants only the reader imports only the reader (lab record, task 41)."""
+    for module in _modules("mainspring.uimf", UIMF_MODULES):
+        text = _source(module)
+        assert "from ..analysis" not in text and "mainspring.analysis" not in text, module.__name__
+
+
+def _modules(package: str, names: "tuple[str, ...]") -> list:
+    return [importlib.import_module(package)] + [
+        importlib.import_module(f"{package}.{name}") for name in names
+    ]
+
+
+def _source(module) -> str:
+    source = getattr(module, "__file__", None)
+    assert source is not None
+    with open(source, encoding="utf-8") as handle:
+        return handle.read()
 
 
 def test_the_data_layer_no_longer_has_stubs_in_it():
     """Task 03 filled `uimf` end to end; a `NotImplementedError` left behind there would
     be a module the reader cannot actually use."""
     _assert_no_stubs("mainspring.uimf", UIMF_MODULES)
+    _assert_no_stubs("mainspring.analysis", ANALYSIS_MODULES)
 
 
 def test_the_viewer_layer_no_longer_has_stubs_in_it():

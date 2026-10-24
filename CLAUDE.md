@@ -23,6 +23,7 @@ you are reading this file *without* that import, you have a public clone — the
 - **Two layers, one seam.** `mainspring.uimf` is the data layer (numpy, optional numba) and
   **never imports Qt**; `mainspring.viewer` is PySide6 + pyqtgraph on top of it. A pipeline that
   installs the reader gets no Qt, imported or installed: Qt is the `viewer` extra's alone.
+  `mainspring.analysis` is a third Qt-free package under the same checks, importing `uimf` one way.
 - **`mainspring.uimf` is a published API with an installed caller.** The names it exports, the
   `UimfWriter` defaults (`journal_mode="wal"`, `tables="both"`), the six `Mainspring*` parameter
   names and the reader's `refresh`, `LiveState`, `is_provisional` and `is_local_path` are a
@@ -36,9 +37,8 @@ you are reading this file *without* that import, you have a public clone — the
   walks the live window by widget type and `tools/check_public.py` fails on anything mute.
 - **Never materialise a dense frame.** A frame is scans × TOF bins (5000 × 114688 on SLIMPHONY,
   2.3 GB as int32). Frames stay sparse (`SparseFrame`); the heatmap is rasterised to the viewport.
-- **The format reference is PNNL's UIMF-Library** (C#, actively maintained). Decode, calibration
-  and parameter semantics follow it; where this code differs deliberately, the docstring says so
-  and the lab record says why (lab record, task 01).
+- **The format reference is PNNL's UIMF-Library** (C#, maintained). Decode, calibration and
+  parameter semantics follow it; a docstring names each deliberate difference (lab record, task 01).
 - **No `.uimf` file is ever committed here** — `.gitignore` excludes the extension and
   `.githooks/pre-commit` refuses the path. Sample data live in the lab repo.
 - **Windows 11 only.** The instruments and the users run Windows 11; the `.exe` is the primary
