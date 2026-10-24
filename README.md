@@ -12,13 +12,17 @@ instrument writes UIMF.
 
 ## Status
 
-Version 1.14.0. The reader layer, the viewer, and the Windows installer are written and
+Version 1.15.0. The reader layer, the viewer, and the Windows installer are written and
 verified, and the development record lives in a private companion repository. This release
-shows a run being acquired one finished frame at a time. A frame's scans reach the file in
-arrival-time order, so a frame half written holds about 0.1 per cent of its signal, and
-following it as it filled put an empty heat map on screen for most of every second. `Newest
-frame` and the chromatogram now wait for each frame to finish, and `View > Show frames still
-being written` brings the filling view back.
+adds `mainspring.analysis`, a package for processing what the reader returns, and opens it
+with a Gaussian smoother for arrival-time distributions (see
+[Reading a file from Python](#reading-a-file-from-python)); the viewer is unchanged.
+
+Since 1.14.0, the viewer shows a run being acquired one finished frame at a time. A frame's
+scans reach the file in arrival-time order, so a frame half written holds about 0.1 per cent of
+its signal, and following it as it filled put an empty heat map on screen for most of every
+second. `Newest frame` and the chromatogram now wait for each frame to finish, and `View > Show
+frames still being written` brings the filling view back.
 
 Since 1.13.0, peaks fall where they should in files written by PNNL's acquisition software.
 After a run of 32,768 empty bins, that software writes an extra zero that its own library skips
@@ -105,7 +109,7 @@ time-of-flight bins, which on the Bush lab's instrument would be 2.3 GB for a si
 To use the reader from another project, install mainspring from a release tag:
 
 ```
-pip install "mainspring[fast] @ git+https://github.com/bushgroup/mainspring@v1.14.0"
+pip install "mainspring[fast] @ git+https://github.com/bushgroup/mainspring@v1.15.0"
 ```
 
 The same requirement string works as a dependency in another project's `pyproject.toml`,
@@ -145,7 +149,7 @@ exp(−2π²σ²f²) with σ in seconds. It is the continuous kernel's response,
 sampled kernel's to within 10⁻⁶ at every frequency up to Nyquist whenever σ spans at least two
 scans. Every name in `mainspring.analysis` is published. A name is frozen in the self-check once a
 program outside this repository imports it at a release tag; until then its signature may change
-in a minor release, and the release notes say so. Both names above are frozen from their first release.
+in a minor release, and the release notes say so. Both names above are frozen from 1.15.0.
 
 ## Requirements
 
