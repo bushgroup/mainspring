@@ -110,6 +110,8 @@ def test_settings_round_trip_through_qsettings():
         rolling_sum_frames=25,
         sum_all_on_open=True,
         show_unfinished_frames=True,
+        smooth_arrival_time=False,
+        arrival_sigma_ms=1.25,
         last_directory="F:/data/acquisitions",
         window_geometry=b"\x00binary-ish\x01geometry\x02bytes\x03",
     )
@@ -240,3 +242,32 @@ def test_sum_all_on_open_starts_unticked_and_the_choice_persists():
     assert load_settings().sum_all_on_open is True
     save_settings(ViewerSettings(sum_all_on_open=False))
     assert load_settings().sum_all_on_open is False
+
+
+def test_arrival_time_smoothing_starts_on_at_0_6_ms_and_both_persist():
+    """On at 0.6 ms on a first run, the narrower of the two widths the lab compared, and
+    both the switch and the width remembered (lab record, task 44)."""
+    assert ViewerSettings().smooth_arrival_time is True
+    assert ViewerSettings().arrival_sigma_ms == 0.6
+    save_settings(ViewerSettings(smooth_arrival_time=False, arrival_sigma_ms=2.5))
+    read_back = load_settings()
+    assert read_back.smooth_arrival_time is False
+    assert read_back.arrival_sigma_ms == 2.5
+
+
+def test_a_bad_stored_smoothing_width_falls_back_to_0_6_ms():
+    """A width the smoother would refuse -- zero, negative, NaN, infinite, or not a
+    number at all -- is replaced on load rather than raised on the render worker."""
+    for bad in (0.0, -1.0, float("nan"), float("inf")):
+        assert ViewerSettings(arrival_sigma_ms=bad).validate().arrival_sigma_ms == 0.6
+    # Any positive finite width is kept, however narrow or wide: no extra bounds.
+    for good in (1e-6, 0.05, 40.0):
+        assert ViewerSettings(arrival_sigma_ms=good).validate().arrival_sigma_ms == good
+
+    import mainspring.viewer.settings as settings_module
+
+    store = settings_module._store()
+    for bad in ("-3", "0", "nan", "wide"):
+        store.setValue("arrival_sigma_ms", bad)
+        store.sync()
+        assert load_settings().arrival_sigma_ms == 0.6

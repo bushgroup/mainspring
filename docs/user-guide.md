@@ -97,7 +97,8 @@ distribution sums those inside the current m/z range. Narrowing one axis therefo
 other plot. Neither carries an axis of its own, because the heat map's axes already read for
 the axis they share and their intensity axis rescales with every gesture. Their traces thicken
 as the window grows, along with the ticks and the axis lines, so a maximised window on a large
-panel reads at the weight a small one does.
+panel reads at the weight a small one does. The distribution is drawn smoothed over a faint copy
+of itself unless you turn [Smooth arrival time](#smooth-arrival-time) off.
 
 **The color bar** is the strip in the far right column of the plot area. It reads in the units
 `View > Color scale` selects, so on the `Linear` setting its numbers are stored intensities and
@@ -262,10 +263,10 @@ would leave nothing on screen for the minute it takes.
 
 ## The Data settings menu
 
-Five controls that say what the numbers on screen are, rather than how they are drawn.
+Seven controls that say what the numbers on screen are, rather than how they are drawn.
 None of them is touched in the ordinary course of looking at a frame: the aggregate, the
-bit depth, the clipping count and `Sum all on open` are set once for a session and the type
-filter once for a file.
+bit depth, the clipping count, `Sum all on open` and the arrival-time smoothing are set once
+for a session and the type filter once for a file.
 
 ### Aggregate
 
@@ -323,6 +324,33 @@ the viewer following one, the `Show` box decides what goes on screen. A file sti
 that you open by hand without `Live` is summed as `Sum all` would sum it: every frame listed when
 it opened, the last one as far as it had been written, and the result marked as still being
 written.
+
+### Smooth arrival time
+
+Draws the arrival-time distribution smoothed by a Gaussian, on top of a faint copy of the raw
+distribution, so that the shape of a peak reads through the scan-to-scan noise. It is on when
+the viewer first runs, at a width of 0.6 ms, and the viewer remembers the choice. The faint
+curve is the only sign on screen that smoothing is on. Turned off, the raw distribution is
+drawn alone at full strength.
+
+Only that one curve is smoothed. The heat map, the mass spectrum, the chromatogram and the peak
+readout in the status bar all read the raw data, whichever axis arrival time is on, and an
+[export](#exporting-a-figure) draws the raw distribution alone at full strength, so a figure
+shows what the file holds.
+
+A zoomed view is smoothed as the whole frame would be. The Gaussian reaches 5σ either side of
+each scan, 3 ms at the default width, and near the edge of a zoomed view it uses the scans just
+outside the view rather than taking them to be empty. The curve therefore does not sag at the
+edges of a zoom, and it keeps its shape as you pan. Only beyond the first and last scans of the
+frame is the signal taken to be zero.
+
+### Arrival-time smoothing width
+
+Sets the width of the Gaussian as its standard deviation, σ, in milliseconds. Any number above
+zero is accepted, and the default is 0.6 ms. The width stays in milliseconds when `Raw units`
+shows scans, and the viewer converts it through each frame's own scan time, so a file acquired
+at 62 µs a scan and one at 129 µs a scan are smoothed alike in time. A width under one scan
+leaves the curve nearly as it was.
 
 ### Type
 
@@ -783,7 +811,9 @@ projections are drawn again at the higher density, so a 300 dpi figure carries c
 print size rather than a magnified screenshot of 96 dpi type. The heat map itself is the image
 already on screen, enlarged with square pixels, so a figure is exactly the picture you looked
 at and chose to export: the same colors in the same places, the same color limits, the same
-peaks resolved and the same ones not.
+peaks resolved and the same ones not. The one difference is the arrival-time distribution, which
+is exported raw at full strength even while [Smooth arrival time](#smooth-arrival-time) draws it
+smoothed on screen.
 
 That is deliberate, and it is a change from 1.0.0, which re-rasterised the frame at the
 export's own resolution. A heat map pixel is an aggregate over the bins and scans inside it,
@@ -797,8 +827,9 @@ figure's own size in inches.
 ## What the viewer remembers
 
 Every toolbar toggle, the color map, the color scale, light mode, the text size, the
-aggregate, the detector bit depth, whether clipping is counted across the file, how many
-frames `Sum newest frames` adds up, whether frames still being written are shown, whether the
+aggregate, the detector bit depth, whether clipping is counted across the file, whether files
+are summed on open, whether the arrival-time distribution is smoothed and at what width, how
+many frames `Sum newest frames` adds up, whether frames still being written are shown, whether the
 info panel is showing and how wide it is, whether the chromatogram is showing and which edge it
 is docked on, the export resolution, the window's size and position, and the directory you last
 opened from are all saved when the viewer closes and restored when it starts. On Windows they live under

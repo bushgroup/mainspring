@@ -46,6 +46,13 @@ that matters more than it looks:
   map and a point near zero (Matt, 2026-10-20, reversing task 08's default). Persisted
   for `rolling_sum_frames`'s reason: it is how someone likes to watch a run, not
   anything about one file (lab record, task 40).
+* **`smooth_arrival_time` defaults on, at `arrival_sigma_ms` = 0.6 ms.** Ticked, the
+  arrival-time projection is drawn Gaussian-smoothed over a dimmed copy of the raw one;
+  nothing else on screen changes. On by default, unlike the two switches above, because
+  it costs a few milliseconds of the render it rides on rather than a walk over the
+  file, and because the dimmed raw curve shows that it is on. The width is a display
+  choice the user made, so it lives here and nowhere else: `mainspring.analysis` has no
+  default σ by design (lab record, tasks 41 and 44).
 
 Plain dataclass, no Qt in the type itself, so a test can exercise the defaults and the
 round trip without a `QApplication`. `load_settings`/`save_settings` are the only two
@@ -71,6 +78,7 @@ __all__ = [
     "EXPORT_DPIS",
     "INFO_PANEL_WIDTH",
     "ORGANISATION",
+    "ARRIVAL_SIGMA_MS",
     "ROLLING_SUM_MAX",
     "TEXT_SCALES",
     "THEMES",
@@ -131,6 +139,14 @@ longer than that is a whole run being added up, which is what `Sum all` and
 cancel, and this one is not and does not. Here rather than in `main_window.py` for the
 reason `EXPORT_DPIS` is here: `validate` has to clamp a hand-edited value without this
 module importing one that pulls in Qt's widgets."""
+
+
+ARRIVAL_SIGMA_MS = 0.6
+"""The arrival-time smoothing width a first run gets, and what `validate` puts back in
+place of a stored width that is not a finite number above zero. The Gaussian's σ in
+milliseconds, whatever the axis shows; 0.6 ms is the narrower of the two widths the lab
+compared (lab record, task 41). A viewer setting and not a library default: see
+`ViewerSettings.smooth_arrival_time` in this module's docstring."""
 
 
 INFO_PANEL_WIDTH = 320
@@ -201,6 +217,8 @@ class ViewerSettings:
     count_clipping: bool = False
     sum_all_on_open: bool = False
     show_unfinished_frames: bool = False
+    smooth_arrival_time: bool = True
+    arrival_sigma_ms: float = ARRIVAL_SIGMA_MS
     last_directory: str = ""
     window_geometry: bytes = b""
 
@@ -232,6 +250,7 @@ class ViewerSettings:
             cache_budget_mb=cache_budget_mb,
             rolling_sum_frames=rolling_sum_frames,
             arrival_offset_ms=self.arrival_offset_ms if math.isfinite(self.arrival_offset_ms) else 0.0,
+            arrival_sigma_ms=_positive_or(self.arrival_sigma_ms, ARRIVAL_SIGMA_MS),
             last_directory=self.last_directory or "",
         )
 
@@ -310,6 +329,10 @@ def load_settings() -> ViewerSettings:
         sum_all_on_open=_as_bool(store.value("sum_all_on_open", defaults.sum_all_on_open)),
         show_unfinished_frames=_as_bool(store.value("show_unfinished_frames",
                                                     defaults.show_unfinished_frames)),
+        smooth_arrival_time=_as_bool(store.value("smooth_arrival_time",
+                                                 defaults.smooth_arrival_time)),
+        arrival_sigma_ms=_as_float(store.value("arrival_sigma_ms", defaults.arrival_sigma_ms),
+                                   defaults.arrival_sigma_ms),
         last_directory=str(store.value("last_directory", defaults.last_directory)),
         window_geometry=_as_bytes(store.value("window_geometry", defaults.window_geometry)),
     )
@@ -345,6 +368,8 @@ def save_settings(settings: ViewerSettings) -> None:
     store.setValue("count_clipping", settings.count_clipping)
     store.setValue("sum_all_on_open", settings.sum_all_on_open)
     store.setValue("show_unfinished_frames", settings.show_unfinished_frames)
+    store.setValue("smooth_arrival_time", settings.smooth_arrival_time)
+    store.setValue("arrival_sigma_ms", settings.arrival_sigma_ms)
     # Written under the new spelling, and the old key removed in the same pass, so a
     # settings store upgraded by this version carries one key per setting rather than
     # two that could drift apart.
@@ -378,6 +403,17 @@ def _as_float(value: object, default: float) -> float:
     except (TypeError, ValueError):
         return default
     return result if math.isfinite(result) else default
+
+
+def _positive_or(value: object, default: float) -> float:
+    """`value` as a float if it is finite and above zero, else `default`: the rule
+    `mainspring.analysis.gaussian_smooth` applies to a width, checked here so that a bad
+    stored σ is replaced on load rather than raising on the render worker."""
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return default
+    return result if math.isfinite(result) and result > 0.0 else default
 
 
 def _as_bytes(value: object) -> bytes:

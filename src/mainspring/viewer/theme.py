@@ -51,6 +51,7 @@ __all__ = [
     "DARK",
     "LIGHT",
     "PALETTES",
+    "PALETTE_ROLE",
     "Palette",
     "active",
     "apply",
@@ -61,7 +62,7 @@ __all__ = [
 
 @dataclass(frozen=True)
 class Palette:
-    """The four colors the plot canvas is allowed to paint with.
+    """The five colors the plot canvas is allowed to paint with.
 
     Both palettes now set all three of the foreground roles to the same value -- the
     background's opposite, black or white -- because a viewer read at a glance across a
@@ -70,6 +71,11 @@ class Palette:
     keeps four fields anyway: they are four *roles*, the walk that proves nothing was
     painted outside a palette is written in terms of them, and an accent restored to any
     one of them is then a value and not a refactor.
+
+    `curve_faint` is the fifth role and the one exception to black and white: the raw
+    arrival-time projection, dimmed under its smoothed curve while `Smooth arrival time`
+    is ticked, so the eye reads the smoothed one and can still see what it came from
+    (lab record, task 44).
     """
 
     name: str
@@ -81,6 +87,8 @@ class Palette:
     """The mass spectrum's and the arrival-time distribution's traces."""
     debug: str
     """The render-time overlay, drawn only under `MAINSPRING_DEBUG_RENDER`."""
+    curve_faint: str
+    """The raw arrival-time projection while a smoothed one is drawn over it."""
 
     def role(self, name: str) -> QColor:
         """One role's color, by field name. What `themed` asks each pen about.
@@ -99,6 +107,7 @@ DARK = Palette(
     foreground="#ffffff",
     curve="#ffffff",
     debug="#ffffff",
+    curve_faint="#5f5f5f",
 )
 """Everything the palette owns at the greatest contrast the canvas can carry: white on
 black. Spelled out rather than read from the config options so that a pyqtgraph release
@@ -110,6 +119,7 @@ LIGHT = Palette(
     foreground="#000000",
     curve="#000000",
     debug="#000000",
+    curve_faint="#b4b4b4",
 )
 """The same rule on white: black on white. `DARK` and `LIGHT` differ only in which of
 the two the background is."""
@@ -120,6 +130,10 @@ because `ViewerSettings.validate` has to clamp a hand-edited one and that module
 not import the plot layer; `tests/test_theme.py` is what holds the two lists together.
 Not imported from there, so that nothing in the plot layer depends on the settings
 module for a name it already knows."""
+
+PALETTE_ROLE = "palette_role"
+"""The attribute a `PlotDataItem` carries when it is drawn in a role other than `curve`,
+and the one `themed` reads to know which color to hold it to."""
 
 _ACTIVE = DARK
 """The palette `apply` last applied, and the one `themed` measures against. Module
@@ -242,8 +256,12 @@ def themed(window: object) -> "list[str]":
                 if label is not None:
                     _check(palette, "foreground", QColor(label), f"{name} label color", stray)
             elif isinstance(item, pg.PlotDataItem):
-                _check_pen(palette, "curve", item.opts.get("pen"), f"{name} curve pen", stray)
-                _check_brush(palette, "curve", item.opts.get("fillBrush"),
+                # A curve says which role it is drawn in when that is not `curve`: the
+                # raw arrival-time projection is `curve_faint` while smoothing is shown
+                # over it (`SidePlots.set_profiles`).
+                role = getattr(item, PALETTE_ROLE, "curve")
+                _check_pen(palette, role, item.opts.get("pen"), f"{name} curve pen", stray)
+                _check_brush(palette, role, item.opts.get("fillBrush"),
                              f"{name} fill brush", stray)
             else:  # pg.TextItem
                 _check(palette, "debug", item.color, f"{name} text color", stray)

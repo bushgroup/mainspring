@@ -143,7 +143,8 @@ def export_display(
     What is written is the scene as it stands: the window, the axes, the aggregate, the
     color scale and the levels are all already on it, so there is nothing about "which
     picture is this" to pass in and nothing that could disagree with what the user is
-    looking at.
+    looking at, with one exception: the arrival-time projection is drawn raw at full
+    strength even while the screen shows it smoothed (`SidePlots.raw_only`).
 
     Raises `ValueError` for an unknown format or a figure over `MAX_PIXELS`, and `OSError`
     if the file cannot be written. Nothing is allocated before those checks.
@@ -159,7 +160,9 @@ def export_display(
             "window smaller"
         )
 
-    with heatmap.hidden_debug():
+    # The raw projections alone: a smoothed arrival-time curve is a reading aid on
+    # screen and not part of a figure (`SidePlots.raw_only`).
+    with heatmap.hidden_debug(), side_plots.raw_only():
         if fmt == "pdf":
             _write_pdf(heatmap, rect, path)
         else:

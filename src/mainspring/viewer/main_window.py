@@ -81,6 +81,7 @@ widgets a user would (lab record, task 26).
 from __future__ import annotations
 
 import bisect
+import math
 import os
 import time
 
@@ -145,6 +146,7 @@ from .settings import (
     save_settings,
 )
 from .side_plots import SidePlots, peak_of
+from .smoothing import SmoothingWidthDialog
 from .workers import (
     ClippingRequest,
     LoadWorker,
@@ -906,6 +908,29 @@ class MainWindow(QMainWindow):
             toggled=self._on_sum_all_on_open_toggled,
         )
         menu.addAction(self._sum_all_on_open_action)
+
+        # The arrival-time plot drawn smoothed over its dimmed raw self. On by default,
+        # at a width the user can change, both remembered (`settings.py`); what is
+        # smoothed is that one curve and nothing else (lab record, task 44).
+        menu.addSeparator()
+        self._smooth_arrival_action = make_action(
+            self,
+            "Smooth arri&val time",
+            tip="Draw the arrival-time plot smoothed by a Gaussian over a faint copy of"
+                " the raw plot; nothing else on screen is smoothed.",
+            checkable=True,
+            checked=self.settings.smooth_arrival_time,
+            toggled=self._on_smooth_arrival_toggled,
+        )
+        menu.addAction(self._smooth_arrival_action)
+        self._arrival_sigma_action = make_action(
+            self,
+            "Arrival-time smoothing &width...",
+            tip="Set the width of the Gaussian that smooths the arrival-time plot, as a"
+                " standard deviation in milliseconds.",
+            triggered=self._prompt_arrival_sigma,
+        )
+        menu.addAction(self._arrival_sigma_action)
 
     def _build_toolbar(self) -> None:
         """The axis toggles, frame navigation, the sums and follow.
@@ -2047,6 +2072,32 @@ class MainWindow(QMainWindow):
         """
         return full_scale_for(self.detector_bits, from_file=self.detector_bits_from_file)
 
+    def _on_smooth_arrival_toggled(self, checked: bool) -> None:
+        """Remember the choice and redraw the view on screen; the frame is not reread."""
+        self.settings.smooth_arrival_time = bool(checked)
+        self._request_render(*self.heatmap.view_range())
+
+    def _prompt_arrival_sigma(self) -> None:
+        """Ask for a new smoothing width, and redraw with it if one was given."""
+        dialog = SmoothingWidthDialog(self, self.settings.arrival_sigma_ms)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        sigma_ms = dialog.value()
+        if sigma_ms is not None:
+            self.set_arrival_sigma(sigma_ms)
+
+    def set_arrival_sigma(self, sigma_ms: float) -> None:
+        """Smooth the arrival-time plot at `sigma_ms` from now on, and redraw the view.
+
+        What the dialog's OK does, callable on its own so a test need not drive a modal
+        dialog. A width the smoother would refuse is ignored rather than stored.
+        """
+        sigma_ms = float(sigma_ms)
+        if not (math.isfinite(sigma_ms) and sigma_ms > 0.0):
+            return
+        self.settings.arrival_sigma_ms = sigma_ms
+        self._request_render(*self.heatmap.view_range())
+
     def _on_sum_all_on_open_toggled(self, checked: bool) -> None:
         """Remember the choice for the next open; the file on screen is left as it is."""
         self.settings.sum_all_on_open = bool(checked)
@@ -2566,6 +2617,12 @@ class MainWindow(QMainWindow):
             height=height,
             aggregate=self.settings.aggregate,
             serial=self._serial,
+            sigma_ms=(self.settings.arrival_sigma_ms
+                      if self.settings.smooth_arrival_time else None),
+            # The scan tick in ms, from the frame on screen and never from the axis,
+            # which counts scans under raw units and is shifted by the offset.
+            scan_tick_ms=(self._frame_params.average_tof_length_ns * 1e-6
+                          if self._frame_params is not None else 0.0),
         ))
 
     def _on_rendered(self, render: object) -> None:
@@ -2574,7 +2631,12 @@ class MainWindow(QMainWindow):
         result = render.result
         self._last_render = render
         self.heatmap.set_image(result, color_scale=self.settings.color_scale)
-        self.side_plots.set_profiles(render.x_profile, render.y_profile)
+        # The smoothed arrival-time curve, if any, is drawn and nothing more: the peak
+        # readout below reads the raw profiles.
+        self.side_plots.set_profiles(
+            render.x_profile, render.y_profile,
+            smoothed=render.arrival_smoothed, swapped=result.axes.swapped,
+        )
         self._show_peaks(render)
         self.heatmap.set_debug_text(
             f"{render.elapsed_ms:.1f} ms  {result.image.shape[1]}x{result.image.shape[0]}"

@@ -21,7 +21,8 @@ interactive path and let the three pictures disagree for a frame while a gesture
 flight. It is also the cheaper way round -- the expensive part of all three is selecting
 the window's points, and `render_view` does that once (lab record, task 05). `RenderResult`
 carries all three plus the time they took, so the window has one thing to draw and one
-number to report.
+number to report. **The smoothed arrival-time curve is a fourth view of the same window**
+and rides in the same request for the same reason (`smoothed_arrival`).
 
 `LoadWorker` is the other side: it owns the `UimfFile` and the `FrameCache`, so the
 short-lived-connection rule and the never-cache-a-provisional-frame rule live on one
@@ -61,6 +62,7 @@ thread needs no copy and no lock.
 
 from __future__ import annotations
 
+import math
 import queue
 import threading
 import time
@@ -69,6 +71,7 @@ from dataclasses import dataclass, replace
 import numpy as np
 from PySide6.QtCore import QThread, Signal
 
+from ..analysis.smooth import TRUNCATE_SIGMAS, gaussian_smooth
 from ..uimf import (
     Clipping,
     DisplayAxes,
@@ -82,7 +85,7 @@ from ..uimf import (
 )
 from ..uimf.cache import DEFAULT_BUDGET_BYTES, FrameCache
 from ..uimf.decode import numba_available
-from ..uimf.raster import render_view, tic_in_view
+from ..uimf.raster import profile, render_view, tic_in_view
 
 __all__ = [
     "CHUNK_BUDGET_S",
@@ -96,6 +99,7 @@ __all__ = [
     "RenderWorker",
     "RestrictedRequest",
     "SumRequest",
+    "smoothed_arrival",
 ]
 
 DEBOUNCE_MS = 30
@@ -212,6 +216,11 @@ class RenderRequest:
     height: int
     aggregate: str = "sum"
     serial: int = 0
+    sigma_ms: "float | None" = None
+    """The arrival-time smoothing width, or None when `Smooth arrival time` is off."""
+    scan_tick_ms: float = 0.0
+    """One scan in ms, the displayed frame's `AverageTOFLength`, whatever the axis
+    shows. Zero when the frame records none, and then nothing is smoothed."""
 
 
 @dataclass(frozen=True)
@@ -226,6 +235,11 @@ class RenderResult:
     newer file has already overtaken. `elapsed_ms` is the whole request -- image and
     both profiles -- which is the number the 100 ms render budget is about, not the
     rasteriser's share of it alone.
+
+    `arrival_smoothed` is the arrival-time profile's values smoothed, one per element of
+    whichever of `x_profile` and `y_profile` runs over scans and on its edges, or None
+    when smoothing was off or could not apply. The raw profile beside it is untouched:
+    the peak readout reads that one.
     """
 
     result: RasterResult
@@ -233,6 +247,62 @@ class RenderResult:
     y_profile: tuple[np.ndarray, np.ndarray]
     serial: int
     elapsed_ms: float
+    arrival_smoothed: "np.ndarray | None" = None
+
+
+def smoothed_arrival(
+    frame: SparseFrame,
+    axes: DisplayAxes,
+    x_range: tuple[float, float],
+    y_range: tuple[float, float],
+    raw: tuple[np.ndarray, np.ndarray],
+    *,
+    tick_ms: float,
+    sigma_ms: float,
+) -> np.ndarray:
+    """The arrival-time projection `raw` smoothed **with real neighbours** past the view.
+
+    `raw` is the `(edges, values)` profile over the scans in view, as `render_view`
+    returned it. Smoothing those values alone would zero-pad at the zoom edges, which
+    pulls the curve down there and changes it as the user pans. So the projection is
+    taken again over the scans in view plus the kernel's half-width on each side
+    (`TRUNCATE_SIGMAS` σ, the same count of scans `gaussian_smooth` truncates at),
+    clipped to the frame, smoothed, and cropped back to the view. Zero padding then
+    applies only at the frame's true ends, as `gaussian_smooth` documents, and a value
+    here equals the full-frame smoothed curve's at the same scan to float rounding.
+
+    The other axis's range is the request's: the curve is the smoothed version of the
+    one on screen, not of the whole frame. A view that already reaches both ends of the
+    frame needs no second projection and gets none.
+    """
+    edges, values = raw
+    count = int(np.asarray(values).size)
+    if count == 0:
+        return np.zeros(0, dtype=np.float64)
+    scan_edges = axes.scan_edges
+    lo = int(np.searchsorted(scan_edges, edges[0]))
+    hi = lo + count
+    if hi >= scan_edges.size or scan_edges[lo] != edges[0] or scan_edges[hi] != edges[-1]:
+        raise ValueError("the raw profile does not lie on the frame's scan axis")
+    # `smooth._kernel`'s own half-width, by the same expression, so the padding is exactly
+    # what the kernel reaches and not a scan more or less.
+    half = int(math.ceil(TRUNCATE_SIGMAS * (float(sigma_ms) / float(tick_ms))))
+    lo_wide = max(0, lo - half)
+    hi_wide = min(scan_edges.size - 1, hi + half)
+    if lo_wide == lo and hi_wide == hi:
+        wide = np.asarray(values, dtype=np.float64)
+    else:
+        # Scan k is in view when its centre is in [low, high), so the two edges select
+        # exactly lo_wide .. hi_wide - 1.
+        scan_range = (float(scan_edges[lo_wide]), float(scan_edges[hi_wide]))
+        if axes.swapped:
+            wide_edges, wide = profile(frame, axes, scan_range, y_range, along="x")
+        else:
+            wide_edges, wide = profile(frame, axes, x_range, scan_range, along="y")
+        if wide.size != hi_wide - lo_wide:
+            raise ValueError("the widened projection does not cover the scans asked for")
+    smoothed = gaussian_smooth(wide, tick_ms=tick_ms, sigma_ms=sigma_ms)
+    return smoothed[lo - lo_wide:lo - lo_wide + count]
 
 
 class RenderMailbox:
@@ -324,12 +394,20 @@ class RenderWorker(QThread):
             request.frame, request.axes, request.x_range, request.y_range,
             request.width, request.height, aggregate=request.aggregate,
         )
+        smoothed = None
+        if request.sigma_ms is not None and request.scan_tick_ms > 0.0:
+            smoothed = smoothed_arrival(
+                request.frame, request.axes, request.x_range, request.y_range,
+                x_profile if request.axes.swapped else y_profile,
+                tick_ms=request.scan_tick_ms, sigma_ms=request.sigma_ms,
+            )
         return RenderResult(
             result=result,
             x_profile=x_profile,
             y_profile=y_profile,
             serial=request.serial,
             elapsed_ms=(time.perf_counter() - started) * 1000.0,
+            arrival_smoothed=smoothed,
         )
 
 

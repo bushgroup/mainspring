@@ -6,7 +6,9 @@ Where things live:
     app.py           the console entry point: QApplication, then MainWindow
     main_window.py   the window that owns the file, the workers and the widgets
     heatmap.py       the image and the one-gesture zoom, pan and reset
-    side_plots.py    the in-view mass spectrum and arrival-time distribution
+    side_plots.py    the in-view mass spectrum and arrival-time distribution, the
+                     latter drawn smoothed over its dimmed raw self when asked
+    smoothing.py     the dialog that sets the arrival-time smoothing width
     info_panel.py    parameters, and the intensity-per-push readout
     workers.py       the load thread, the render thread, and the single-slot mailbox
     settings.py      ViewerSettings and its QSettings persistence

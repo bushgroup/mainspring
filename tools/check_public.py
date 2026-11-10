@@ -1510,6 +1510,49 @@ def main() -> int:
                    abs(summed_tic - expected_tic) <= 1e-9 * max(1.0, expected_tic))
         sum_window.stop_workers()
 
+        # `Data settings > Smooth arrival time`, on by default: the arrival-time plot is
+        # drawn smoothed over its dimmed raw self, the raw profile the peak readout reads
+        # is untouched, and a zoomed curve is the full-frame curve at the same scans,
+        # because the projection is widened by the kernel's reach before it is smoothed
+        # (lab record, task 44).
+        from mainspring.analysis import gaussian_smooth
+        from mainspring.uimf.raster import render_view
+        from mainspring.viewer.workers import smoothed_arrival
+
+        smooth_window = MainWindow(ViewerSettings())
+        smooth_window.open_file(viewer_spec.path)
+        deadline = time.time() + 5.0
+        while (smooth_window._last_render is None
+               or smooth_window._last_render.arrival_smoothed is None) \
+                and time.time() < deadline:
+            qt_app.processEvents()
+            time.sleep(0.01)
+        smooth_render = smooth_window._last_render
+        smoothed = getattr(smooth_render, "arrival_smoothed", None)
+        check_true(f"Smooth arrival time is on by default and smooths the arrival-time plot"
+                   f" (dimmed: {smooth_window.side_plots.faint})",
+                   smoothed is not None and smooth_window.side_plots.faint == "y"
+                   and smoothed.shape == smooth_render.y_profile[1].shape)
+        if smoothed is not None:
+            frame, axes = smooth_window._current_frame, smooth_window._current_axes
+            tick_ms = smooth_window._frame_params.average_tof_length_ns * 1e-6
+            sigma_ms = 2.0 * tick_ms
+            scan_edges = axes.scan_edges
+            full_y = (float(scan_edges[0]), float(scan_edges[-1]))
+            x_range = smooth_render.result.x_range
+            full = render_view(frame, axes, x_range, full_y, 200, 200)[2]
+            expected = gaussian_smooth(full[1], tick_ms=tick_ms, sigma_ms=sigma_ms)
+            lo, hi = frame.scans // 4, frame.scans // 2
+            zoom_y = (float(scan_edges[lo]), float(scan_edges[hi]))
+            zoom = render_view(frame, axes, x_range, zoom_y, 200, 200)[2]
+            got = smoothed_arrival(frame, axes, x_range, zoom_y, zoom,
+                                   tick_ms=tick_ms, sigma_ms=sigma_ms)
+            worst = float(np.max(np.abs(got - expected[lo:hi]))) if got.size else 0.0
+            check_true(f"and a zoomed curve is the full-frame curve at the same scans"
+                       f" (worst difference {worst:.3g})",
+                       got.size == hi - lo and worst <= 1e-9 * max(1.0, float(expected.max())))
+        smooth_window.stop_workers()
+
         # The Help menu answers with no network, which is the whole reason the guide is
         # carried rather than linked. A packaging change that stopped shipping it would
         # otherwise show up only as an empty window on an instrument PC.

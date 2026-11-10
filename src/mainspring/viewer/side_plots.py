@@ -32,9 +32,19 @@ pyqtgraph's peak-preserving downsampler is what reduces 114688 points to a drawa
 curve without flattening a one-bin spike. Doing that in the plot rather than in the
 projection is what makes zooming in *reveal* structure: the data are already there, and
 the downsampler simply stops discarding it.
+
+**The arrival-time projection may be drawn twice.** While `Data settings > Smooth
+arrival time` is ticked, the render worker sends a Gaussian-smoothed copy of it
+(`workers.smoothed_arrival`), and the plot that is arrival time draws that in the curve
+color over the raw projection dimmed to `curve_faint`. Which plot that is follows
+`DisplayAxes.swapped`, like everything else here. The mass spectrum is never smoothed,
+the dimmed raw curve is the only sign that smoothing is on, and an export draws the raw
+curve alone at full strength (`raw_only`; lab record, task 44).
 """
 
 from __future__ import annotations
+
+from contextlib import contextmanager
 
 import numpy as np
 import pyqtgraph as pg
@@ -251,6 +261,15 @@ class SidePlots:
         self._x_curve.setDownsampling(auto=True, method="peak")
         self._x_curve.setClipToView(True)
         self._y_curve = self.y_plot.plot()
+        # The smoothed arrival-time curve, one per plot because the swap-axes toggle
+        # moves arrival time between them. Added after the raw curves so that it is drawn
+        # on top of them; the one not in use holds no data.
+        self._x_smooth = self.x_plot.plot()
+        self._x_smooth.setDownsampling(auto=True, method="peak")
+        self._x_smooth.setClipToView(True)
+        self._y_smooth = self.y_plot.plot()
+        self._faint: "str | None" = None
+        """Which raw curve is dimmed under a smoothed one: "x", "y", or None."""
         self.set_palette(theme.active())
         self.set_text_scale(fonts.active())
 
@@ -299,7 +318,11 @@ class SidePlots:
                 axis.setPen(pen)
                 axis.setTickPen(pen)
                 axis.setTextPen(pen)
-        for curve in self.curves:
+        for role, curve in zip(("x", "y"), self.curves):
+            name = "curve_faint" if role == self._faint else "curve"
+            setattr(curve, theme.PALETTE_ROLE, name)
+            curve.setPen(pg.mkPen(getattr(palette, name), width=self._curve_width))
+        for curve in self.smoothed_curves:
             curve.setPen(pg.mkPen(palette.curve, width=self._curve_width))
 
     def fit_lines(self, width: int, height: int) -> bool:
@@ -336,16 +359,33 @@ class SidePlots:
         """`(x_curve, y_curve)`, for a caller that wants to read back what is drawn."""
         return self._x_curve, self._y_curve
 
+    @property
+    def smoothed_curves(self) -> "tuple[pg.PlotDataItem, pg.PlotDataItem]":
+        """`(x_smooth, y_smooth)`: the smoothed arrival-time curve on each plot, at most
+        one of them holding data."""
+        return self._x_smooth, self._y_smooth
+
+    @property
+    def faint(self) -> "str | None":
+        """Which raw curve is drawn dimmed under a smoothed one, "x" or "y", or None."""
+        return self._faint
+
     def set_profiles(
         self,
         x_profile: "tuple[np.ndarray, np.ndarray]",
         y_profile: "tuple[np.ndarray, np.ndarray]",
+        smoothed: "np.ndarray | None" = None,
+        swapped: bool = False,
     ) -> None:
         """Show a matched pair of projections, each as `(edges, values)`.
 
         Drawn on element centres rather than as a step: a step needs one more x than y,
         which pyqtgraph supports along x and not along y, and drawing the two plots by
         two different rules to save a half-element offset would be the wrong trade.
+
+        `smoothed` is the arrival-time projection's values smoothed, on that projection's
+        edges, or None to draw the raw curves alone at full strength. `swapped` is
+        `DisplayAxes.swapped`, which says which of the two plots is arrival time.
         """
         x_edges, x_values = x_profile
         y_edges, y_values = y_profile
@@ -353,12 +393,54 @@ class SidePlots:
         # x and y swap for the arrival-time plot: intensity runs across, the display
         # axis down, so that its vertical axis is the heatmap's and the link is honest.
         self._y_curve.setData(np.asarray(y_values, dtype=np.float64), _centres(y_edges))
+        empty = np.empty(0, dtype=np.float64)
+        faint = None
+        if smoothed is None:
+            self._x_smooth.setData(empty, empty)
+            self._y_smooth.setData(empty, empty)
+        elif swapped:
+            self._x_smooth.setData(_centres(x_edges), np.asarray(smoothed, dtype=np.float64))
+            self._y_smooth.setData(empty, empty)
+            faint = "x"
+        else:
+            self._y_smooth.setData(np.asarray(smoothed, dtype=np.float64), _centres(y_edges))
+            self._x_smooth.setData(empty, empty)
+            faint = "y"
+        self._set_faint(faint)
+
+    def _set_faint(self, faint: "str | None") -> None:
+        """Dim one raw curve, or none; repainted only when that changes."""
+        if faint != self._faint:
+            self._faint = faint
+            self.set_palette(theme.active())
+
+    @contextmanager
+    def raw_only(self):
+        """The raw projections alone, at full strength, for as long as this is held.
+
+        What an export draws: the figure shows the data as stored, and the smoothed curve
+        is a reading aid on screen (lab record, task 44). Restored on the way out,
+        whether the export succeeded or not.
+        """
+        faint = self._faint
+        for curve in self.smoothed_curves:
+            curve.hide()
+        self._set_faint(None)
+        try:
+            yield
+        finally:
+            for curve in self.smoothed_curves:
+                curve.show()
+            self._set_faint(faint)
 
     def clear(self) -> None:
         """Empty both plots, for a file being closed."""
         empty = np.empty(0, dtype=np.float64)
         self._x_curve.setData(empty, empty)
         self._y_curve.setData(empty, empty)
+        self._x_smooth.setData(empty, empty)
+        self._y_smooth.setData(empty, empty)
+        self._set_faint(None)
 
 
 def peak_of(
