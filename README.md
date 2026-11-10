@@ -12,12 +12,17 @@ instrument writes UIMF.
 
 ## Status
 
-Version 1.15.0. The reader layer, the viewer, and the Windows installer are written and
+Version 1.16.0. The reader layer, the viewer, and the Windows installer are written and
 verified, and the development record lives in a private companion repository. This release
-adds `mainspring.analysis`, a package for processing what the reader returns, with an ion's
-arrival-time distribution read from an m/z window, the statistics the Bush lab reads off such a
-distribution, and a Gaussian smoother for it (see
-[Reading a file from Python](#reading-a-file-from-python)); the viewer is unchanged.
+adds `Data settings > Sum all on open`, which sums every frame of a file as soon as its first
+frame is on screen, so a file opened by hand no longer needs `Sum all` pressed after every open.
+It is off until you turn it on, and a file opened to follow with `Live` is left to the `Show`
+box. The reader and `mainspring.analysis` are unchanged.
+
+Since 1.15.0, `mainspring.analysis`, a package for processing what the reader returns, offers an
+ion's arrival-time distribution read from an m/z window, the statistics the Bush lab reads off
+such a distribution, and a Gaussian smoother for it (see
+[Reading a file from Python](#reading-a-file-from-python)).
 
 Since 1.14.0, the viewer shows a run being acquired one finished frame at a time. A frame's
 scans reach the file in arrival-time order, so a frame half written holds about 0.1 per cent of
@@ -110,7 +115,7 @@ time-of-flight bins, which on the Bush lab's instrument would be 2.3 GB for a si
 To use the reader from another project, install mainspring from a release tag:
 
 ```
-pip install "mainspring[fast] @ git+https://github.com/bushgroup/mainspring@v1.15.0"
+pip install "mainspring[fast] @ git+https://github.com/bushgroup/mainspring@v1.16.0"
 ```
 
 The same requirement string works as a dependency in another project's `pyproject.toml`,
