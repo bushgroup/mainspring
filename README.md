@@ -12,12 +12,18 @@ instrument writes UIMF.
 
 ## Status
 
-Version 1.16.0. The reader layer, the viewer, and the Windows installer are written and
+Version 1.17.0. The reader layer, the viewer, and the Windows installer are written and
 verified, and the development record lives in a private companion repository. This release
-adds `Data settings > Sum all on open`, which sums every frame of a file as soon as its first
-frame is on screen, so a file opened by hand no longer needs `Sum all` pressed after every open.
-It is off until you turn it on, and a file opened to follow with `Live` is left to the `Show`
-box. The reader and `mainspring.analysis` are unchanged.
+draws the arrival-time distribution smoothed by a Gaussian of σ = 0.6 ms over a faint copy of
+the raw distribution, with `Data settings > Smooth arrival time` to turn it off and `Data
+settings > Arrival-time smoothing width` to change σ. Only that curve is smoothed: the heat
+map, the mass spectrum, the chromatogram, the peak readout and every export read the raw data.
+A zoomed view is smoothed with the scans just outside it, so the curve keeps its shape as you
+pan. The reader and `mainspring.analysis` are unchanged.
+
+Since 1.16.0, `Data settings > Sum all on open` sums every frame of a file as soon as its first
+frame is on screen. It is off until you turn it on, and a file opened to follow with `Live` is
+left to the `Show` box.
 
 Since 1.15.0, `mainspring.analysis`, a package for processing what the reader returns, offers an
 ion's arrival-time distribution read from an m/z window, the statistics the Bush lab reads off
@@ -115,7 +121,7 @@ time-of-flight bins, which on the Bush lab's instrument would be 2.3 GB for a si
 To use the reader from another project, install mainspring from a release tag:
 
 ```
-pip install "mainspring[fast] @ git+https://github.com/bushgroup/mainspring@v1.16.0"
+pip install "mainspring[fast] @ git+https://github.com/bushgroup/mainspring@v1.17.0"
 ```
 
 The same requirement string works as a dependency in another project's `pyproject.toml`,
