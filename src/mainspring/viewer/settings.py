@@ -32,6 +32,12 @@ that matters more than it looks:
   Persisted, unlike `Restrict to view`, because it is a way of working: some days the
   count has to stay on for hours of acquisitions and other days nobody needs it (lab
   record, task 36).
+* **`sum_all_on_open` defaults off.** Ticked, a file opened by hand paints its first
+  frame and then runs `Sum all` over every frame, as if the button had been pressed: a
+  5,000-frame raw run is twenty seconds behind the progress dialog, which is not a cost
+  to impose on anyone who did not ask for it. Persisted because it is a way of working,
+  and ignored by a followed open, where `Show` decides what is on screen (lab record,
+  task 43).
 * **`show_unfinished_frames` defaults off, and is persisted although `Follow` is not.**
   Off, `Live` puts a frame on screen by itself only once it is finished, in `Newest
   frame` and in the chromatogram. A frame's scans land in arrival-time order and a
@@ -193,6 +199,7 @@ class ViewerSettings:
     arrival_offset_ms: float = 0.0
     rolling_sum_frames: int = 5
     count_clipping: bool = False
+    sum_all_on_open: bool = False
     show_unfinished_frames: bool = False
     last_directory: str = ""
     window_geometry: bytes = b""
@@ -300,6 +307,7 @@ def load_settings() -> ViewerSettings:
         rolling_sum_frames=_as_int(store.value("rolling_sum_frames", defaults.rolling_sum_frames),
                                     defaults.rolling_sum_frames),
         count_clipping=_as_bool(store.value("count_clipping", defaults.count_clipping)),
+        sum_all_on_open=_as_bool(store.value("sum_all_on_open", defaults.sum_all_on_open)),
         show_unfinished_frames=_as_bool(store.value("show_unfinished_frames",
                                                     defaults.show_unfinished_frames)),
         last_directory=str(store.value("last_directory", defaults.last_directory)),
@@ -335,6 +343,7 @@ def save_settings(settings: ViewerSettings) -> None:
     store.setValue("arrival_offset_ms", settings.arrival_offset_ms)
     store.setValue("rolling_sum_frames", settings.rolling_sum_frames)
     store.setValue("count_clipping", settings.count_clipping)
+    store.setValue("sum_all_on_open", settings.sum_all_on_open)
     store.setValue("show_unfinished_frames", settings.show_unfinished_frames)
     # Written under the new spelling, and the old key removed in the same pass, so a
     # settings store upgraded by this version carries one key per setting rather than

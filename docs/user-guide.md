@@ -262,10 +262,10 @@ would leave nothing on screen for the minute it takes.
 
 ## The Data settings menu
 
-Four controls that say what the numbers on screen are, rather than how they are drawn.
+Five controls that say what the numbers on screen are, rather than how they are drawn.
 None of them is touched in the ordinary course of looking at a frame: the aggregate, the
-bit depth and the clipping count are set once for a session and the type filter once for a
-file.
+bit depth, the clipping count and `Sum all on open` are set once for a session and the type
+filter once for a file.
 
 ### Aggregate
 
@@ -309,11 +309,26 @@ peaks, a fraction of a second on most files and one to two seconds on a 1.3 GB r
 most saturated 1.3 GB run we have, with 1,707 clipped points, takes about three seconds. The
 viewer stays usable throughout, and a frame you ask for is served between pieces of the count.
 
+### Sum all on open
+
+To open every file already summed, tick this once. Each file you open with `File > Open`, a
+double-click or a drag then draws its first frame as usual and starts [Sum all](#sum-all)
+straight away, with the same progress dialog and the same Cancel, which leaves the first frame
+on screen. The sum covers every frame in the file, because an open puts the type filter back on
+`All frames`. It is off until you turn it on, and the viewer remembers the choice. A raw
+per-repetition file of 5,000 frames takes about 20 seconds to sum.
+
+A file opened to be followed is not summed. When `Live` opens a run, or another program starts
+the viewer following one, the `Show` box decides what goes on screen. A file still being written
+that you open by hand without `Live` is summed as `Sum all` would sum it: every frame listed when
+it opened, the last one as far as it had been written, and the result marked as still being
+written.
+
 ### Type
 
 Restricts the frame spinner and `Sum all` to frames of one type: `MS1`, `MS2`, `Calibration`,
 `Prescan`, or `All frames`. A file whose writer used a code this list has no name for shows it
-as `Type N` rather than hiding those frames.
+as `Type N` rather than hiding those frames. Every file opens on `All frames`.
 
 ## The Help menu
 

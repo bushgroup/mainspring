@@ -893,6 +893,20 @@ class MainWindow(QMainWindow):
         )
         menu.addAction(self._count_clipping_action)
 
+        # The other switch that costs something, and for the same reason off by default:
+        # a 5,000-frame raw run is twenty seconds behind the progress dialog. What it
+        # does is `_sum_all_after_open`.
+        self._sum_all_on_open_action = make_action(
+            self,
+            "&Sum all on open",
+            tip="Add up every frame of a file as soon as its first frame is on screen,"
+                " unless the file was opened to follow with Live.",
+            checkable=True,
+            checked=self.settings.sum_all_on_open,
+            toggled=self._on_sum_all_on_open_toggled,
+        )
+        menu.addAction(self._sum_all_on_open_action)
+
     def _build_toolbar(self) -> None:
         """The axis toggles, frame navigation, the sums and follow.
 
@@ -2033,6 +2047,10 @@ class MainWindow(QMainWindow):
         """
         return full_scale_for(self.detector_bits, from_file=self.detector_bits_from_file)
 
+    def _on_sum_all_on_open_toggled(self, checked: bool) -> None:
+        """Remember the choice for the next open; the file on screen is left as it is."""
+        self.settings.sum_all_on_open = bool(checked)
+
     def _on_count_clipping_toggled(self, checked: bool) -> None:
         """Start the file-wide count, or stop it and say how to start it again."""
         self.settings.count_clipping = bool(checked)
@@ -2309,6 +2327,15 @@ class MainWindow(QMainWindow):
         # still the file on screen.
         self.setWindowTitle(f"{os.path.basename(self._path or '')} — {WINDOW_TITLE}")
         self._populate_type_filter()
+        # A new file starts on every frame, as `_active_frame_numbers` below says: the
+        # rebuild above leaves the tick where it was when the types match, and a menu
+        # still ticked on `Calibration` over a spinner that reaches every frame would be
+        # telling the user something about `Sum all` that is not true.
+        all_frames = self._type_actions.get("All frames")
+        if all_frames is not None and not all_frames.isChecked():
+            all_frames.blockSignals(True)
+            all_frames.setChecked(True)
+            all_frames.blockSignals(False)
         self._apply_detector_bits()
         self._show_grouping_controls(grouping.grouped)
         self._populate_follow_modes()
@@ -2577,8 +2604,36 @@ class MainWindow(QMainWindow):
             # After the open line and not before it: a launched follow says either
             # "Following <file>" or why it cannot, and that is the sentence worth
             # leaving on screen. Here rather than in `_on_opened` for that reason alone.
+            # Asked before it runs, because it forgets the launch it applies.
+            followed = self._launch_follow or self.following
             self._apply_launch_options()
+            self.frame_shown.emit(result)
+            if not followed:
+                self._sum_all_after_open()
+            return
         self.frame_shown.emit(result)
+
+    def _sum_all_after_open(self) -> None:
+        """`Data settings > Sum all on open`: press `Sum all` for the user, once.
+
+        Called from one place, the end of an open that painted its first frame and is not
+        being followed, so it fires once per open and never for a later frame, a filter
+        change or a poll. The two other ways an open ends do not reach it, and neither
+        should: a file with no frames has nothing to add up, and a launch holding back an
+        unfinished first frame is a followed open. A followed open -- a `--follow` launch,
+        a `Live` switch, or `Live` ticked while the open was in flight -- is left to
+        `Show`, which already decides what a followed run puts on screen (Matt,
+        2026-11-09; lab record, task 43).
+
+        Straight through `sum_frames()`, which is the toolbar button: every frame, since
+        the open has just put the type filter back on `All frames`, the same progress
+        dialog and the same Cancel, which leaves the first frame on screen. A growing file
+        opened by hand gets what the button would give it: the frames listed at open,
+        the last one as far as it has been written, and the total said to be still being
+        written.
+        """
+        if self.settings.sum_all_on_open:
+            self.sum_frames()
 
     def _on_summing_progress(self, done: int, total: int) -> None:
         if self._sum_dialog is not None:

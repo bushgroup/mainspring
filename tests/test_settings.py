@@ -108,6 +108,7 @@ def test_settings_round_trip_through_qsettings():
         cache_budget_mb=256,
         arrival_offset_ms=-42.5,
         rolling_sum_frames=25,
+        sum_all_on_open=True,
         show_unfinished_frames=True,
         last_directory="F:/data/acquisitions",
         window_geometry=b"\x00binary-ish\x01geometry\x02bytes\x03",
@@ -229,3 +230,13 @@ def test_frames_still_being_written_are_held_back_by_default_and_the_choice_pers
     assert load_settings().show_unfinished_frames is True
     save_settings(ViewerSettings(show_unfinished_frames=False))
     assert load_settings().show_unfinished_frames is False
+
+
+def test_sum_all_on_open_starts_unticked_and_the_choice_persists():
+    """Off by default: a 5,000-frame raw run is twenty seconds of summing behind a dialog,
+    a cost nobody should meet on the strength of an upgrade (lab record, task 43)."""
+    assert ViewerSettings().sum_all_on_open is False
+    save_settings(ViewerSettings(sum_all_on_open=True))
+    assert load_settings().sum_all_on_open is True
+    save_settings(ViewerSettings(sum_all_on_open=False))
+    assert load_settings().sum_all_on_open is False

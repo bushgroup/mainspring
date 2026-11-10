@@ -1486,6 +1486,30 @@ def main() -> int:
                    and "100.00% full scale" in rows["Per push"])
         clip_window.stop_workers()
 
+        # `Data settings > Sum all on open`: frame 1 painted first, then the toolbar's own
+        # `Sum all` over every frame, by itself. Settings passed in, for the clipping
+        # window's reason (lab record, task 43).
+        sum_window = MainWindow(ViewerSettings(sum_all_on_open=True))
+        sum_shown: list = []
+        sum_window.frame_shown.connect(
+            lambda _r: sum_shown.append(sum_window._current_frame_number))
+        sum_window.open_file(viewer_spec.path)
+        deadline = time.time() + 5.0
+        while 0 not in sum_shown and time.time() < deadline:
+            qt_app.processEvents()
+            time.sleep(0.01)
+        expected_tic = sum(viewer_spec.tic(n) for n in viewer_spec.frames)
+        summed_tic = (float(sum_window._current_frame.intensity.sum())
+                      if 0 in sum_shown else float("nan"))
+        check_true(f"Sum all on open paints frame 1, then sums every frame"
+                   f" (painted {sum_shown}; {sum_window.status_text()})",
+                   sum_shown[:1] == [1] and 0 in sum_shown
+                   and f"Sum of {len(viewer_spec.frames)} frames" in sum_window.status_text())
+        check_true(f"and the sum's TIC is every frame's stored TIC ({summed_tic:g} vs"
+                   f" {expected_tic:g})",
+                   abs(summed_tic - expected_tic) <= 1e-9 * max(1.0, expected_tic))
+        sum_window.stop_workers()
+
         # The Help menu answers with no network, which is the whole reason the guide is
         # carried rather than linked. A packaging change that stopped shipping it would
         # otherwise show up only as an empty window on an instrument PC.
