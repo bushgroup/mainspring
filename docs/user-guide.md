@@ -285,8 +285,8 @@ is not a stored intensity.
 The digitizer's bit depth, from 1 to 32, which the per-push readout uses to work out what
 fraction of full scale a count is. PNNL's parameter set has no name for bit depth, so on a file
 their acquisition software wrote this is a setting rather than something the viewer can read.
-SLIMPHONY's current digitizer is 8-bit and clockwork will use 14-bit. Set it before you read
-anything off the per-push line.
+On such a file the number is yours, from the digitizer the run was acquired with, so set it
+before you read anything off the per-push line.
 
 A file clockwork wrote stores the bit depth of the digitizer that produced it. On such a file
 the control shows the stored value and cannot be changed, because the number in use is the
@@ -595,6 +595,23 @@ the file your data ended up in and it is today's file shape.
 
 A run cut short before its first fold leaves no companion. The message is the same and there is
 nothing to offer alongside it.
+
+### Why following does not disturb the acquisition
+
+Three properties of the file and of the viewer make following safe. First, a file clockwork
+creates is in SQLite's write-ahead log mode, and the acquisition console that adds the scans
+keeps that mode, so new rows go into a log beside the file and a reader sees the file as it stood
+when its query began. The writer never waits for the viewer and the viewer never waits for the
+writer. Second, every read the viewer makes is a read-only connection that runs one query and
+closes. A reader that held a query open would stop SQLite from moving the log back into the file,
+and the log would grow for as long as it was held. Third, a file clockwork wrote marks each frame
+complete once it has finished writing it, in the frame parameter `MainspringFrameComplete`, so
+the viewer knows exactly which frames are finished. A file written by PNNL's acquisition software
+uses SQLite's rollback journal instead, where each read holds the writer back for the length of
+one short query, and carries no completion mark, so the viewer falls back to the age of the file
+described under [Frames that are not finished yet](#frames-that-are-not-finished-yet). The marker
+and the rest of the file's layout are described in [the UIMF format as mainspring reads and
+writes it](uimf-format.md).
 
 ### What cannot be followed
 

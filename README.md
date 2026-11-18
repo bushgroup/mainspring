@@ -1,8 +1,8 @@
 # mainspring
 
 mainspring is an interactive viewer for UIMF files, the SQLite-based format in which SLIM
-ion mobility mass spectrometers record their data, and a Python reader for the same files
-that analysis pipelines can import on their own. The viewer shows a frame as a heat map of
+ion mobility mass spectrometers record their data, and a Python package that reads and writes
+the same files, which analysis pipelines can import on their own. The viewer shows a frame as a heat map of
 m/z against arrival time with the mass spectrum and the arrival-time distribution of the
 visible region beside it, zooms and pans in one gesture, keeps the current ranges when the
 next file is opened, and reports the peak intensity per time-of-flight push so that detector
@@ -12,9 +12,15 @@ instrument writes UIMF.
 
 ## Status
 
-Version 1.17.0. The reader layer, the viewer, and the Windows installer are written and
+Version 1.17.1. The reader layer, the viewer, and the Windows installer are written and
 verified, and the development record lives in a private companion repository. This release
-draws the arrival-time distribution smoothed by a Gaussian of σ = 0.6 ms over a faint copy of
+documents what the package writes as well as what it reads: [Writing a file](#writing-a-file)
+and [Raw and summed files](#raw-and-summed-files) below, and [the UIMF format as mainspring
+reads and writes it](docs/uimf-format.md) in `docs/`. The code is unchanged from 1.17.0, except
+that a link from the viewer's built-in user guide to a page the installer does not carry now
+opens that page online, at this release, rather than an empty window.
+
+Since 1.17.0, the viewer draws the arrival-time distribution smoothed by a Gaussian of σ = 0.6 ms over a faint copy of
 the raw distribution, with `Data settings > Smooth arrival time` to turn it off and `Data
 settings > Arrival-time smoothing width` to change σ. Only that curve is smoothed: the heat
 map, the mass spectrum, the chromatogram, the peak readout and every export read the raw data.
@@ -121,7 +127,7 @@ time-of-flight bins, which on the Bush lab's instrument would be 2.3 GB for a si
 To use the reader from another project, install mainspring from a release tag:
 
 ```
-pip install "mainspring[fast] @ git+https://github.com/bushgroup/mainspring@v1.17.0"
+pip install "mainspring[fast] @ git+https://github.com/bushgroup/mainspring@v1.17.1"
 ```
 
 The same requirement string works as a dependency in another project's `pyproject.toml`,
@@ -216,6 +222,68 @@ in a minor release, and the release notes say so. `gaussian_smooth` and `gaussia
 from 1.15.0, whereas the profile read and the seven statistics join the frozen list when a program
 outside this repository first imports them.
 
+## Writing a file
+
+mainspring also writes UIMF. `mainspring.uimf.UimfWriter` creates a file with its schema, its
+global and per-frame parameters, and the fixed-column tables that PNNL's older software reads,
+and can write the scans as well:
+
+```python
+from mainspring.uimf import FrameSpec, GlobalSpec, UimfWriter
+
+with UimfWriter("run.uimf", GlobalSpec(bins=114688, detector_bits=14)) as writer:
+    frame = writer.add_frame(FrameSpec(scans=5000, method_frame=1, repetition=1))
+    ...                                       # the scans are appended here
+    writer.finalise_frame(frame, duration_s=0.645)
+```
+
+The writer exists because PNNL's acquisition console, which records the scans of a run, opens
+an existing file and inserts `Frame_Scans` rows into it, and owns nothing else. The program that
+drives the console therefore creates the file and writes every parameter, and the Bush lab's
+acquisition software, [clockwork](https://github.com/bushgroup/clockwork), does so through this
+class. The code that writes a file and the code that reads it are thus one package, and a
+program that creates a file can read it back while the run is still going through the same
+`UimfFile` the viewer uses.
+
+A frame is written in two phases. `add_frame` writes what is known before the frame is acquired:
+`Scans`, `Accumulations`, the calibration, the start time, and which method frame and repetition
+the frame is. `finalise_frame` writes what is known only afterwards, the duration and a
+completion marker, `MainspringFrameComplete`. Nothing else in a UIMF file says that a frame is
+finished, so the marker is what lets a reader tell a frame still being acquired from a frame
+that is done, on a file it is following while the run goes on. `set_outcome` records how the run
+ended, and `write_scans` and `write_sparse_frame` write the scans themselves when no console is
+involved, which is how a summed file is written. The file is created in SQLite's write-ahead log
+mode, and the console writes under the mode the file was created with, which is what lets a
+reader follow the run without holding up the writer. `UimfWriter` defaults to that mode, and to
+writing both forms of the parameter tables, and nothing should need to change either.
+
+[`docs/uimf-format.md`](docs/uimf-format.md) describes the format as these files use it: the
+tables, the blob encoding, the m/z calibration, arrival time, and the ten parameters, with their
+IDs, that only a file mainspring created carries.
+
+## Raw and summed files
+
+An acquisition by clockwork writes two files. The raw file keeps the run's plain name and holds
+one frame per repetition, i.e., per ion mobility separation, with `Accumulations` = 1, so a method
+frame of 100 repetitions is 100 frames. It grows while the run is acquired and is the file the
+viewer follows. After each method frame, clockwork adds its repetitions scan by scan and bin by
+bin and writes the total as one frame of a companion file, `<name>.summed.uimf`, whose
+`Accumulations` is the number of repetitions summed:
+
+```
+260910_BK_001.uimf          one frame per repetition, Accumulations = 1
+260910_BK_001.summed.uimf   one frame per method frame, Accumulations = 100
+```
+
+The summed file has the shape that PNNL's software writes, one frame per method frame, so PNNL's
+tools open it. Every frame of both files says which method frame it belongs to, and each raw
+frame says which repetition it is, so the viewer's `Method frame` and `Rep` controls can step
+through a raw file by experiment rather than by frame number, and `Sum method frame` shows from the
+raw file the total that the summed file holds for that method frame. A method can ask clockwork to discard the raw file when the run
+ends. The viewer then says that the file it was following has gone and offers the summed file
+that replaced it, and `mainspring.uimf.summed_companion` finds the summed file beside a raw one
+for a program.
+
 ## Requirements
 
 - Windows 11, on which the viewer and its installer are tested.
@@ -293,8 +361,8 @@ root of the checkout:
 & "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe" packaging\mainspring.iss
 ```
 
-Compilation takes about two minutes and writes `dist\installer\mainspring-1.1.0-setup.exe`,
-93 MB. That installer is per-user and asks for no administrator rights, because the viewer keeps
+Compilation takes about two minutes and writes `dist\installer\mainspring-<version>-setup.exe`,
+about 94 MB. That installer is per-user and asks for no administrator rights, because the viewer keeps
 its settings in the current user's registry hive and an instrument PC's operator account may
 have no administrator rights to give. It offers a Start menu entry, an optional desktop icon,
 and an uninstaller. The version in the file name comes from `MyAppVersion` in
@@ -313,8 +381,8 @@ removes the registration.
 ## Layout
 
 ```
-src/mainspring/uimf/     the reader: SQLite access, blob decoding, calibration, sparse frames,
-                         rasterisation, and the uimf-info command line
+src/mainspring/uimf/     the reader and the writer: SQLite access, blob decoding and encoding,
+                         calibration, sparse frames, rasterisation, and the uimf-info command line
 src/mainspring/analysis/ processing what the reader returns: an ion's arrival-time distribution,
                          the statistics read off it, and the arrival-time smoother
 src/mainspring/viewer/   the PySide6 + pyqtgraph application
@@ -323,7 +391,8 @@ tools/                   check_public.py (the self-check), fetch_testdata.py (PN
                          write_commit.py (the commit a build records in itself)
 tests/                   pytest suite; tests/fixtures/README.md says what is synthetic
 packaging/               PyInstaller specification, Inno Setup script, icon artwork
-docs/                    user documentation; docs/user-guide.md is the viewer's
+docs/                    user documentation: docs/user-guide.md is the viewer's, and
+                         docs/uimf-format.md the file format as mainspring reads and writes it
 external/                fetched test data, read in place and never committed (not in this repository)
 ```
 
