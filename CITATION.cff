@@ -1,11 +1,11 @@
 cff-version: 1.2.0
 title: mainspring
 abstract: >-
-  Interactive viewer and Python reader for UIMF ion mobility mass spectrometry
+  Interactive viewer and Python reader and writer for UIMF ion mobility mass spectrometry
   files, the SQLite-based format written by SLIM instruments and by the Bush
   lab's clockwork acquisition software.
 type: software
-version: 1.17.0
+version: 1.17.1
 date-released: "2026-11-09"
 message: >-
   If mainspring contributed to a result, cite the software by this record.
