@@ -10,15 +10,31 @@ onedir, and `read_guide()` is what the reader window shows.
 written, so there is no second form of the guide to keep in step and no dependency to
 add. What it does not render as richly as a browser would is worth less than what a
 second copy would cost.
+
+**A link to another page opens online, at this version's tag.** The guide links to the
+README and to `docs/uimf-format.md`, which the build does not carry, and a `QTextBrowser`
+follows a relative link by replacing the guide with the target: an empty page in the
+installer, and in a checkout a page with no way back. So `GuideBrowser` keeps a link
+within the guide (`#anchor`) where it is and sends any other relative link to GitHub at
+`v<version>`, the page as it was when this program was released. Carrying `docs/` whole
+and adding history buttons would answer offline as well, for pages an operator at the
+instrument does not need.
+
+Qt's Markdown import gives a heading no anchor name, so `#which-run-live-follows` found
+nothing and the guide's own cross-references dropped the reader at the top. `GuideBrowser`
+resolves the fragment against the headings with GitHub's slug rule instead, which is the
+rule the links were written to.
 """
 
 from __future__ import annotations
 
 import os
+import posixpath
+import re
 import sys
 
 from PySide6.QtCore import QUrl, Qt
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QDesktopServices, QTextBlock, QTextDocument
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
@@ -32,10 +48,12 @@ from .controls import describe
 
 __all__ = [
     "GUIDE_URL",
+    "GuideBrowser",
     "GuideWindow",
     "REPOSITORY_URL",
     "about_text",
     "guide_path",
+    "online_url",
     "open_guide_online",
     "read_guide",
 ]
@@ -48,6 +66,23 @@ GUIDE_URL = f"{REPOSITORY_URL}/blob/main/docs/user-guide.md"
 program shipped with -- which is why it is the second entry and not the first."""
 
 _GUIDE_RELATIVE = os.path.join("docs", "user-guide.md")
+
+
+def online_url(link: str) -> str:
+    """Where a relative link in the guide points on GitHub, at this version's tag.
+
+    `link` is as written in `docs/user-guide.md`, so it is relative to `docs/`: the
+    README is `../README.md`. A link that climbs out of the repository is sent to the
+    repository's front page rather than to a path GitHub would 404 on.
+    """
+    url = QUrl(link)
+    path = posixpath.normpath(posixpath.join("docs", url.path()))
+    if path.startswith("..") or posixpath.isabs(path):
+        return REPOSITORY_URL
+    target = f"{REPOSITORY_URL}/blob/v{__version__}/{path}"
+    if url.hasFragment():
+        target += f"#{url.fragment()}"
+    return target
 
 
 def guide_path() -> "str | None":
@@ -117,6 +152,50 @@ def about_text() -> str:
     )
 
 
+class GuideBrowser(QTextBrowser):
+    """The guide's text browser: in-page links stay, links to other pages open online.
+
+    `setOpenExternalLinks(True)` already hands an `https:` link to the system browser;
+    what reaches `doSetSource` is a relative link, which Qt would otherwise follow by
+    loading the target in place of the guide. See the module docstring.
+    """
+
+    def __init__(self, parent: "object | None" = None) -> None:
+        super().__init__(parent)
+        self.setOpenExternalLinks(True)
+
+    def heading(self, fragment: str) -> "QTextBlock | None":
+        """The heading a `#fragment` names, by GitHub's slug of its text, or None."""
+        block = self.document().begin()
+        while block.isValid():
+            if block.blockFormat().headingLevel() and _slug(block.text()) == fragment:
+                return block
+            block = block.next()
+        return None
+
+    def doSetSource(
+        self,
+        name: QUrl,
+        type: QTextDocument.ResourceType = QTextDocument.ResourceType.UnknownResource,
+    ) -> None:
+        if name.scheme() in ("", "file") and name.path():
+            target = online_url(name.toString())
+            QDesktopServices.openUrl(QUrl(target))
+            return
+        if not name.path() and name.hasFragment():
+            block = self.heading(name.fragment())
+            if block is not None:
+                top = self.document().documentLayout().blockBoundingRect(block).top()
+                self.verticalScrollBar().setValue(int(top))
+                return
+        super().doSetSource(name, type)
+
+
+def _slug(text: str) -> str:
+    """GitHub's anchor for a heading: lower case, punctuation dropped, spaces to hyphens."""
+    return re.sub(r"[^\w\- ]", "", text.strip().lower()).replace(" ", "-")
+
+
 class GuideWindow(QDialog):
     """The user guide, scrolling, in a window of its own.
 
@@ -133,8 +212,7 @@ class GuideWindow(QDialog):
         self.resize(760, 720)
 
         text, directory = read_guide()
-        self._browser = QTextBrowser(self)
-        self._browser.setOpenExternalLinks(True)
+        self._browser = GuideBrowser(self)
         if directory:
             # Relative image paths in the guide are relative to the file, and a text
             # browser resolves them against its search paths and nothing else.

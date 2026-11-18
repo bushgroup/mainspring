@@ -105,3 +105,79 @@ def test_a_browser_that_will_not_open_is_reported(qtbot, monkeypatch):
     monkeypatch.setattr("mainspring.viewer.main_window.open_guide_online", lambda: False)
     window._open_guide_online()
     assert "browser" in window.status_text()
+
+
+def test_a_relative_link_in_the_guide_points_at_this_release_online():
+    """Links are written relative to `docs/`, as GitHub renders them."""
+    base = f"{help_module.REPOSITORY_URL}/blob/v{__version__}"
+    assert help_module.online_url("uimf-format.md") == f"{base}/docs/uimf-format.md"
+    assert (help_module.online_url("uimf-format.md#when-a-frame-is-finished")
+            == f"{base}/docs/uimf-format.md#when-a-frame-is-finished")
+    assert help_module.online_url("../README.md") == f"{base}/README.md"
+    assert help_module.online_url("../../elsewhere.md") == help_module.REPOSITORY_URL
+
+
+def test_the_guide_stays_on_screen_when_a_link_leaves_it(qtbot, monkeypatch):
+    """Qt follows a relative link by loading the target in place of the guide: an empty
+    page in the installer, which does not carry the README or the format page, and a
+    page with no way back in a checkout. Such a link opens online instead."""
+    opened = []
+    monkeypatch.setattr(help_module.QDesktopServices, "openUrl",
+                        lambda url: opened.append(url.toString()) or True)
+    window = GuideWindow()
+    qtbot.addWidget(window)
+    browser = window._browser
+    before = window.text()
+
+    browser.setSource(help_module.QUrl("uimf-format.md"))
+    browser.setSource(help_module.QUrl("../README.md#writing-a-file"))
+    assert window.text() == before
+    assert opened == [
+        help_module.online_url("uimf-format.md"),
+        help_module.online_url("../README.md#writing-a-file"),
+    ]
+
+
+def test_a_link_within_the_guide_scrolls_to_its_heading(qtbot, monkeypatch):
+    """Qt's Markdown import names no heading, so without the slug lookup every
+    cross-reference in the guide landed at the top of it."""
+    opened = []
+    monkeypatch.setattr(help_module.QDesktopServices, "openUrl",
+                        lambda url: opened.append(url.toString()) or True)
+    window = GuideWindow()
+    window.resize(760, 720)
+    qtbot.addWidget(window)
+    window.show()
+    qtbot.waitExposed(window)
+    browser = window._browser
+    before = window.text()
+    browser.setSource(help_module.QUrl("#frames-that-are-not-finished-yet"))
+    assert window.text() == before
+    assert opened == []
+    assert browser.verticalScrollBar().value() > 0
+
+
+def test_every_link_within_the_guide_names_a_heading(qtbot):
+    import re
+
+    window = GuideWindow()
+    qtbot.addWidget(window)
+    text, _ = read_guide()
+    fragments = set(re.findall(r"\]\(#([^)\s]+)\)", text))
+    assert len(fragments) > 5
+    missing = [f for f in sorted(fragments) if window._browser.heading(f) is None]
+    assert missing == []
+
+
+def test_every_relative_link_in_the_guide_names_a_file_that_exists():
+    """The link opens at the release tag, so the file has to be in the release."""
+    import re
+
+    text, directory = read_guide()
+    links = re.findall(r"\]\(([^)#\s]+)(?:#[^)]*)?\)", text)
+    relative = [link for link in links
+                if "://" not in link and not link.startswith("mailto:")
+                and not link.startswith("images/")]
+    assert relative, "the guide links to the README and the format page"
+    for link in relative:
+        assert os.path.isfile(os.path.join(directory, link)), link
