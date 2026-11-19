@@ -12,13 +12,14 @@ instrument writes UIMF.
 
 ## Status
 
-Version 1.17.1. The reader layer, the viewer, and the Windows installer are written and
+Version 1.18.0. The reader layer, the viewer, and the Windows installer are written and
 verified, and the development record lives in a private companion repository. This release
-documents what the package writes as well as what it reads: [Writing a file](#writing-a-file)
-and [Raw and summed files](#raw-and-summed-files) below, and [the UIMF format as mainspring
-reads and writes it](docs/uimf-format.md) in `docs/`. The code is unchanged from 1.17.0, except
-that a link from the viewer's built-in user guide to a page the installer does not carry now
-opens that page online, at this release, rather than an empty window.
+adds `UimfWriter.set_globals`, with which a program writing a file records global parameters
+of its own that it learns during the run, such as how long the run was held between two
+repetitions. [Writing a file](#writing-a-file) and [Raw and summed files](#raw-and-summed-files)
+below, and [the UIMF format as mainspring reads and writes it](docs/uimf-format.md) in `docs/`,
+describe what the package writes as well as what it reads. The reader and the viewer are
+unchanged from 1.17.1.
 
 Since 1.17.0, the viewer draws the arrival-time distribution smoothed by a Gaussian of σ = 0.6 ms over a faint copy of
 the raw distribution, with `Data settings > Smooth arrival time` to turn it off and `Data
@@ -127,7 +128,7 @@ time-of-flight bins, which on the Bush lab's instrument would be 2.3 GB for a si
 To use the reader from another project, install mainspring from a release tag:
 
 ```
-pip install "mainspring[fast] @ git+https://github.com/bushgroup/mainspring@v1.17.1"
+pip install "mainspring[fast] @ git+https://github.com/bushgroup/mainspring@v1.18.0"
 ```
 
 The same requirement string works as a dependency in another project's `pyproject.toml`,
