@@ -194,6 +194,26 @@ OUTCOME_UNKNOWN = "unknown"
 RUN_OUTCOMES = (OUTCOME_COMPLETED, OUTCOME_STOPPED, OUTCOME_FAILED, OUTCOME_INCOMPLETE)
 """The values `RUN_OUTCOME` may hold in a file."""
 
+_OUTCOME_GLOBALS = frozenset({RUN_OUTCOME, RUN_REASON, REPETITIONS_PLANNED, REPETITIONS_ACQUIRED})
+"""The globals `records_outcome` and `set_outcome` own, and `extra` may not name."""
+
+_OUTCOME_REFUSAL = ("the run outcome is set by records_outcome and set_outcome,"
+                    " not through extra")
+
+_WRITER_OWNED_GLOBALS = frozenset({
+    # Derived from a `GlobalSpec` field in `_global_values`, or kept by the writer.
+    # Rewriting `Bins`, `BinWidth` or `TOFIntensityType` under frames already written
+    # would change how they decode; `NumFrames` is `add_frame`'s to keep.
+    "InstrumentName", "DateStarted", "NumFrames", "TimeOffset", "BinWidth", "Bins",
+    "TOFIntensityType", "DatasetType", "PrescanTOFPulses", "PrescanAccumulations",
+    # mainspring's own block.
+    WRITER_STAMP, DETECTOR_BITS,
+}) | _OUTCOME_GLOBALS
+"""Globals the writer itself writes, which `UimfWriter.set_globals` refuses to rewrite.
+
+Every name `_global_values` can produce, and every global in mainspring's own block. A
+test holds this to the code, so a field added to `GlobalSpec` lands here too."""
+
 
 @dataclass(frozen=True)
 class ParamDef:
@@ -479,10 +499,8 @@ class GlobalSpec:
                 raise ValueError(
                     f"repetitions_planned cannot be negative: {self.repetitions_planned}")
         _check_extra(self.extra, GLOBAL_KEYS, "global")
-        outcome_keys = {RUN_OUTCOME, RUN_REASON, REPETITIONS_PLANNED, REPETITIONS_ACQUIRED}
-        if outcome_keys & {getattr(key, "name", key) for key in self.extra}:
-            raise ValueError("the run outcome is set by records_outcome and set_outcome,"
-                             " not through extra")
+        if _OUTCOME_GLOBALS & {getattr(key, "name", key) for key in self.extra}:
+            raise ValueError(_OUTCOME_REFUSAL)
 
 
 @dataclass(frozen=True)
@@ -781,6 +799,48 @@ class UimfWriter:
             return  # the legacy table has no column to hold it
         with self._transaction():
             self._upsert_globals(values)
+
+    def set_globals(self, extra: Mapping["str | ParamDef", object]) -> None:
+        """Write global parameters of a client's own after the file was created.
+
+        The global twin of `finalise_frame(extra=)`, for a fact learned mid-run: the keys
+        are what `GlobalSpec.extra` takes -- a `ParamDef` at or above
+        `CLIENT_PARAM_ID_BASE`, or a bare name PNNL's `GlobalParamKeyType` knows -- less
+        the globals the writer owns (`_WRITER_OWNED_GLOBALS`): the outcome is
+        `set_outcome`'s, and rewriting `Bins` or `TOFIntensityType` under frames already
+        written would change how they decode. Allowed more than once, and each call
+        overwrites; a `ParamDef` declared at creation or in an earlier call may be passed
+        again as long as it is the same definition.
+
+        One transaction, so a reader sees all of a call's rows or none. Every key and
+        value is checked before any is registered, so a call refused for one bad key
+        leaves the file and the registry as they were. A legacy-only file checks the
+        call and writes nothing, as `set_outcome` does and as creation does with
+        `GlobalSpec.extra`: the legacy table has no row to hold a parameter it does not
+        name. A `UimfFile` caches its globals, so a fresh one is what sees the change.
+        """
+        self._require_open()
+        if not extra:
+            return
+        names = {getattr(key, "name", key) for key in extra}
+        if names & _OUTCOME_GLOBALS:
+            raise ValueError(_OUTCOME_REFUSAL)
+        owned = names & _WRITER_OWNED_GLOBALS
+        if owned:
+            raise ValueError(
+                f"{', '.join(sorted(map(str, owned)))}: written by the writer from its"
+                f" GlobalSpec, and not rewritten once the file exists")
+        # Register into a copy, so that a bad key anywhere in the call registers none of
+        # the others; `_register_extra` checks each `ParamDef` against everything before
+        # it, the call's own earlier keys included.
+        staged = dict(self.global_keys)
+        values = _register_extra(extra, staged, "global")
+        texts = {name: _as_text(value, staged[name]) for name, value in values.items()}
+        self.global_keys.update(staged)
+        if not self.modern:
+            return  # the legacy table has no row to hold it
+        with self._transaction():
+            self._upsert_globals(texts)
 
     # --- scans, for the fold and for the fixture ---------------------------------------
 

@@ -251,7 +251,9 @@ the frame is. `finalise_frame` writes what is known only afterwards, the duratio
 completion marker, `MainspringFrameComplete`. Nothing else in a UIMF file says that a frame is
 finished, so the marker is what lets a reader tell a frame still being acquired from a frame
 that is done, on a file it is following while the run goes on. `set_outcome` records how the run
-ended, and `write_scans` and `write_sparse_frame` write the scans themselves when no console is
+ended. A program with global parameters of its own declares them when the file is created,
+through `GlobalSpec.extra`, and records any it learns during the run with `set_globals`, which
+may be called as often as the value changes. `write_scans` and `write_sparse_frame` write the scans themselves when no console is
 involved, which is how a summed file is written. The file is created in SQLite's write-ahead log
 mode, and the console writes under the mode the file was created with, which is what lets a
 reader follow the run without holding up the writer. `UimfWriter` defaults to that mode, and to

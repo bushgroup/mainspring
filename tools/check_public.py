@@ -315,6 +315,16 @@ def main() -> int:
     check_true(f"mainspring.uimf.writer still offers the key registries and ParamDef"
                f"{' (missing ' + ', '.join(absent) + ')' if absent else ''}",
                not absent)
+    # The writer's methods, which an import list cannot see: the acquisition side calls
+    # each of these on the handle, and `set_globals` is how it records a fact learned
+    # mid-run in its own client block rather than through the writer's internals.
+    WRITER_METHODS = ("add_frame", "finalise_frame", "set_outcome", "set_globals",
+                      "write_scans", "write_sparse_frame", "close")
+    unmethods = [name for name in WRITER_METHODS
+                 if not callable(getattr(uimf_writer.UimfWriter, name, None))]
+    check_true(f"UimfWriter still has the methods a client calls"
+               f"{' (missing ' + ', '.join(unmethods) + ')' if unmethods else ''}",
+               not unmethods)
     check_true("and the client parameter block is still at 2000",
                uimf_writer.CLIENT_PARAM_ID_BASE == 2000
                and uimf_writer.CUSTOM_PARAM_ID_BASE == 1000)

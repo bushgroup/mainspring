@@ -150,7 +150,11 @@ The global and frame IDs are separate series, as PNNL's are, so 1001 names one p
 table. The names, IDs, types and descriptions are `GLOBAL_KEYS` and `FRAME_KEYS` in
 `mainspring.uimf.writer`, and the self-check pins the names as text. A program that writes UIMF
 through mainspring and has parameters of its own declares them from ID 2000 upward, and the
-reader looks every parameter up by name.
+reader looks every parameter up by name. Its global parameters are written when the file is
+created (`GlobalSpec.extra`) or at any point during the run (`UimfWriter.set_globals`), and its
+frame parameters with the frame (`FrameSpec.extra`) or once the frame is acquired
+(`finalise_frame`). The parameters the writer derives itself, the TOF axis among them, cannot be
+rewritten this way, because the frames already in the file were encoded against them.
 
 **Grouping.** A frame with `MainspringMethodFrame` and `MainspringRepetition` is one repetition
 of a method frame. A frame with `MainspringMethodFrame` and no repetition covers the whole method

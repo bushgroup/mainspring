@@ -890,8 +890,12 @@ class UimfFile:
     def global_params(self) -> GlobalParams:
         """The dataset-wide parameters, modern table preferred.
 
-        Cached: the values are a dozen short strings and they do not change while a file
-        is being written, so re-reading them per frame would be lock traffic for nothing.
+        Cached for the life of this `UimfFile`, from the open (or the first read) on, and
+        not re-read by `refresh`: re-reading them per frame would be lock traffic for
+        nothing, and what a viewer needs from them -- the TOF axis, the element type --
+        is fixed at creation. A global written after that first read is *not* seen
+        here: the run's outcome (`UimfWriter.set_outcome`) and a client's own globals
+        added mid-run (`UimfWriter.set_globals`). A fresh `UimfFile` reads them.
         """
         if self._global is None:
             with self._connect() as conn:
