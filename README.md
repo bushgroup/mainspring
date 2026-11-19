@@ -12,11 +12,14 @@ instrument writes UIMF.
 
 ## Status
 
-Version 1.18.0. The reader layer, the viewer, and the Windows installer are written and
+Version 1.19.0. The reader layer, the viewer, and the Windows installer are written and
 verified, and the development record lives in a private companion repository. This release
-adds `UimfWriter.set_globals`, with which a program writing a file records global parameters
-of its own that it learns during the run, such as how long the run was held between two
-repetitions. [Writing a file](#writing-a-file) and [Raw and summed files](#raw-and-summed-files)
+stops the writer from recording two values for one parameter. A parameter that `GlobalSpec` or
+`FrameSpec` sets from a field of its own, such as `Bins` or `Scans`, is now refused in `extra`
+with the name of that field, where before it was accepted and the file then disagreed with
+itself. A call that used to be accepted now raises, but every file it wrote was wrong.
+`UimfWriter.set_globals`, added in 1.18.0, records global parameters that a program learns
+during the run. [Writing a file](#writing-a-file) and [Raw and summed files](#raw-and-summed-files)
 below, and [the UIMF format as mainspring reads and writes it](docs/uimf-format.md) in `docs/`,
 describe what the package writes as well as what it reads. The reader and the viewer are
 unchanged from 1.17.1.
@@ -128,7 +131,7 @@ time-of-flight bins, which on the Bush lab's instrument would be 2.3 GB for a si
 To use the reader from another project, install mainspring from a release tag:
 
 ```
-pip install "mainspring[fast] @ git+https://github.com/bushgroup/mainspring@v1.18.0"
+pip install "mainspring[fast] @ git+https://github.com/bushgroup/mainspring@v1.19.0"
 ```
 
 The same requirement string works as a dependency in another project's `pyproject.toml`,
