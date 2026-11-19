@@ -200,19 +200,75 @@ _OUTCOME_GLOBALS = frozenset({RUN_OUTCOME, RUN_REASON, REPETITIONS_PLANNED, REPE
 _OUTCOME_REFUSAL = ("the run outcome is set by records_outcome and set_outcome,"
                     " not through extra")
 
-_WRITER_OWNED_GLOBALS = frozenset({
-    # Derived from a `GlobalSpec` field in `_global_values`, or kept by the writer.
-    # Rewriting `Bins`, `BinWidth` or `TOFIntensityType` under frames already written
-    # would change how they decode; `NumFrames` is `add_frame`'s to keep.
-    "InstrumentName", "DateStarted", "NumFrames", "TimeOffset", "BinWidth", "Bins",
-    "TOFIntensityType", "DatasetType", "PrescanTOFPulses", "PrescanAccumulations",
+_GLOBAL_OWNERS = {
+    # Derived from a `GlobalSpec` field in `_global_values`, or kept by the writer. The
+    # legacy row and `write_scans` read the field, not `Global_Params`, so a bare name in
+    # `extra` would leave the file saying two things: `TOFIntensityType` there made the
+    # scans int32 and told every reader int16 (lab record, task 48).
+    "InstrumentName": "set by GlobalSpec.instrument_name",
+    "DateStarted": "set by GlobalSpec.date_started",
+    "NumFrames": "kept by UimfWriter.add_frame",
+    "TimeOffset": "set by GlobalSpec.time_offset_ns",
+    "BinWidth": "set by GlobalSpec.bin_width_ns",
+    "Bins": "set by GlobalSpec.bins",
+    "TOFIntensityType": "set by GlobalSpec.tof_intensity_type",
+    "DatasetType": "set by GlobalSpec.dataset_type",
+    "PrescanTOFPulses": "set by GlobalSpec.prescan_tof_pulses",
+    "PrescanAccumulations": "set by GlobalSpec.prescan_accumulations",
     # mainspring's own block.
-    WRITER_STAMP, DETECTOR_BITS,
-}) | _OUTCOME_GLOBALS
-"""Globals the writer itself writes, which `UimfWriter.set_globals` refuses to rewrite.
+    WRITER_STAMP: "stamped by the writer itself",
+    DETECTOR_BITS: "set by GlobalSpec.detector_bits",
+}
+"""Each global the writer writes for itself, and what sets it instead. The outcome
+globals are owned too, and refused with `_OUTCOME_REFUSAL`."""
+
+_WRITER_OWNED_GLOBALS = frozenset(_GLOBAL_OWNERS) | _OUTCOME_GLOBALS
+"""Globals the writer itself writes: refused in `GlobalSpec.extra`, and by
+`UimfWriter.set_globals`, which would rewrite them under frames already written.
 
 Every name `_global_values` can produce, and every global in mainspring's own block. A
 test holds this to the code, so a field added to `GlobalSpec` lands here too."""
+
+_FRAME_OWNERS = {
+    # Derived from a `FrameSpec` field in `_frame_values`. The legacy row is inserted
+    # from the same fields, so a bare name in `extra` split the two tables.
+    "StartTimeMinutes": "set by FrameSpec.start_time_minutes",
+    "Accumulations": "set by FrameSpec.accumulations",
+    "FrameType": "set by FrameSpec.frame_type",
+    "CalibrationDone": "derived from FrameSpec.calibration_slope",
+    "Scans": "set by FrameSpec.scans",
+    "AverageTOFLength": "set by FrameSpec.average_tof_length_ns",
+    "CalibrationSlope": "set by FrameSpec.calibration_slope",
+    "CalibrationIntercept": "set by FrameSpec.calibration_intercept",
+    METHOD_FRAME: "set by FrameSpec.method_frame",
+    REPETITION: "set by FrameSpec.repetition",
+    REPETITIONS: "set by FrameSpec.repetitions",
+}
+"""Each frame parameter a `FrameSpec` field sets, and the field."""
+
+_FINALISE_OWNERS = {
+    # Written by `finalise_frame` from an argument of its own. `DurationSeconds` is
+    # written as a zero at `add_frame` for the console's timing to land on.
+    "DurationSeconds": "set by finalise_frame(duration_s=)",
+    FRAME_COMPLETE: "set by finalise_frame(complete=)",
+}
+"""The frame parameters `finalise_frame` has an argument for. Refused in its `extra` as in
+`FrameSpec.extra`: a marker set through `extra` would finish a frame before it was
+acquired, or one the call said was cut short."""
+
+_WRITER_OWNED_FRAME_PARAMS = frozenset(_FRAME_OWNERS) | frozenset(_FINALISE_OWNERS)
+"""Frame parameters `FrameSpec.extra` refuses: what `_frame_values` writes from a field,
+and what `finalise_frame` writes from an argument. A test holds this to the code.
+
+**Not the six `MassCalibrationCoefficient*`.** They are written as zeros with no field
+behind them, and nothing applies them -- UIMF-Library does not, and neither does
+mainspring -- but a client with a residual polynomial of its own may record one through
+`extra`, and both tables carry it. `finalise_frame(extra=)` refuses only
+`_FINALISE_OWNERS`: it updates both tables from the same values, so re-timing a frame
+acquired again with `StartTimeMinutes` contradicts nothing."""
+
+_RESIDUAL_COEFFICIENTS = tuple(
+    f"MassCalibrationCoefficient{suffix}" for suffix in ("a2", "b2", "c2", "d2", "e2", "f2"))
 
 
 @dataclass(frozen=True)
@@ -467,7 +523,10 @@ class GlobalSpec:
     an unrecognised name is refused rather than given an invented ID, because an ID this
     repository made up is one a future UIMF-Library may assign to something else. A
     client with something of its own to record passes a `ParamDef` as the key instead —
-    see `CLIENT_PARAM_ID_BASE`.
+    see `CLIENT_PARAM_ID_BASE`. A name the writer writes for itself (`Bins`,
+    `TOFIntensityType`, `MainspringWriter`, ...) is refused with the field that sets it:
+    the legacy table and the scans are written from the field, so a second value in
+    `extra` made a file that contradicted itself.
     """
 
     bins: int
@@ -498,9 +557,10 @@ class GlobalSpec:
             if int(self.repetitions_planned) < 0:
                 raise ValueError(
                     f"repetitions_planned cannot be negative: {self.repetitions_planned}")
-        _check_extra(self.extra, GLOBAL_KEYS, "global")
         if _OUTCOME_GLOBALS & {getattr(key, "name", key) for key in self.extra}:
             raise ValueError(_OUTCOME_REFUSAL)
+        _refuse_owned(self.extra, _GLOBAL_OWNERS, "not through extra")
+        _check_extra(self.extra, GLOBAL_KEYS, "global")
 
 
 @dataclass(frozen=True)
@@ -526,7 +586,11 @@ class FrameSpec:
     files have, which is a reader test and not a thing to write on purpose.
 
     `extra` carries any other parameter PNNL's `FrameParamKeyType` names, or a client's
-    own under a `ParamDef` key; see `GlobalSpec.extra` and `CLIENT_PARAM_ID_BASE`.
+    own under a `ParamDef` key; see `GlobalSpec.extra` and `CLIENT_PARAM_ID_BASE`. A
+    name a field here sets, or that `finalise_frame` has an argument for, is refused
+    with what sets it (`_WRITER_OWNED_FRAME_PARAMS`). The six
+    `MassCalibrationCoefficient*` are not: they default to zero, may be given here, and
+    land in both tables, though nothing applies them.
     """
 
     scans: int
@@ -563,6 +627,7 @@ class FrameSpec:
                 raise ValueError(
                     f"repetition {self.repetition} of {self.repetitions} asked for"
                 )
+        _refuse_owned(self.extra, {**_FRAME_OWNERS, **_FINALISE_OWNERS}, "not through extra")
         _check_extra(self.extra, FRAME_KEYS, "frame")
 
     @property
@@ -737,9 +802,15 @@ class UimfWriter:
         frame known to have been cut short, which leaves it provisional. Calling this
         twice is allowed and overwrites -- a client that finalises, folds, and then has
         something to add should not have to remember which call it is on.
+
+        `extra` takes what `FrameSpec.extra` takes, less `DurationSeconds` and the
+        completion marker, which are this call's own arguments; a field-derived name such
+        as `StartTimeMinutes` is allowed here, because this call updates both tables from
+        the same values, and is how a frame acquired again is re-timed.
         """
         self._require_open()
         frame = int(frame)
+        _refuse_owned(extra or {}, _FINALISE_OWNERS, "not through extra")
         values: dict[str, str] = {}
         if duration_s is not None:
             values["DurationSeconds"] = _as_text(duration_s, FRAME_KEYS["DurationSeconds"])
@@ -825,11 +896,7 @@ class UimfWriter:
         names = {getattr(key, "name", key) for key in extra}
         if names & _OUTCOME_GLOBALS:
             raise ValueError(_OUTCOME_REFUSAL)
-        owned = names & _WRITER_OWNED_GLOBALS
-        if owned:
-            raise ValueError(
-                f"{', '.join(sorted(map(str, owned)))}: written by the writer from its"
-                f" GlobalSpec, and not rewritten once the file exists")
+        _refuse_owned(extra, _GLOBAL_OWNERS, "and not rewritten once the file exists")
         # Register into a copy, so that a bad key anywhere in the call registers none of
         # the others; `_register_extra` checks each `ParamDef` against everything before
         # it, the call's own earlier keys included.
@@ -974,10 +1041,13 @@ class UimfWriter:
                     " Prescan_Continuous, Prescan_Profile, Instrument_Name)"
                     " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (values["DateStarted"], 0, int(spec.time_offset_ns),
-                     float(spec.bin_width_ns), int(spec.bins), 0.0, 0.1, 0.1,
+                     float(spec.bin_width_ns), int(spec.bins),
+                     _legacy_float(values, "TOFCorrectionTime"), 0.1, 0.1,
                      spec.tof_intensity_type, spec.dataset_type,
                      int(spec.prescan_tof_pulses), int(spec.prescan_accumulations),
-                     0, 0, "", spec.instrument_name),
+                     int(_legacy_float(values, "PrescanTICThreshold")),
+                     int(_legacy_float(values, "PrescanContinuous")),
+                     values.get("PrescanProfile", ""), spec.instrument_name),
                 )
 
     def _upsert_globals(self, values: Mapping[str, object]) -> None:
@@ -1059,8 +1129,8 @@ class UimfWriter:
             "CalibrationSlope": float(spec.calibration_slope),
             "CalibrationIntercept": float(spec.calibration_intercept),
         }
-        for suffix in ("a2", "b2", "c2", "d2", "e2", "f2"):
-            values[f"MassCalibrationCoefficient{suffix}"] = 0.0
+        for name in _RESIDUAL_COEFFICIENTS:
+            values[name] = 0.0  # a default `extra` may replace
         if spec.method_frame is not None:
             values[METHOD_FRAME] = int(spec.method_frame)
         if spec.repetition is not None:
@@ -1079,11 +1149,13 @@ class UimfWriter:
         The legacy table is fixed-column, so mainspring's own parameters and most of
         PNNL's later ones have nowhere to go in it. That is not a loss: a tool that reads
         only this table is a 2011-era tool, and the grouping and the completion marker
-        exist for tools that are not.
+        exist for tools that are not. Every column that has a modern twin takes it from
+        `values`, so the two tables cannot say different things about one frame.
         """
         legacy_type = (
             spec.frame_type if spec.legacy_frame_type is None else spec.legacy_frame_type
         )
+        residual = [_legacy_float(values, name) for name in _RESIDUAL_COEFFICIENTS]
         self._conn.execute(
             "INSERT INTO Frame_Parameters (FrameNum, StartTime, Duration, Accumulations,"
             " FrameType, Scans, IMFProfile, TOFLosses, AverageTOFLength, CalibrationSlope,"
@@ -1093,18 +1165,18 @@ class UimfWriter:
             " FloatVoltage, CalibrationDone, Decoded) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?,"
             " ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (frame, float(spec.start_time_minutes), 0.0, int(spec.accumulations),
-             int(legacy_type), int(spec.scans), "", 0.0,
+             int(legacy_type), int(spec.scans), "", _legacy_float(values, "TOFLosses"),
              float(spec.average_tof_length_ns), float(spec.calibration_slope),
-             float(spec.calibration_intercept), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+             float(spec.calibration_intercept), *residual,
              _legacy_float(values, "AmbientTemperature"),
              _legacy_float(values, "PressureFront"), _legacy_float(values, "PressureBack"),
-             0, None,
+             int(_legacy_float(values, "MPBitOrder")), None,
              _legacy_float(values, "HighPressureFunnelPressure"),
              _legacy_float(values, "IonFunnelTrapPressure"),
              _legacy_float(values, "RearIonFunnelPressure"),
              _legacy_float(values, "QuadrupolePressure"),
              _legacy_float(values, "ESIVoltage"), _legacy_float(values, "FloatVoltage"),
-             1 if spec.calibration_done else 0, 0),
+             1 if spec.calibration_done else 0, int(_legacy_float(values, "Decoded"))),
         )
 
     def _update_legacy_frame(self, frame: int, values: Mapping[str, str]) -> None:
@@ -1343,6 +1415,20 @@ def _check_extra(
                 f" {seen[key.param_id]!r} and {key.name!r}"
             )
         seen[key.param_id] = key.name
+
+
+def _refuse_owned(
+    extra: Mapping[object, object], owners: Mapping[str, str], tail: str
+) -> None:
+    """Refuse any key, bare or a `ParamDef`, naming a parameter the writer writes itself.
+
+    The message names what sets each one instead, from the same table the refusal reads,
+    so the two cannot drift.
+    """
+    owned = sorted({getattr(key, "name", key) for key in extra} & owners.keys())
+    if owned:
+        raise ValueError(
+            "; ".join(f"{name} is {owners[name]}" for name in owned) + f", {tail}")
 
 
 def _check_client_def(

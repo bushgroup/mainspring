@@ -801,6 +801,12 @@ def main() -> int:
                 uimf_writer.ParamDef(uimf_writer.CUSTOM_PARAM_ID_BASE + 1,
                                      "ExampleClientStamp", "System.String"): "x"}),
         )
+        check_raises(
+            "nor a name the writer derives from a spec field, so one file cannot say two"
+            " things",
+            ValueError,
+            lambda: uimf_writer.GlobalSpec(bins=4096, extra={"TOFIntensityType": "TDC"}),
+        )
         check_raises("an existing file is never silently replaced", FileExistsError,
                      lambda: uimf_writer.UimfWriter(path, uimf_writer.GlobalSpec(bins=64)))
 

@@ -153,8 +153,11 @@ through mainspring and has parameters of its own declares them from ID 2000 upwa
 reader looks every parameter up by name. Its global parameters are written when the file is
 created (`GlobalSpec.extra`) or at any point during the run (`UimfWriter.set_globals`), and its
 frame parameters with the frame (`FrameSpec.extra`) or once the frame is acquired
-(`finalise_frame`). The parameters the writer derives itself, the TOF axis among them, cannot be
-rewritten this way, because the frames already in the file were encoded against them.
+(`finalise_frame`). A parameter the writer derives from a field of `GlobalSpec` or `FrameSpec`,
+the TOF axis among them, is refused in `extra` with the name of the field that sets it. The
+legacy table and the encoded scans are written from the field, so a second value would leave the
+file disagreeing with itself. Once the file exists, a global the writer derives cannot be
+rewritten at all, because the frames already in the file were encoded against it.
 
 **Grouping.** A frame with `MainspringMethodFrame` and `MainspringRepetition` is one repetition
 of a method frame. A frame with `MainspringMethodFrame` and no repetition covers the whole method

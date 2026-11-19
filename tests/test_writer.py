@@ -489,7 +489,8 @@ def test_a_client_parameter_that_would_collide_is_refused():
     mainspring_block = ParamDef(CUSTOM_PARAM_ID_BASE + 1, "ClockworkThing", "System.String")
     with pytest.raises(ValueError, match="start at 2000"):
         FrameSpec(scans=8, extra={mainspring_block: "x"})
-    renaming = ParamDef(CLIENT_PARAM_ID_BASE + 3, "Scans", "System.Int32")
+    # A name a field sets is refused before this, with the field (test_owned_names.py).
+    renaming = ParamDef(CLIENT_PARAM_ID_BASE + 3, "AmbientTemperature", "System.Single")
     with pytest.raises(ValueError, match="already a frame parameter"):
         FrameSpec(scans=8, extra={renaming: 4})
     untyped = ParamDef(CLIENT_PARAM_ID_BASE + 4, "ClockworkThing", "System.Guid")
